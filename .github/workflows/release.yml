@@ -70,6 +70,7 @@ jobs:
           body: '💧 Waterball (水球) 新世代跨平台 BBS 連線軟體正式發布！'
           draft: false
           prerelease: false
+          fail_on_unmatched_files: false
           files: |
             src-tauri/target/release/bundle/dmg/*.dmg
             src-tauri/target/release/bundle/deb/*.deb
