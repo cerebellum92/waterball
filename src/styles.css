@@ -7,6 +7,7 @@
 }
 
 :root {
+  color-scheme: dark;
   --bg-primary: #0d1117;
   --bg-secondary: #161b22;
   --bg-toolbar: #1c2128;
@@ -226,10 +227,26 @@ body {
   font-size: 12px;
 }
 
+select {
+  color-scheme: dark;
+  background-color: var(--bg-primary) !important;
+  color: var(--text-primary) !important;
+}
+
+select option, select optgroup {
+  background-color: #1c2128 !important;
+  color: #f0f6fc !important;
+}
+
+select option:disabled {
+  color: #8b949e !important;
+  background-color: #161b22 !important;
+}
+
 #encoding-select {
   height: 32px;
   padding: 0 6px;
-  background: var(--bg-primary);
+  background-color: var(--bg-primary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius);
   color: var(--text-primary);
@@ -245,7 +262,7 @@ body {
   height: 32px;
   max-width: 140px;
   padding: 0 8px;
-  background: var(--bg-primary);
+  background-color: var(--bg-primary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius);
   color: var(--text-primary);
@@ -257,7 +274,7 @@ body {
   flex-shrink: 0;
 }
 
-#bookmarks-select:focus {
+#bookmarks-select:focus, #encoding-select:focus {
   border-color: var(--accent);
 }
 
@@ -370,6 +387,73 @@ body {
     max-width: 90px;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════
+   Global UI Sizing Scales (全域介面、設定與字體大小)
+═══════════════════════════════════════════════════════════ */
+
+/* 1. 標準緊湊 (Standard - 100%) */
+body.toolbar-scale-standard #toolbar { height: 44px; }
+body.toolbar-scale-standard .tb-btn { height: 30px; padding: 0 8px; font-size: 12px; }
+body.toolbar-scale-standard #address-input,
+body.toolbar-scale-standard #bookmarks-select,
+body.toolbar-scale-standard #encoding-select,
+body.toolbar-scale-standard .tb-btn-primary,
+body.toolbar-scale-standard .tb-btn-danger { height: 30px; font-size: 12px; }
+body.toolbar-scale-standard .modal-dialog { width: 700px; }
+body.toolbar-scale-standard .form-group label { font-size: 13px; }
+body.toolbar-scale-standard .hint { font-size: 11.5px; }
+body.toolbar-scale-standard .settings-tabs .tab-btn { font-size: 12.5px; padding: 9px 14px; }
+
+/* 2. 適中清晰 (Medium - 115% 🌟 預設推薦) */
+body.toolbar-scale-medium #toolbar { height: 50px; }
+body.toolbar-scale-medium .tb-btn { height: 35px; padding: 0 10px; font-size: 13.5px; gap: 4px; }
+body.toolbar-scale-medium .tb-btn .tb-icon { font-size: 14.5px; }
+body.toolbar-scale-medium #address-input { height: 35px; font-size: 13.5px; width: 230px; }
+body.toolbar-scale-medium #bookmarks-select,
+body.toolbar-scale-medium #encoding-select,
+body.toolbar-scale-medium .tb-btn-primary,
+body.toolbar-scale-medium .tb-btn-danger { height: 35px; font-size: 13px; }
+body.toolbar-scale-medium #tab-bar { min-height: 38px; }
+body.toolbar-scale-medium .bbs-tab { height: 30px; font-size: 13px; }
+body.toolbar-scale-medium .modal-dialog { width: 760px; }
+body.toolbar-scale-medium .modal-header h2 { font-size: 17px; }
+body.toolbar-scale-medium .settings-tabs { width: 180px; }
+body.toolbar-scale-medium .settings-tabs .tab-btn { font-size: 13.5px; padding: 11px 16px; }
+body.toolbar-scale-medium .form-group label { font-size: 14px; }
+body.toolbar-scale-medium .form-group select,
+body.toolbar-scale-medium .form-group input[type="text"],
+body.toolbar-scale-medium .form-group input[type="password"] { height: 36px; font-size: 13.5px; }
+body.toolbar-scale-medium .hint { font-size: 12.5px; }
+body.toolbar-scale-medium .credit-name { font-size: 14px; }
+body.toolbar-scale-medium .credit-text { font-size: 12.5px; }
+body.toolbar-scale-medium .about-title { font-size: 20px; }
+body.toolbar-scale-medium .about-desc { font-size: 13px; }
+
+/* 3. 舒適大字 (Large - 130%) */
+body.toolbar-scale-large #toolbar { height: 56px; }
+body.toolbar-scale-large .tb-btn { height: 39px; padding: 0 12px; font-size: 15px; gap: 5px; }
+body.toolbar-scale-large .tb-btn .tb-icon { font-size: 16.5px; }
+body.toolbar-scale-large #address-input { height: 39px; font-size: 15px; width: 250px; }
+body.toolbar-scale-large #bookmarks-select,
+body.toolbar-scale-large #encoding-select,
+body.toolbar-scale-large .tb-btn-primary,
+body.toolbar-scale-large .tb-btn-danger { height: 39px; font-size: 14.5px; }
+body.toolbar-scale-large #tab-bar { min-height: 42px; }
+body.toolbar-scale-large .bbs-tab { height: 34px; font-size: 14.5px; }
+body.toolbar-scale-large .modal-dialog { width: 830px; }
+body.toolbar-scale-large .modal-header h2 { font-size: 19px; }
+body.toolbar-scale-large .settings-tabs { width: 205px; }
+body.toolbar-scale-large .settings-tabs .tab-btn { font-size: 15px; padding: 13px 18px; }
+body.toolbar-scale-large .form-group label { font-size: 15.5px; }
+body.toolbar-scale-large .form-group select,
+body.toolbar-scale-large .form-group input[type="text"],
+body.toolbar-scale-large .form-group input[type="password"] { height: 40px; font-size: 15px; }
+body.toolbar-scale-large .hint { font-size: 13.5px; }
+body.toolbar-scale-large .credit-name { font-size: 15.5px; }
+body.toolbar-scale-large .credit-text { font-size: 13.5px; }
+body.toolbar-scale-large .about-title { font-size: 22px; }
+body.toolbar-scale-large .about-desc { font-size: 14px; }
 
 .hidden {
   display: none !important;

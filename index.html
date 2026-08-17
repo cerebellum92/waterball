@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark" />
   <title>Waterball (水球) — 新世代跨平台 BBS 連線軟體</title>
   <link rel="stylesheet" href="/src/styles.css" />
 </head>
@@ -180,6 +181,15 @@
 
           <!-- Tab 4: Display & Theme -->
           <div id="tab-display" class="tab-pane">
+            <div class="form-group">
+              <label for="setting-toolbar-scale">全域介面、設定與字體大小：</label>
+              <select id="setting-toolbar-scale">
+                <option value="standard">標準緊湊 (Standard - 100%)</option>
+                <option value="medium" selected>適中清晰 (Medium - 115%)</option>
+                <option value="large">舒適大字 (Large - 130%)</option>
+              </select>
+              <p class="hint">自訂工具列、分頁標籤、設定中心與彈窗介面的整體字體與按鈕縮放比例。</p>
+            </div>
             <div class="form-group">
               <label for="setting-theme">ANSI 色彩主題風格：</label>
               <select id="setting-theme">

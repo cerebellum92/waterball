@@ -61,6 +61,7 @@ const settingAutoCopy = document.getElementById('setting-auto-copy');
 const settingTheme = document.getElementById('setting-theme');
 const settingBlinkRate = document.getElementById('setting-blink-rate');
 const settingImagePreview = document.getElementById('setting-image-preview');
+const settingToolbarScale = document.getElementById('setting-toolbar-scale');
 
 // Tab Manager Setup
 const tabManager = new TabManager(tabBar, terminalContainer, imeInput);
@@ -455,17 +456,29 @@ function loadSettingsToUI() {
   if (settingTheme) settingTheme.value = s.theme || 'pcman';
   if (settingBlinkRate) settingBlinkRate.value = String(s.cursorBlinkRate ?? 500);
   if (settingImagePreview) settingImagePreview.checked = s.imagePreviewEnabled !== false;
+  if (settingToolbarScale) settingToolbarScale.value = s.toolbarScale || 'medium';
+}
+
+function applyToolbarScale(scale = 'medium') {
+  document.body.classList.remove('toolbar-scale-standard', 'toolbar-scale-medium', 'toolbar-scale-large');
+  document.body.classList.add(`toolbar-scale-${scale}`);
+  setTimeout(() => {
+    tabManager.tabs.forEach((t) => t.view?.resize());
+  }, 60);
 }
 
 function saveSettingsFromModal() {
   const isImgPrev = settingImagePreview ? settingImagePreview.checked : true;
   const isNotify = settingNotifyEnabled ? settingNotifyEnabled.checked : true;
   const isSound = settingNotifySound ? settingNotifySound.checked : true;
+  const toolbarScale = settingToolbarScale ? settingToolbarScale.value : 'medium';
   imagePreview.enabled = isImgPrev;
 
   if (isNotify) {
     notificationManager.requestPermission();
   }
+
+  applyToolbarScale(toolbarScale);
 
   settingsManager.saveSettings({
     antiIdleEnabled: settingAntiIdle.checked,
@@ -479,6 +492,7 @@ function saveSettingsFromModal() {
     theme: settingTheme.value,
     cursorBlinkRate: parseInt(settingBlinkRate.value, 10),
     imagePreviewEnabled: isImgPrev,
+    toolbarScale,
   });
   closeSettingsModal();
 }
@@ -733,8 +747,9 @@ if (settingsModal) {
   });
 }
 
-// Initial Bookmarks population
+// Initial Bookmarks & UI scale population
 renderBookmarksSelect();
+applyToolbarScale(settingsManager.settings.toolbarScale || 'medium');
 
 // Comprehensive Keyboard Mapping for BBS & Multi-Tab Shortcuts
 window.addEventListener('keydown', (e) => {

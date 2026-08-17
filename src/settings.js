@@ -58,6 +58,7 @@ export const DEFAULT_SETTINGS = {
   theme: 'pcman', // 'pcman' | 'welly' | 'high-contrast'
   cursorBlinkRate: 500, // ms
   imagePreviewEnabled: true,
+  toolbarScale: 'medium', // 'standard' | 'medium' | 'large'
 };
 
 class SettingsManager {
