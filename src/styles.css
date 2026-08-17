@@ -860,7 +860,8 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
 #terminal-container {
   position: relative;
   flex: 1;
-  padding: 4px;
+  padding: 0;
+  margin: 0;
   background: #000;
   overflow: hidden;
   display: flex;

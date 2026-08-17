@@ -212,9 +212,11 @@ export class TermView {
   }
 
   resize() {
-    // Use clientWidth & clientHeight to get exact inner space excluding container padding
-    const availW = this.container.clientWidth || 800;
-    const availH = this.container.clientHeight || 500;
+    // Keep a comfortable 4px safe margin on all 4 borders to completely eliminate edge clipping
+    const containerW = this.container.clientWidth || 800;
+    const containerH = this.container.clientHeight || 500;
+    const availW = Math.max(100, containerW - 8);
+    const availH = Math.max(100, containerH - 8);
 
     const cellW_fromW = availW / 80;
     const cellH_fromW = cellW_fromW * 2;
@@ -234,8 +236,8 @@ export class TermView {
     this.cellH = cellH;
 
     const dpr = window.devicePixelRatio || 1;
-    const targetW = cellW * 80;
-    const targetH = cellH * 24;
+    const targetW = Math.round(cellW * 80);
+    const targetH = Math.round(cellH * 24);
 
     this.canvas.width = targetW * dpr;
     this.canvas.height = targetH * dpr;

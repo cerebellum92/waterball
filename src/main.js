@@ -503,9 +503,15 @@ function saveSettingsFromModal() {
 
   applyToolbarScale(toolbarScale);
 
+  const antiIdleEnabled = settingAntiIdle.checked;
+  const antiIdleInterval = parseInt(settingAntiIdleInterval.value, 10);
+
+  // Sync with native Rust background anti-idle system (24/7 background protected)
+  invoke('set_anti_idle', { enabled: antiIdleEnabled, intervalSecs: antiIdleInterval }).catch(() => {});
+
   settingsManager.saveSettings({
-    antiIdleEnabled: settingAntiIdle.checked,
-    antiIdleInterval: parseInt(settingAntiIdleInterval.value, 10),
+    antiIdleEnabled,
+    antiIdleInterval,
     notifyEnabled: isNotify,
     notifySound: isSound,
     mapCommandToCtrl: settingCmdCtrl.checked,
@@ -770,14 +776,19 @@ if (settingsModal) {
   });
 }
 
-// Initial Bookmarks & UI scale population
+// Initial Bookmarks, UI scale & Rust background anti-idle system
 renderBookmarksSelect();
 applyToolbarScale(settingsManager.settings.toolbarScale || 'medium');
+invoke('set_anti_idle', {
+  enabled: settingsManager.settings.antiIdleEnabled !== false,
+  intervalSecs: settingsManager.settings.antiIdleInterval || 45,
+}).catch(() => {});
 
 // Comprehensive Keyboard Mapping for BBS & Multi-Tab Shortcuts
 window.addEventListener('keydown', (e) => {
   imagePreview.hideImmediate();
   settingsManager.recordActivity();
+  invoke('record_activity', { tabId: tabManager.getActiveTab()?.id || null }).catch(() => {});
 
   // If in Board Switcher Modal
   if (boardSwitcherWidget && boardSwitcherWidget.isOpen) {

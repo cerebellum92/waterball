@@ -37,6 +37,8 @@ pub struct BbsConnection {
     writer: Arc<std::sync::Mutex<Box<dyn Write + Send>>>,
     alive: Arc<AtomicBool>,
     charset: Arc<RwLock<BbsCharset>>,
+    is_ssh: bool,
+    last_activity: Arc<std::sync::Mutex<std::time::Instant>>,
     _child: Option<Box<dyn portable_pty::Child + Send>>,
     _master: Option<Box<dyn portable_pty::MasterPty + Send>>,
 }
@@ -97,10 +99,14 @@ impl BbsConnection {
             Self::read_loop_telnet(tab_id_clone, reader_stream, alive_clone, charset_clone, app_clone);
         });
 
+        let last_activity = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+
         Ok(BbsConnection {
             writer,
             alive,
             charset,
+            is_ssh: false,
+            last_activity,
             _child: None,
             _master: None,
         })
@@ -186,10 +192,14 @@ impl BbsConnection {
             Self::read_loop_ssh(tab_id_clone, reader, alive_clone, charset_clone, app_clone);
         });
 
+        let last_activity = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+
         Ok(BbsConnection {
             writer,
             alive,
             charset,
+            is_ssh: true,
+            last_activity,
             _child: Some(child),
             _master: Some(pair.master),
         })
@@ -521,6 +531,39 @@ impl BbsConnection {
         let mut writer = self.writer.lock().unwrap();
         writer.write_all(data)?;
         writer.flush()
+    }
+
+    /// Record user keyboard/mouse activity to reset idle timer
+    pub fn record_activity(&self) {
+        if let Ok(mut lock) = self.last_activity.lock() {
+            *lock = std::time::Instant::now();
+        }
+    }
+
+    /// Check idle duration and send heartbeat packet if needed (Runs in native Rust background thread)
+    pub fn check_and_send_keepalive(&self, interval_secs: u64) -> bool {
+        if !self.alive.load(Ordering::Relaxed) {
+            return false;
+        }
+        let mut last = match self.last_activity.lock() {
+            Ok(l) => l,
+            Err(_) => return false,
+        };
+
+        if last.elapsed() >= std::time::Duration::from_secs(interval_secs) {
+            if self.is_ssh {
+                // For SSH (PTT SSH, etc.), send NUL byte
+                let _ = self.send_raw(&[0x00]);
+            } else {
+                // For Telnet (MapleBBS, Golden Island, PTT Telnet, Bahamut):
+                // Send Telnet IAC NOP (0xFF, 0xF1) - RFC 854 official heartbeat
+                let _ = self.send_raw(&[0xFF, 0xF1]);
+            }
+            *last = std::time::Instant::now();
+            true
+        } else {
+            false
+        }
     }
 
     /// Disconnect
