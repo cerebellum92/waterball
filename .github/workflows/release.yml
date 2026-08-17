@@ -16,8 +16,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: 'macos-latest' # Builds macOS .dmg / .app (Universal / Apple Silicon)
-            args: '--target universal-apple-darwin'
+          - platform: 'macos-latest' # Builds macOS .dmg / .app
+            args: ''
           - platform: 'ubuntu-22.04' # Builds Ubuntu / Debian .deb & .AppImage
             args: ''
           - platform: 'windows-latest' # Builds Windows .msi & .exe
@@ -31,13 +31,11 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'npm'
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Rust Cache
         uses: swatinem/rust-cache@v2
@@ -58,7 +56,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: v__VERSION__ # Will be replaced by package.json version
+          tagName: v__VERSION__
           releaseName: 'Waterball v__VERSION__'
           releaseBody: '💧 Waterball (水球) 新世代跨平台 BBS 連線軟體正式發布！'
           releaseDraft: false
