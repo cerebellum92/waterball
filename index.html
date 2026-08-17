@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Waterball (水球) — 新世代跨平台 BBS 連線軟體</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <div id="tab-bar"></div>
+    <div id="toolbar">
+      <div id="address-bar">
+        <select id="bookmarks-select" title="常用站台書籤">
+          <option value="" disabled selected>⭐ 常用書籤...</option>
+        </select>
+        <input
+          type="text"
+          id="address-input"
+          value="nckugibbs.duckdns.org"
+          placeholder="BBS 位址 (如 ptt.cc:22)"
+          spellcheck="false"
+          autocomplete="off"
+        />
+        <select id="encoding-select" title="文字編碼 (Encoding)">
+          <option value="big5" selected>Big5</option>
+          <option value="utf-8">UTF-8</option>
+          <option value="gbk">GBK</option>
+        </select>
+        <button id="connect-btn" class="tb-btn-primary">連線</button>
+        <button id="disconnect-btn" class="tb-btn-danger hidden">斷線</button>
+      </div>
+
+      <div id="toolbar-actions">
+        <button id="board-btn" class="tb-btn" title="看板快速跳轉 (Cmd+K)">
+          <span class="tb-icon">⚡</span><span class="tb-label">看板</span>
+        </button>
+        <button id="article-reader-btn" class="tb-btn" title="圖文好讀版 (Cmd+D)">
+          <span class="tb-icon">📖</span><span class="tb-label">好讀版</span>
+        </button>
+        <button id="palette-btn" class="tb-btn" title="ANSI 調色盤 (Cmd+P)">
+          <span class="tb-icon">🎨</span><span class="tb-label">調色盤</span>
+        </button>
+        <button id="export-btn" class="tb-btn" title="畫面截圖與匯出 (Cmd+Shift+S)">
+          <span class="tb-icon">📷</span><span class="tb-label">截圖</span>
+        </button>
+        <button id="add-bookmark-btn" class="tb-btn" title="將目前位址加入書籤">
+          <span class="tb-icon">⭐</span><span class="tb-label">存書籤</span>
+        </button>
+        <button id="settings-btn" class="tb-btn" title="設定中心">
+          <span class="tb-icon">⚙️</span><span class="tb-label">設定</span>
+        </button>
+
+        <div id="status-indicator">
+          <span id="status-dot"></span>
+          <span id="status-text">未連線</span>
+        </div>
+      </div>
+    </div>
+    <div id="terminal-container">
+      <textarea
+        id="ime-input"
+        autocomplete="off"
+        autocorrect="off"
+        autocapitalize="off"
+        spellcheck="false"
+        tabindex="0"
+        aria-label="Terminal Input"
+      ></textarea>
+    </div>
+  </div>
+
+  <!-- Settings Modal (設定中心彈窗) -->
+  <div id="settings-modal" class="modal-backdrop hidden">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h2>⚙️ 設定中心 (Settings)</h2>
+        <button id="modal-close-btn" class="close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="settings-tabs">
+          <button class="tab-btn active" data-tab="tab-bookmarks">⭐ 站台書籤管理</button>
+          <button class="tab-btn" data-tab="tab-connection">⏱️ 連線與防閒置</button>
+          <button class="tab-btn" data-tab="tab-keyboard">⌨️ 鍵盤與滑鼠</button>
+          <button class="tab-btn" data-tab="tab-display">🎨 顯示與主題</button>
+          <button class="tab-btn" data-tab="tab-about">ℹ️ 關於與致謝</button>
+        </div>
+        <div class="settings-content">
+          <!-- Tab 1: Bookmarks -->
+          <div id="tab-bookmarks" class="tab-pane active">
+            <div class="bookmark-add-box">
+              <div class="add-box-title">➕ 新增 / 收藏自訂站台與自動登入</div>
+              <div class="add-box-inputs">
+                <input type="text" id="bm-input-name" placeholder="站台名稱 (如: 我的PTT)" />
+                <input type="text" id="bm-input-addr" placeholder="位址 (如: ptt.cc:22 或 nckugibbs.duckdns.org)" />
+                <select id="bm-input-enc">
+                  <option value="big5" selected>Big5</option>
+                  <option value="utf-8">UTF-8</option>
+                  <option value="gbk">GBK</option>
+                </select>
+              </div>
+              <div class="add-box-inputs" style="margin-top: 6px;">
+                <input type="text" id="bm-input-user" placeholder="自動登入帳號 (選填)" />
+                <input type="password" id="bm-input-pass" placeholder="自動登入密碼 (選填)" />
+                <button id="bm-btn-add" class="btn-primary" style="flex-shrink: 0;">加入書籤</button>
+              </div>
+            </div>
+            <div class="bookmark-list-header-row">
+              <div class="bookmark-list-header">已儲存的站台書籤：</div>
+              <button id="btn-reset-default-bookmarks" class="btn-secondary" style="height: 26px; padding: 0 10px; font-size: 11px; cursor: pointer;">🔄 恢復預設書籤</button>
+            </div>
+            <div id="bookmark-list" class="bookmark-list"></div>
+          </div>
+
+          <!-- Tab 2: Connection & Keep-Alive -->
+          <div id="tab-connection" class="tab-pane">
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="setting-anti-idle" />
+                <span>啟用防閒置斷線保活 (Anti-Idle Keep-Alive)</span>
+              </label>
+              <p class="hint">定時發送微小保活訊號，防止長時間發呆被 BBS 踢出或斷線。</p>
+            </div>
+            <div class="form-group">
+              <label for="setting-anti-idle-interval">保活心跳發送間隔：</label>
+              <select id="setting-anti-idle-interval">
+                <option value="30">30 秒 (高頻保活)</option>
+                <option value="60">60 秒 (標準推薦)</option>
+                <option value="120">120 秒 (2 分鐘)</option>
+                <option value="180">180 秒 (3 分鐘)</option>
+              </select>
+            </div>
+            <div class="form-group" style="margin-top: 14px; border-top: 1px solid var(--border-color); padding-top: 14px;">
+              <label class="checkbox-label">
+                <input type="checkbox" id="setting-notify-enabled" checked />
+                <span>啟用水球與站內新信件「系統推播通知」</span>
+              </label>
+              <p class="hint">當收到鄉民水球呼叫（★user）或新信件時，跳出系統推播通知。</p>
+            </div>
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="setting-notify-sound" checked />
+                <span>收到水球與信件時播放提示音效</span>
+              </label>
+              <p class="hint">以優雅的雙音階清脆提示音提醒，背景掛網不怕漏接訊息。</p>
+            </div>
+          </div>
+
+          <!-- Tab 3: Keyboard & Mouse -->
+          <div id="tab-keyboard" class="tab-pane">
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="setting-cmd-ctrl" />
+                <span>將 Mac Command 鍵 (⌘) 當作 Control 鍵 (⌃)</span>
+              </label>
+              <p class="hint">按 ⌘X、⌘Y、⌘C、⌘P 等直接觸發 BBS 指令，符合 Mac 使用者操作直覺。</p>
+            </div>
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="setting-smart-dbcs" />
+                <span>智慧全形中文字雙格刪除 (Smart DBCS Backspace / Delete)</span>
+              </label>
+              <p class="hint">刪除中文字時一次刪除兩格整顆中文字，避免產生半格問號亂碼。</p>
+            </div>
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="setting-wheel-scroll" />
+                <span>滑鼠滾輪瀏覽翻頁 (PageUp / PageDown)</span>
+              </label>
+              <p class="hint">在文章或看版列表滾動滾輪即可輕鬆上下翻頁。</p>
+            </div>
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="setting-auto-copy" />
+                <span>滑鼠框選文字後自動複製至剪貼簿</span>
+              </label>
+              <p class="hint">滑鼠選取完成後自動複製純文字，無需手動按 Cmd+C。</p>
+            </div>
+          </div>
+
+          <!-- Tab 4: Display & Theme -->
+          <div id="tab-display" class="tab-pane">
+            <div class="form-group">
+              <label for="setting-theme">ANSI 色彩主題風格：</label>
+              <select id="setting-theme">
+                <option value="pcman">PCMan 經典標準色</option>
+                <option value="welly">Welly 柔和護眼色</option>
+                <option value="high-contrast">現代高對比度</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="setting-blink-rate">游標閃爍頻率：</label>
+              <select id="setting-blink-rate">
+                <option value="500">正常 (500ms)</option>
+                <option value="300">快速 (300ms)</option>
+                <option value="0">不閃爍 (恆亮)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="setting-image-preview" />
+                <span>啟用圖片連結浮動預覽 (Inline Image Preview)</span>
+              </label>
+              <p class="hint">滑鼠懸停在 Imgur 或圖片網址上方時自動浮現縮圖預覽卡片。</p>
+            </div>
+          </div>
+
+          <!-- Tab 5: About & Acknowledgements (關於與致謝) -->
+          <div id="tab-about" class="tab-pane">
+            <div class="about-hero">
+              <div class="about-logo">💧</div>
+              <div class="about-title">Waterball (水球)</div>
+              <div class="about-ver">版本 v0.1.0 Beta &bull; 開源授權 GPL-3.0</div>
+              <div class="about-desc">新世代跨平台 BBS 終端連線客戶端 (macOS / Windows / Linux / Chromebook)</div>
+              <div class="about-actions">
+                <button id="btn-check-update" class="btn-primary" style="height: 28px; padding: 0 12px; font-size: 12px;">🔍 檢查新版本</button>
+                <a href="https://github.com/cerebellum92/waterball" target="_blank" class="about-link-btn" title="前往 GitHub 專案首頁">🌟 GitHub 開源專案</a>
+                <a href="https://github.com/cerebellum92/waterball/issues" target="_blank" class="about-link-btn" title="回報 Bug 或提供新功能建議">🐛 回報問題 / 建議</a>
+              </div>
+              <div id="update-status-msg" class="update-status-msg hidden"></div>
+            </div>
+
+            <div class="about-section-title">🌟 歷史傳承與特別致謝 (Special Thanks & Lineage)</div>
+            <div class="credits-grid">
+              <div class="credit-card">
+                <div class="credit-name">洪任諭醫師 (Hzysoft) &amp; PCManX-BBS 團隊</div>
+                <div class="credit-text">台灣 BBS 連線軟體的先驅與靈魂。洪醫師創造的 PCMan 與開源 PCManX 團隊（Kanru, Mat, Jim Huang 等）奠定了台灣 BBS 軟體經典操作與雙格 DBCS 刪除標準。</div>
+              </div>
+              <div class="credit-card">
+                <div class="credit-name">robertabcd (Robert Chen) &amp; PttChrome 團隊</div>
+                <div class="credit-text">現代 Web ANSI 終端狀態機與 BBS 封包通訊的卓越架構。PttChrome 精確的 ANSI SGR 狀態機為現代化跨平台終端解析奠定了無可替代的基石。</div>
+              </div>
+              <div class="credit-card">
+                <div class="credit-name">Welly / MacBBS 開發團隊</div>
+                <div class="credit-text">在 Mac 平台上樹立了優雅、美觀與流暢的 BBS 用戶端典範，陪伴無數 Mac 使用者走過多年時光。</div>
+              </div>
+              <div class="credit-card">
+                <div class="credit-name">批踢踢實業坊 (PTT) 站方與全體鄉民社群</div>
+                <div class="credit-text">感謝三十年來為台灣保留最自由、溫暖、熱鬧的文字社群殿堂，以及全體鄉民的熱情互動。</div>
+              </div>
+              <div class="credit-card">
+                <div class="credit-name">Tauri, Rust &amp; 開源技術生態</div>
+                <div class="credit-text">感謝 Tauri 團隊、Rust 語言基金會與現代開源社群提供的高效能、極輕量跨平台底層框架支持。</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="modal-save-btn" class="btn-primary">儲存設定</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
