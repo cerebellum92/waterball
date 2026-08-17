@@ -1,8 +1,9 @@
 // Floating ANSI Color Palette & Symbol Picker (Cmd+P) for bbsterm
 
 export class PaletteWidget {
-  constructor(sendDataCallback) {
+  constructor(sendDataCallback, getActiveTabCallback = null) {
     this.sendData = sendDataCallback;
+    this.getActiveTab = getActiveTabCallback;
     this.isOpen = false;
     this.widgetEl = null;
     this.activeTab = 'color'; // 'color' | 'symbol' | 'kaomoji'
@@ -27,6 +28,11 @@ export class PaletteWidget {
       <div class="palette-body">
         <!-- Tab 1: ANSI Colors -->
         <div id="palette-pane-color" class="palette-pane active">
+          <!-- Prominent Reset / Closing Button -->
+          <button class="palette-main-reset-btn" data-code="m" title="插入 *[m 恢復預設文字顏色與背景">
+            🔄 顏色收尾 / 恢復預設色 (*[m)
+          </button>
+
           <div class="palette-section-title">前景文字顏色 (亮色 / 暗色)</div>
           <div class="palette-color-grid">
             <!-- Bright 8 -->
@@ -62,14 +68,17 @@ export class PaletteWidget {
             <button class="color-chip" style="background: #b1bac4; color: #000;" data-code="47" title="白底 (*[47m)">白底</button>
           </div>
 
-          <div class="palette-section-title" style="margin-top: 10px;">屬性控制與快速工具</div>
+          <div class="palette-section-title" style="margin-top: 10px;">文字特效控制</div>
           <div class="palette-action-grid">
-            <button class="palette-act-btn reset" data-code="m" title="恢復預設顏色 (*[m)">🔄 恢復預設色</button>
             <button class="palette-act-btn" data-code="1" title="高亮/粗體 (*[1m)">𝗕 粗體/高亮</button>
             <button class="palette-act-btn" data-code="5" title="閃爍文字 (*[5m)">✨ 閃爍</button>
             <button class="palette-act-btn" data-code="4" title="底線 (*[4m)"><u>U</u> 底線</button>
             <button class="palette-act-btn" data-code="7" title="反白 (*[7m)">⬛ 反白</button>
             <button class="palette-act-btn" id="palette-btn-ctrl-c" title="插入純 Ctrl+C 控制字元">插入 Ctrl+C</button>
+          </div>
+
+          <div class="palette-hint-box">
+            💡 <b>上色教學</b>：點選顏色 ➔ 輸入文字 ➔ 點上方<b>「顏色收尾 (*[m)」</b>即可切回預設白字！
           </div>
         </div>
 
@@ -148,16 +157,26 @@ export class PaletteWidget {
       this.close();
     });
 
-    // Color chips click (Insert Ctrl+C [code m)
-    widget.querySelectorAll('.color-chip, .palette-act-btn[data-code]').forEach((btn) => {
+    // Color chips & reset button click (Insert Ctrl+C [code m)
+    widget.querySelectorAll('.color-chip, .palette-act-btn[data-code], .palette-main-reset-btn').forEach((btn) => {
       btn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
         const code = btn.dataset.code;
         if (code) {
-          // Send Ctrl+C (0x03) + [ + code + m
-          const ansiSeq = `\x03[${code}m`;
-          this.sendData?.(ansiSeq);
+          const tab = this.getActiveTab?.();
+          const selText = tab?.view?.getSelectionText();
+
+          if (selText && code !== 'm') {
+            // PCMan smart selection wrap: *[code m + selected text + *[m
+            const wrappedSeq = `\x03[${code}m${selText}\x03[m`;
+            this.sendData?.(wrappedSeq);
+            tab.view.clearSelection();
+          } else {
+            // Normal insert: *[code m
+            const ansiSeq = `\x03[${code}m`;
+            this.sendData?.(ansiSeq);
+          }
         }
       });
     });

@@ -429,6 +429,10 @@ body.toolbar-scale-medium .credit-name { font-size: 14px; }
 body.toolbar-scale-medium .credit-text { font-size: 12.5px; }
 body.toolbar-scale-medium .about-title { font-size: 20px; }
 body.toolbar-scale-medium .about-desc { font-size: 13px; }
+body.toolbar-scale-medium .export-dialog { width: 720px; }
+body.toolbar-scale-medium .export-header h2 { font-size: 17.5px; }
+body.toolbar-scale-medium .export-group-title { font-size: 14px; }
+body.toolbar-scale-medium .export-btn-row button { height: 42px; font-size: 14px; font-weight: 600; }
 
 /* 3. 舒適大字 (Large - 130%) */
 body.toolbar-scale-large #toolbar { height: 56px; }
@@ -454,6 +458,10 @@ body.toolbar-scale-large .credit-name { font-size: 15.5px; }
 body.toolbar-scale-large .credit-text { font-size: 13.5px; }
 body.toolbar-scale-large .about-title { font-size: 22px; }
 body.toolbar-scale-large .about-desc { font-size: 14px; }
+body.toolbar-scale-large .export-dialog { width: 780px; }
+body.toolbar-scale-large .export-header h2 { font-size: 19.5px; }
+body.toolbar-scale-large .export-group-title { font-size: 15.5px; }
+body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5px; font-weight: 600; }
 
 .hidden {
   display: none !important;
@@ -1712,22 +1720,52 @@ body.toolbar-scale-large .about-desc { font-size: 14px; }
   transition: all 0.15s;
 }
 
+.palette-main-reset-btn {
+  width: 100%;
+  height: 36px;
+  margin-bottom: 12px;
+  background: linear-gradient(135deg, rgba(63, 185, 80, 0.22), rgba(63, 185, 80, 0.1));
+  border: 1px solid rgba(63, 185, 80, 0.5);
+  border-radius: 6px;
+  color: #56d364;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+.palette-main-reset-btn:hover {
+  background: linear-gradient(135deg, rgba(63, 185, 80, 0.35), rgba(63, 185, 80, 0.2));
+  border-color: #56d364;
+  color: #fff;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(63, 185, 80, 0.3);
+}
+
+.palette-hint-box {
+  margin-top: 12px;
+  padding: 8px 10px;
+  background: rgba(88, 166, 255, 0.08);
+  border: 1px solid rgba(88, 166, 255, 0.2);
+  border-radius: 6px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.palette-hint-box b {
+  color: var(--accent);
+}
+
 .palette-act-btn:hover {
   background: var(--bg-toolbar);
   border-color: var(--accent);
   color: var(--accent);
-}
-
-.palette-act-btn.reset {
-  grid-column: span 3;
-  background: rgba(63, 185, 80, 0.15);
-  border-color: rgba(63, 185, 80, 0.4);
-  color: var(--green);
-  font-weight: 600;
-}
-
-.palette-act-btn.reset:hover {
-  background: rgba(63, 185, 80, 0.25);
 }
 
 .symbol-grid {
@@ -1907,15 +1945,45 @@ body.toolbar-scale-large .about-desc { font-size: 14px; }
 }
 
 .export-group-title {
-  font-size: 12px;
+  font-size: 13.5px;
   font-weight: 600;
-  color: var(--text-secondary);
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .export-btn-row {
   display: flex;
   gap: 10px;
   width: 100%;
+}
+
+.export-btn-row button {
+  height: 40px;
+  font-size: 13.5px;
+  font-weight: 600;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  padding: 0 14px;
+}
+
+.btn-secondary {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+.btn-secondary:hover {
+  background: var(--bg-toolbar);
+  border-color: var(--accent);
+  color: var(--accent);
+  transform: translateY(-1px);
 }
 
 .flex-1 {

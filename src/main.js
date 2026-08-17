@@ -35,7 +35,7 @@ const imeInput = document.getElementById('ime-input');
 
 // Palette, Search & Board Switcher Widgets Setup
 const searchWidget = new SearchWidget(() => tabManager.getActiveTab());
-const paletteWidget = new PaletteWidget((data) => sendData(data));
+const paletteWidget = new PaletteWidget((data) => sendData(data), () => tabManager.getActiveTab());
 const boardSwitcherWidget = new BoardSwitcherWidget((data) => sendData(data));
 const settingsModal = document.getElementById('settings-modal');
 const modalCloseBtn = document.getElementById('modal-close-btn');
@@ -429,6 +429,29 @@ if (addBookmarkBtn) {
       else statusText.textContent = '未連線';
     }, 2000);
   });
+}
+
+// Global Floating Toast Helper
+let globalToastTimeout = null;
+function showGlobalToast(message, duration = 2200) {
+  let toast = document.getElementById('waterball-global-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'waterball-global-toast';
+    toast.className = 'export-toast success';
+    toast.style.position = 'fixed';
+    toast.style.bottom = '28px';
+    toast.style.left = '50%';
+    toast.style.transform = 'translateX(-50%)';
+    toast.style.zIndex = '99999';
+    document.body.appendChild(toast);
+  }
+  toast.textContent = message;
+  toast.classList.remove('hidden');
+  if (globalToastTimeout) clearTimeout(globalToastTimeout);
+  globalToastTimeout = setTimeout(() => {
+    toast.classList.add('hidden');
+  }, duration);
 }
 
 // Settings Modal
@@ -917,12 +940,15 @@ window.addEventListener('keydown', (e) => {
   const view = activeTab.view;
   const buf = activeTab.buf;
 
-  // 1. Copy Shortcut: Cmd+C / Ctrl+C when text is selected on screen
+  // 1. Copy Shortcut: Cmd+C (Plain text) / Cmd+Shift+C (With ANSI Colors)
   if (isCtrl && e.code === 'KeyC' && view && view.selection) {
     e.preventDefault();
-    const text = e.shiftKey ? view.getSelectionAnsi() : view.getSelectionText();
+    const isAnsi = !!e.shiftKey;
+    const text = isAnsi ? view.getSelectionAnsi() : view.getSelectionText();
     if (text) {
-      navigator.clipboard.writeText(text).catch((err) => {
+      navigator.clipboard.writeText(text).then(() => {
+        showGlobalToast(isAnsi ? '🎨 已複製含色彩 ANSI 代碼至剪貼簿！' : '📋 已複製純文字至剪貼簿！');
+      }).catch((err) => {
         console.error('Clipboard copy error:', err);
       });
     }
