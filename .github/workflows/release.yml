@@ -82,7 +82,29 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         with:
           name: Waterball ${{ github.ref_name }}
-          body: '💧 Waterball (水球) 新世代跨平台 BBS 連線軟體正式發布！'
+          body: |
+            💧 **Waterball (水球) 新世代跨平台 BBS 連線軟體正式發布！**
+
+            ---
+
+            ### 📦 各作業系統下載與安裝說明：
+
+            #### 🍏 macOS (`.dmg`)
+            1. 下載 `Waterball_0.1.0_macOS.dmg`，掛載後將 `Waterball.app` 拖移至「應用程式」。
+            2. **首次開啟小提示**：本專案為社群開源軟體，未購買 Apple 商業憑證。首次開啟若出現安全性提示：
+               - 在 App 上 **按住 `Control` 鍵（或右鍵）點選「打開」**，再點一次「打開」即可。
+               - 或前往 Mac **「系統設定 ➔ 隱私權與安全性」** 點選 **「仍要打開」** 即可。
+
+            #### 🐧 Linux (`.deb` / `.AppImage`)
+            - **Ubuntu / Debian**：下載 `Waterball_0.1.0_amd64.deb`，執行 `sudo dpkg -i Waterball_0.1.0_amd64.deb` 安裝。
+            - **其他 Linux**：下載 `Waterball_0.1.0_amd64.AppImage`，賦予執行權限後即可免安裝直接點開！
+
+            #### 🪟 Windows (`.zip` 綠色版 / `.msi`)
+            - **推薦免安裝版**：下載 `Waterball_windows_x64_portable.zip`，解壓縮後點擊 `Waterball.exe` 即用。
+            - **標準安裝版**：下載 `Waterball_0.1.0_x64.msi` 進行安裝。
+
+            ---
+            詳細功能特色與說明請見 [GitHub 專案首頁](https://github.com/${{ github.repository }})。
           draft: false
           prerelease: false
           fail_on_unmatched_files: false
