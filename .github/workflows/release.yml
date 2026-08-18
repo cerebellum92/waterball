@@ -54,6 +54,21 @@ jobs:
       - name: Build Tauri Application
         run: npx tauri build
 
+      - name: Fix macOS Ad-hoc Codesign & Repackage DMG
+        if: matrix.platform == 'macos-latest'
+        run: |
+          APP_PATH="src-tauri/target/release/bundle/macos/Waterball.app"
+          if [ -d "$APP_PATH" ]; then
+            echo "Re-signing $APP_PATH with clean Ad-hoc signature..."
+            codesign --force --deep --sign - "$APP_PATH"
+            mkdir -p dist_macos_dmg
+            cp -R "$APP_PATH" dist_macos_dmg/
+            rm -rf src-tauri/target/release/bundle/dmg
+            mkdir -p src-tauri/target/release/bundle/dmg
+            hdiutil create -volname "Waterball" -srcfolder dist_macos_dmg -ov -format UDZO src-tauri/target/release/bundle/dmg/Waterball_0.1.0_macOS.dmg
+            rm -rf dist_macos_dmg
+          fi
+
       - name: Package Windows Portable Zip
         if: matrix.platform == 'windows-latest'
         shell: bash
