@@ -353,7 +353,7 @@ export class TermView {
       const cellHeight = y2 - y1;
       const centerY = y1 + Math.round(cellHeight * 0.52);
 
-      // 1. Draw continuous background spans (100% eliminates fractional DPI grid lines and vertical seams on Windows)
+      // 1. Draw continuous background spans (100% eliminates fractional DPI grid lines and vertical/horizontal seams on Windows)
       let bgStartCol = 0;
       let curBg = line[0].getBg();
 
@@ -364,7 +364,7 @@ export class TermView {
             const x1 = Math.round(bgStartCol * cellW);
             const x2 = Math.round(c * cellW);
             ctx.fillStyle = TERM_COLORS[curBg];
-            ctx.fillRect(x1, y1, x2 - x1, cellHeight);
+            ctx.fillRect(x1, y1, x2 - x1, cellHeight + 0.6);
           }
           bgStartCol = c;
           curBg = bg;
@@ -389,45 +389,45 @@ export class TermView {
 
             // Direct pixel-perfect solid block drawing for BBS ANSI art (zero seams)
             if (cell.ch === '█') {
-              ctx.fillRect(x1, y1, cellWidth + 0.5, cellHeight);
+              ctx.fillRect(x1, y1, cellWidth + 0.5, cellHeight + 0.6);
             } else if (cell.ch === '▀') {
               const halfH = Math.round(cellHeight / 2);
-              ctx.fillRect(x1, y1, cellWidth + 0.5, halfH);
+              ctx.fillRect(x1, y1, cellWidth + 0.5, halfH + 0.3);
             } else if (cell.ch === '▄') {
               const halfH = Math.round(cellHeight / 2);
-              ctx.fillRect(x1, y1 + halfH, cellWidth + 0.5, cellHeight - halfH);
+              ctx.fillRect(x1, y1 + halfH, cellWidth + 0.5, cellHeight - halfH + 0.6);
             } else if (cell.ch === '▌') {
               const halfW = Math.round(cellWidth / 2);
-              ctx.fillRect(x1, y1, halfW, cellHeight);
+              ctx.fillRect(x1, y1, halfW, cellHeight + 0.6);
             } else if (cell.ch === '▐') {
               const halfW = Math.round(cellWidth / 2);
-              ctx.fillRect(x1 + halfW, y1, cellWidth - halfW + 0.5, cellHeight);
+              ctx.fillRect(x1 + halfW, y1, cellWidth - halfW + 0.5, cellHeight + 0.6);
             } else if (cell.ch === '◢') {
               ctx.beginPath();
               ctx.moveTo(x2, y1);
-              ctx.lineTo(x2, y2);
-              ctx.lineTo(x1, y2);
+              ctx.lineTo(x2, y2 + 0.6);
+              ctx.lineTo(x1, y2 + 0.6);
               ctx.closePath();
               ctx.fill();
             } else if (cell.ch === '◣') {
               ctx.beginPath();
               ctx.moveTo(x1, y1);
-              ctx.lineTo(x2, y2);
-              ctx.lineTo(x1, y2);
+              ctx.lineTo(x2, y2 + 0.6);
+              ctx.lineTo(x1, y2 + 0.6);
               ctx.closePath();
               ctx.fill();
             } else if (cell.ch === '◥') {
               ctx.beginPath();
               ctx.moveTo(x1, y1);
               ctx.lineTo(x2, y1);
-              ctx.lineTo(x2, y2);
+              ctx.lineTo(x2, y2 + 0.6);
               ctx.closePath();
               ctx.fill();
             } else if (cell.ch === '◤') {
               ctx.beginPath();
               ctx.moveTo(x1, y1);
               ctx.lineTo(x2, y1);
-              ctx.lineTo(x1, y2);
+              ctx.lineTo(x1, y2 + 0.6);
               ctx.closePath();
               ctx.fill();
             } else if (cell.isLeadByte) {
