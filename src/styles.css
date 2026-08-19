@@ -167,19 +167,28 @@ button, input, select, textarea {
   background: transparent;
   border: 1px solid transparent;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: 15px;
   font-weight: bold;
-  padding: 4px 8px;
+  padding: 0;
+  width: 26px;
+  height: 26px;
   border-radius: 4px;
   cursor: pointer;
   -webkit-app-region: no-drag;
-  transition: all 0.15s;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-left: 2px;
+  line-height: 1;
 }
 
 .bbs-tab-new:hover {
   background: var(--bg-secondary);
   border-color: var(--border-color);
   color: var(--accent);
+  transform: scale(1.08);
 }
 
 /* Toolbar */

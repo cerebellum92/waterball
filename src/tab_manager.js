@@ -244,7 +244,7 @@ export class TabManager {
       tabList.appendChild(tabEl);
     });
 
-    // New Tab button [+]
+    // New Tab button [+] appended inside tabList directly behind the last active tab
     const newTabBtn = document.createElement('button');
     newTabBtn.className = 'bbs-tab-new';
     newTabBtn.innerHTML = '＋';
@@ -257,8 +257,8 @@ export class TabManager {
       });
       this.switchTab(newTab.id);
     };
+    tabList.appendChild(newTabBtn);
 
     this.tabBarEl.appendChild(tabList);
-    this.tabBarEl.appendChild(newTabBtn);
   }
 }
