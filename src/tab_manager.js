@@ -73,6 +73,7 @@ export class TabManager {
     tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ ⌘ + K ]\x1b[0m  看板快速跳轉 (中英文板名即時直達)                         \x1b[1;36m║\r\n\x1b[0m');
     tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ ⌘ + D ]\x1b[0m  圖文好讀版 (無損長文採集、大圖展開)                       \x1b[1;36m║\r\n\x1b[0m');
     tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ ⌘ + P ]\x1b[0m  ANSI 調色盤 (16色雙色發文、符號顏文字)                    \x1b[1;36m║\r\n\x1b[0m');
+    tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ ⌘+Shift+X ]\x1b[0m 智慧長推文 (自動分段排版、防冷卻定時發送)              \x1b[1;36m║\r\n\x1b[0m');
     tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ ⌘+Shift+S ]\x1b[0m 畫面截圖匯出 (2x Retina PNG 與 ANSI 代碼)              \x1b[1;36m║\r\n\x1b[0m');
     tab.parser.feed('\x1b[1;36m║\x1b[0m                                                                          \x1b[1;36m║\r\n\x1b[0m');
     tab.parser.feed('\x1b[1;36m║\x1b[0m  \x1b[1;32m★ 連線方式：\x1b[0m                                                           \x1b[1;36m║\r\n\x1b[0m');

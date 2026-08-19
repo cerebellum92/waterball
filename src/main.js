@@ -9,6 +9,7 @@ import { notificationManager } from './notifications.js';
 import { exportModal } from './exporter.js';
 import { BoardSwitcherWidget } from './board_switcher.js';
 import { UpdateChecker } from './updater.js';
+import { PushHelper } from './push_helper.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -26,6 +27,7 @@ const boardBtn = document.getElementById('board-btn');
 const exportBtn = document.getElementById('export-btn');
 const paletteBtn = document.getElementById('palette-btn');
 const articleReaderBtn = document.getElementById('article-reader-btn');
+const pushHelperBtn = document.getElementById('push-helper-btn');
 const addBookmarkBtn = document.getElementById('add-bookmark-btn');
 const settingsBtn = document.getElementById('settings-btn');
 const statusDot = document.getElementById('status-dot');
@@ -33,11 +35,13 @@ const statusText = document.getElementById('status-text');
 const terminalContainer = document.getElementById('terminal-container');
 const imeInput = document.getElementById('ime-input');
 
-// Palette, Search & Board Switcher Widgets Setup
+// Palette, Search, Board Switcher & Push Helper Setup
 const searchWidget = new SearchWidget(() => tabManager.getActiveTab());
 const paletteWidget = new PaletteWidget((data) => sendData(data), () => tabManager.getActiveTab());
 const boardSwitcherWidget = new BoardSwitcherWidget((data) => sendData(data));
+const pushHelper = new PushHelper((data) => sendData(data), () => tabManager.getActiveTab());
 const settingsModal = document.getElementById('settings-modal');
+const pushModal = document.getElementById('push-modal');
 const modalCloseBtn = document.getElementById('modal-close-btn');
 const modalSaveBtn = document.getElementById('modal-save-btn');
 const bookmarkList = document.getElementById('bookmark-list');
@@ -189,8 +193,10 @@ window.addEventListener('click', (e) => {
   if (paletteWidget && paletteWidget.isOpen) return;
   if (exportModal && exportModal.isOpen) return;
   if (boardSwitcherWidget && boardSwitcherWidget.isOpen) return;
+  if (pushHelper && pushHelper.isOpen) return;
   if (
     e.target.closest('#settings-modal') ||
+    e.target.closest('#push-modal') ||
     e.target.closest('#article-reader-modal') ||
     e.target.closest('#reader-lightbox') ||
     e.target.closest('#search-bar-widget') ||
@@ -260,7 +266,23 @@ if (imeInput) {
 
 // Global paste handler for terminal
 window.addEventListener('paste', (e) => {
-  if (document.activeElement === addressInput || document.activeElement === bmInputName || document.activeElement === bmInputAddr) return;
+  const activeEl = document.activeElement;
+  const activeTag = activeEl?.tagName;
+  if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeEl?.isContentEditable) {
+    if (activeEl !== imeInput) {
+      return; // Let browser paste natively into the focused input or textarea
+    }
+  }
+  if (
+    e.target.closest('#push-modal') ||
+    e.target.closest('#settings-modal') ||
+    e.target.closest('#search-bar-widget') ||
+    e.target.closest('#export-modal') ||
+    e.target.closest('#board-switcher-widget') ||
+    e.target.closest('#article-reader-modal')
+  ) {
+    return;
+  }
   e.preventDefault();
   const text = (e.clipboardData || window.clipboardData)?.getData('text');
   if (text) {
@@ -483,6 +505,11 @@ function openSettingsModal() {
   loadSettingsToUI();
   renderBookmarkList();
   settingsModal.classList.remove('hidden');
+  // Clear the update badge dot when settings are opened
+  const badgeDot = settingsBtn?.querySelector('.tb-btn-badge-dot');
+  if (badgeDot) {
+    badgeDot.remove();
+  }
 }
 
 function closeSettingsModal() {
@@ -816,6 +843,12 @@ if (articleReaderBtn) {
   });
 }
 
+if (pushHelperBtn) {
+  pushHelperBtn.addEventListener('click', () => {
+    pushHelper.open();
+  });
+}
+
 if (settingsModal) {
   settingsModal.addEventListener('click', (e) => {
     if (e.target === settingsModal) {
@@ -883,6 +916,25 @@ window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       closeSettingsModal();
     }
+    return;
+  }
+
+  // If in Push Helper Modal
+  if (pushHelper && pushHelper.isOpen) {
+    if (e.key === 'Escape') {
+      if (pushHelper.isPushing) {
+        pushHelper.abort();
+      } else {
+        pushHelper.close();
+      }
+    }
+    return;
+  }
+
+  // Smart Multi-Push Assistant (Cmd+Shift+X / Ctrl+Shift+X / Alt+X)
+  if (((e.metaKey || e.ctrlKey) && e.shiftKey && (e.code === 'KeyX' || e.key === 'X')) || (e.altKey && (e.code === 'KeyX' || e.key === 'x'))) {
+    e.preventDefault();
+    pushHelper.open();
     return;
   }
 
@@ -1171,3 +1223,26 @@ listen('connection-status', (event) => {
     console.error('Status event error:', err);
   }
 });
+
+// Background Update Check on Startup (silently check after 2 seconds)
+setTimeout(async () => {
+  try {
+    const res = await updateChecker.checkUpdate();
+    if (res.hasUpdate) {
+      // 1. Show red badge on settings-btn in toolbar
+      if (settingsBtn && !settingsBtn.querySelector('.tb-btn-badge-dot')) {
+        const badge = document.createElement('span');
+        badge.className = 'tb-btn-badge-dot';
+        settingsBtn.appendChild(badge);
+      }
+      // 2. Pre-fill update status message in Settings screen
+      if (updateStatusMsg) {
+        updateStatusMsg.className = 'update-status-msg has-new';
+        updateStatusMsg.innerHTML = `🎉 發現新版本 <strong>${res.latestVersion}</strong>！<br><a href="${res.releaseUrl}" target="_blank" style="color:inherit;text-decoration:underline;margin-top:4px;display:inline-block;">👉 前往 GitHub 下載安裝包 (${res.publishedAt})</a>`;
+        updateStatusMsg.classList.remove('hidden');
+      }
+    }
+  } catch (err) {
+    console.warn('[Updater] Background check failed:', err);
+  }
+}, 2000);

@@ -39,6 +39,9 @@
         <button id="article-reader-btn" class="tb-btn" title="圖文好讀版 (Cmd+D)">
           <span class="tb-icon">📖</span><span class="tb-label">好讀版</span>
         </button>
+        <button id="push-helper-btn" class="tb-btn" title="長推文自動分段發送 (Cmd+Shift+X / Alt+X)">
+          <span class="tb-icon">💬</span><span class="tb-label">推文</span>
+        </button>
         <button id="palette-btn" class="tb-btn" title="ANSI 調色盤 (Cmd+P)">
           <span class="tb-icon">🎨</span><span class="tb-label">調色盤</span>
         </button>
@@ -285,7 +288,13 @@
               <div class="about-logo">💧</div>
               <div class="about-title">Waterball (水球)</div>
               <div class="about-ver">版本 v0.1.0 Beta &bull; 開源授權 GPL-3.0</div>
-              <div class="about-desc">新世代跨平台 BBS 終端連線客戶端 (macOS / Windows / Linux / Chromebook)</div>
+              <div class="about-desc">
+                新世代跨平台 BBS 終端連線客戶端 (macOS / Windows / Linux / Chromebook)
+                <br>
+                <span style="color: var(--accent); font-weight: 600; margin-top: 4px; display: inline-block;">
+                  ✨ 搭載全新「💬 智慧長推文自動分段發送小幫手」，支援 PTT/黃金之島協定、帳號ID字數安全精算、標點優先/極致塞滿雙策略與逐行/自動推文發送！
+                </span>
+              </div>
               <div class="about-actions">
                 <button id="btn-check-update" class="btn-primary" style="height: 28px; padding: 0 12px; font-size: 12px;">🔍 檢查新版本</button>
                 <a href="https://github.com/cerebellum92/waterball" target="_blank" class="about-link-btn" title="前往 GitHub 專案首頁">🌟 GitHub 開源專案</a>
@@ -322,6 +331,83 @@
       </div>
       <div class="modal-footer">
         <button id="modal-save-btn" class="btn-primary">儲存設定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Smart Multi-Push Assistant Modal (長推文智慧自動分段小幫手) -->
+  <div id="push-modal" class="modal-backdrop hidden">
+    <div class="modal-dialog push-dialog">
+      <div class="modal-header">
+        <h2>💬 智慧長推文自動分段發送</h2>
+        <button id="push-modal-close" class="close-btn">&times;</button>
+      </div>
+      <div class="modal-body push-modal-body">
+        <div class="push-input-group">
+          <label for="push-input-text">請輸入推文內容（長文將自動智慧斷行分段）：</label>
+          <textarea id="push-input-text" placeholder="在此貼上或輸入想說的話，長篇大論也能自動幫您分段排版推文..." rows="4"></textarea>
+        </div>
+
+        <div class="push-config-row">
+          <div class="push-config-item">
+            <label for="push-input-id">您的帳號 ID (精算填滿)：</label>
+            <input type="text" id="push-input-id" placeholder="如 cerebellum (選填)" style="height: 34px; padding: 0 8px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius); color: var(--text-primary); font-size: 12.5px; outline: none;" />
+          </div>
+
+          <div class="push-config-item">
+            <label for="push-type-select">推文類型：</label>
+            <select id="push-type-select">
+              <option value="1" selected>1. 推 👍</option>
+              <option value="2">2. 噓 👎</option>
+            </select>
+          </div>
+
+          <div class="push-config-item">
+            <label for="push-strategy-select">分段排版策略：</label>
+            <select id="push-strategy-select">
+              <option value="fill" selected>⚡ 極致塞滿 (推薦 / 最省行數)</option>
+              <option value="punct">📖 標點優先 (語意斷句)</option>
+            </select>
+          </div>
+
+          <div class="push-config-item">
+            <label for="push-delay-select">發送間隔冷卻：</label>
+            <select id="push-delay-select">
+              <option value="800">0.8 秒 (快衝 / 無限制板)</option>
+              <option value="2000" selected>2.0 秒 (一般看板推薦)</option>
+              <option value="5000">5.0 秒 (熱門大板 / 5s冷卻)</option>
+              <option value="10000">10.0 秒 (嚴格防洗板 / 10s冷卻)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Real-time Live Split Preview -->
+        <div class="push-preview-section">
+          <div class="push-preview-header">
+            <span>📋 智慧分段即時預覽</span>
+            <span id="push-preview-stats" class="push-preview-stats">共 0 段 (0 字)</span>
+          </div>
+          <div id="push-preview-list" class="push-preview-list">
+            <div class="push-preview-empty">請在上方輸入文字，系統將自動為您分段預覽...</div>
+          </div>
+        </div>
+
+        <!-- Pushing Progress Bar -->
+        <div id="push-progress-box" class="push-progress-box hidden">
+          <div class="push-progress-info">
+            <span id="push-progress-label">正在發送第 1 / 3 段...</span>
+            <span id="push-progress-countdown">倒數 2.0s</span>
+          </div>
+          <div class="push-progress-bar-bg">
+            <div id="push-progress-bar-fill" class="push-progress-bar-fill"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer push-modal-footer">
+        <button id="push-btn-cancel" class="btn-secondary">取消</button>
+        <button id="push-btn-send" class="btn-primary">🚀 開始自動推文</button>
+        <button id="push-btn-abort" class="btn-danger hidden">⏹️ 中途停止</button>
       </div>
     </div>
   </div>
