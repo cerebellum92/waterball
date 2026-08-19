@@ -155,12 +155,18 @@ impl BbsConnection {
         cmd.arg("ServerAliveInterval=30");
         cmd.arg("-o");
         cmd.arg("ServerAliveCountMax=3");
+        cmd.arg("-o");
+        cmd.arg("SendEnv=");
         if port != 22 {
             cmd.arg("-p");
             cmd.arg(port.to_string());
         }
         cmd.arg(&target);
         cmd.env("TERM", "vt100");
+        cmd.env("LC_ALL", "C");
+        cmd.env("LANG", "C");
+        cmd.env("LC_CTYPE", "C");
+        cmd.env("LC_MESSAGES", "C");
 
         let child = pair.slave.spawn_command(cmd)
             .map_err(|e| format!("Failed to spawn ssh: {}", e))?;
@@ -353,6 +359,7 @@ impl BbsConnection {
     /// - High bytes (0x80..=0xFF) at the very end of raw stream are held in `pending_bytes` for the next chunk
     /// - Partial Big5 lead bytes right before ESC are turned to a single space, preserving exact 80-column alignment
     /// - Valid Big5 pairs are decoded into UTF-8 Chinese/special characters
+    /// - Smart Passthrough: If stream already contains valid UTF-8 sequences (from Windows ConPTY or UTF-8 mode), passes them directly without corrupting!
     fn decode_ansi_big5(raw: &[u8], pending_bytes: &mut Vec<u8>) -> String {
         let mut out = String::with_capacity(raw.len());
         let mut i = 0;
@@ -363,6 +370,29 @@ impl BbsConnection {
                 i += 1;
                 continue;
             }
+
+            // Check if this is already a valid UTF-8 multi-byte sequence (3-byte CJK or 2-byte symbol)
+            if b >= 0xE0 && b <= 0xEF && i + 2 < raw.len() {
+                let b2 = raw[i + 1];
+                let b3 = raw[i + 2];
+                if (0x80..=0xBF).contains(&b2) && (0x80..=0xBF).contains(&b3) {
+                    if let Ok(utf8_str) = std::str::from_utf8(&raw[i..i + 3]) {
+                        out.push_str(utf8_str);
+                        i += 3;
+                        continue;
+                    }
+                }
+            } else if b >= 0xC2 && b <= 0xDF && i + 1 < raw.len() {
+                let b2 = raw[i + 1];
+                if (0x80..=0xBF).contains(&b2) {
+                    if let Ok(utf8_str) = std::str::from_utf8(&raw[i..i + 2]) {
+                        out.push_str(utf8_str);
+                        i += 2;
+                        continue;
+                    }
+                }
+            }
+
             if i + 1 < raw.len() {
                 if raw[i + 1] == 0x1B {
                     // Standalone lead byte right before ESC => emit single space to maintain 1-cell width
@@ -388,7 +418,7 @@ impl BbsConnection {
         out
     }
 
-    /// GBK byte-level decoder with ANSI lead byte handling
+    /// GBK byte-level decoder with ANSI lead byte handling and UTF-8 passthrough
     fn decode_ansi_gbk(raw: &[u8], pending_bytes: &mut Vec<u8>) -> String {
         let mut out = String::with_capacity(raw.len());
         let mut i = 0;
@@ -399,6 +429,29 @@ impl BbsConnection {
                 i += 1;
                 continue;
             }
+
+            // Check if this is already a valid UTF-8 multi-byte sequence
+            if b >= 0xE0 && b <= 0xEF && i + 2 < raw.len() {
+                let b2 = raw[i + 1];
+                let b3 = raw[i + 2];
+                if (0x80..=0xBF).contains(&b2) && (0x80..=0xBF).contains(&b3) {
+                    if let Ok(utf8_str) = std::str::from_utf8(&raw[i..i + 3]) {
+                        out.push_str(utf8_str);
+                        i += 3;
+                        continue;
+                    }
+                }
+            } else if b >= 0xC2 && b <= 0xDF && i + 1 < raw.len() {
+                let b2 = raw[i + 1];
+                if (0x80..=0xBF).contains(&b2) {
+                    if let Ok(utf8_str) = std::str::from_utf8(&raw[i..i + 2]) {
+                        out.push_str(utf8_str);
+                        i += 2;
+                        continue;
+                    }
+                }
+            }
+
             if i + 1 < raw.len() {
                 if raw[i + 1] == 0x1B {
                     out.push(' ');
