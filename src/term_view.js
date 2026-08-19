@@ -216,71 +216,71 @@ export class TermView {
 
   getFontFamilyString() {
     if (this.fontFamily === 'custom' && this.customFont && this.customFont.trim()) {
-      return `"${this.customFont.trim()}", "Noto Sans Mono CJK TC", "PingFang TC", "Microsoft JhengHei", "MingLiU", monospace`;
+      return `"${this.customFont.trim()}", "Noto Sans Mono CJK TC", "PingFang TC", "Microsoft JhengHei", "Microsoft YaHei", "SimSun", "MingLiU", sans-serif, monospace`;
     }
     switch (this.fontFamily) {
       // Windows
       case 'mingliu':
-        return '"MingLiU", "PMingLiU", "Songti TC", "LiSong Pro", "AR PL UMing TW", serif, monospace';
+        return '"MingLiU", "PMingLiU", "Songti TC", "LiSong Pro", "SimSun", "AR PL UMing TW", "Microsoft YaHei", serif, monospace';
       case 'jhenghei':
-        return '"Microsoft JhengHei", "PingFang TC", "Noto Sans Mono CJK TC", sans-serif, monospace';
+        return '"Microsoft JhengHei", "Microsoft YaHei", "PingFang TC", "Noto Sans Mono CJK TC", "SimSun", sans-serif, monospace';
       case 'yahei':
-        return '"Microsoft YaHei", "PingFang SC", "Noto Sans Mono CJK SC", sans-serif, monospace';
+        return '"Microsoft YaHei", "PingFang SC", "Microsoft JhengHei", "Noto Sans Mono CJK SC", "SimSun", sans-serif, monospace';
       case 'kai':
-        return '"DFKai-SB", "BiauKai", "Kaiti TC", "KaiTi", cursive, serif, monospace';
+        return '"DFKai-SB", "BiauKai", "Kaiti TC", "KaiTi", "Microsoft YaHei", cursive, serif, monospace';
       case 'cascadia-code':
       case 'cascadia':
-        return '"Cascadia Code", "Cascadia Mono", "Microsoft JhengHei", "PingFang TC", monospace';
+        return '"Cascadia Code", "Cascadia Mono", "Microsoft JhengHei", "Microsoft YaHei", "PingFang TC", "SimSun", monospace';
       case 'cascadia-mono':
-        return '"Cascadia Mono", "Cascadia Code", "Microsoft JhengHei", "PingFang TC", monospace';
+        return '"Cascadia Mono", "Cascadia Code", "Microsoft JhengHei", "Microsoft YaHei", "PingFang TC", "SimSun", monospace';
       case 'consolas':
-        return '"Consolas", "Microsoft JhengHei", "PingFang TC", monospace';
+        return '"Consolas", "Microsoft JhengHei", "Microsoft YaHei", "PingFang TC", "SimSun", monospace';
       case 'lucida':
-        return '"Lucida Console", "Lucida Sans Typewriter", "MingLiU", monospace';
+        return '"Lucida Console", "Lucida Sans Typewriter", "Microsoft JhengHei", "Microsoft YaHei", "MingLiU", monospace';
 
       // macOS
       case 'pingfang':
-        return '"PingFang TC", "Hiragino Sans GB", "Microsoft JhengHei", "Noto Sans Mono CJK TC", sans-serif, monospace';
+        return '"PingFang TC", "Hiragino Sans GB", "Microsoft JhengHei", "Microsoft YaHei", "Noto Sans Mono CJK TC", sans-serif, monospace';
       case 'songti':
-        return '"Songti TC", "LiSong Pro", "MingLiU", "PMingLiU", serif, monospace';
+        return '"Songti TC", "LiSong Pro", "MingLiU", "PMingLiU", "SimSun", serif, monospace';
       case 'sfmono':
-        return '"SF Mono", "PingFang TC", "Microsoft JhengHei", monospace';
+        return '"SF Mono", "PingFang TC", "Microsoft JhengHei", "Microsoft YaHei", monospace';
       case 'menlo':
-        return '"Menlo", "PingFang TC", "Microsoft JhengHei", monospace';
+        return '"Menlo", "PingFang TC", "Microsoft JhengHei", "Microsoft YaHei", monospace';
       case 'monaco':
-        return '"Monaco", "Menlo", "PingFang TC", monospace';
+        return '"Monaco", "Menlo", "PingFang TC", "Microsoft YaHei", monospace';
 
       // Linux
       case 'noto-sans':
-        return '"Noto Sans Mono CJK TC", "Noto Sans CJK TC", "PingFang TC", "Microsoft JhengHei", sans-serif, monospace';
+        return '"Noto Sans Mono CJK TC", "Noto Sans CJK TC", "PingFang TC", "Microsoft JhengHei", "Microsoft YaHei", sans-serif, monospace';
       case 'noto-serif':
-        return '"Noto Serif CJK TC", "Songti TC", "MingLiU", serif, monospace';
+        return '"Noto Serif CJK TC", "Songti TC", "MingLiU", "SimSun", serif, monospace';
       case 'wenquanyi':
-        return '"WenQuanYi Micro Hei Mono", "WenQuanYi Zen Hei Mono", "Noto Sans Mono CJK TC", monospace';
+        return '"WenQuanYi Micro Hei Mono", "WenQuanYi Zen Hei Mono", "Noto Sans Mono CJK TC", "Microsoft YaHei", monospace';
       case 'zenhei':
-        return '"WenQuanYi Zen Hei Mono", "WenQuanYi Micro Hei Mono", "Noto Sans Mono CJK TC", monospace';
+        return '"WenQuanYi Zen Hei Mono", "WenQuanYi Micro Hei Mono", "Noto Sans Mono CJK TC", "Microsoft YaHei", monospace';
       case 'ubuntumono':
-        return '"Ubuntu Mono", "DejaVu Sans Mono", "Noto Sans Mono CJK TC", monospace';
+        return '"Ubuntu Mono", "DejaVu Sans Mono", "Noto Sans Mono CJK TC", "Microsoft YaHei", monospace';
       case 'dejavu':
-        return '"DejaVu Sans Mono", "Ubuntu Mono", "Noto Sans Mono CJK TC", monospace';
+        return '"DejaVu Sans Mono", "Ubuntu Mono", "Noto Sans Mono CJK TC", "Microsoft YaHei", monospace';
 
       // BBS community favorite
       case 'sarasa':
-        return '"Sarasa Mono TC", "Sarasa Gothic TC", "Taipei Sans TC Beta", "Noto Sans Mono CJK TC", "PingFang TC", "Microsoft JhengHei", monospace';
+        return '"Sarasa Mono TC", "Sarasa Gothic TC", "Taipei Sans TC Beta", "Noto Sans Mono CJK TC", "PingFang TC", "Microsoft JhengHei", "Microsoft YaHei", monospace';
       case 'cubic':
-        return '"Cubic 11", "Cubic 11 Regular", "Noto Sans Mono CJK TC", "MingLiU", monospace';
+        return '"Cubic 11", "Cubic 11 Regular", "Noto Sans Mono CJK TC", "MingLiU", "Microsoft YaHei", monospace';
       case 'iansui':
-        return '"Iansui", "Iansui094", "Noto Sans Mono CJK TC", "PingFang TC", monospace';
+        return '"Iansui", "Iansui094", "Noto Sans Mono CJK TC", "PingFang TC", "Microsoft YaHei", monospace';
       case 'jetbrains':
-        return '"JetBrains Mono", "Noto Sans Mono CJK TC", "PingFang TC", "Microsoft JhengHei", monospace';
+        return '"JetBrains Mono", "Noto Sans Mono CJK TC", "PingFang TC", "Microsoft JhengHei", "Microsoft YaHei", monospace';
       case 'firacode':
-        return '"Fira Code", "Fira Mono", "Noto Sans Mono CJK TC", monospace';
+        return '"Fira Code", "Fira Mono", "Noto Sans Mono CJK TC", "Microsoft YaHei", monospace';
       case 'sourcecodepro':
-        return '"Source Code Pro", "Noto Sans Mono CJK TC", monospace';
+        return '"Source Code Pro", "Noto Sans Mono CJK TC", "Microsoft YaHei", monospace';
 
       case 'auto':
       default:
-        return '"Noto Sans Mono CJK TC", "PingFang TC", "Microsoft JhengHei", "WenQuanYi Micro Hei Mono", "MingLiU", monospace';
+        return '"Noto Sans Mono CJK TC", "PingFang TC", "Microsoft JhengHei", "Microsoft YaHei", "SimSun", "MingLiU", "WenQuanYi Micro Hei Mono", sans-serif, monospace';
     }
   }
 
