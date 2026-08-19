@@ -72,29 +72,35 @@ export class NotificationManager {
   feedScreenLines(tabId, lines, tabTitle = 'BBS') {
     if (settingsManager.settings.notifyEnabled === false) return;
 
-    for (let i = 0; i < lines.length; i++) {
+    // Waterball messages in BBS (PTT / MapleBBS) ONLY arrive at the bottom status bar (last 1-2 rows)
+    const bottomStart = Math.max(0, lines.length - 2);
+    for (let i = bottomStart; i < lines.length; i++) {
       const rawLine = lines[i] || '';
       const cleanLine = rawLine.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').trim();
       if (!cleanLine) continue;
 
       // 1. Waterball Message Detection (PTT / MapleBBS)
-      // Format: "★user 呼叫: message [08/16 15:30]" or "★user message [08/16 15:30]"
-      const wbMatch = cleanLine.match(/★\s*([a-zA-Z0-9_-]{2,16})\s*(?:呼叫\s*[:：]?|\s+)(.*)$/);
-      if (wbMatch) {
-        const sender = wbMatch[1];
-        let message = wbMatch[2].trim();
+      // Must start with ★ at the bottom status line and contain sender + message
+      // Example: "★abc 呼叫: 你好 [08/19 10:20]" or "★abc: 你好" or "★abc 你在嗎？"
+      // Must NOT be an article title line (no '□', 'R:', '轉:', etc.)
+      if (!/[□■◆◇]|(?:R:|Re:|轉:)\s/i.test(cleanLine)) {
+        const wbMatch = cleanLine.match(/^★\s*([a-zA-Z0-9_-]{2,16})\s*(?:呼叫\s*[:：]?|[:：]\s*|\s+)(.+)$/);
+        if (wbMatch) {
+          const sender = wbMatch[1];
+          let message = wbMatch[2].trim();
 
-        // Strip trailing timestamp [MM/DD HH:MM]
-        message = message.replace(/\[\d{2}\/\d{2}\s+\d{2}:\d{2}\]$/, '').trim();
+          // Strip trailing timestamp [MM/DD HH:MM]
+          message = message.replace(/\[\d{2}\/\d{2}\s+\d{2}:\d{2}\]$/, '').trim();
 
-        // Ignore common header artifacts
-        if (sender !== 'BBS' && sender !== '站長' && message.length > 0) {
-          this.triggerWaterballNotification(tabId, sender, message, tabTitle);
+          // Ignore system titles and menu headers
+          const ignoredSenders = ['BBS', '站長', '系統', '公告', '精華區', '文章選單', '主功能表', '看板列表'];
+          if (!ignoredSenders.includes(sender) && message.length > 0) {
+            this.triggerWaterballNotification(tabId, sender, message, tabTitle);
+          }
         }
       }
 
       // 2. New Mail Detection (PTT / MapleBBS)
-      // Format: "● 您有新信件" or "您有新信件，請按 M 查閱"
       if (/●\s*您有新信件|您有新信件，請按|收到\s*新信件/i.test(cleanLine)) {
         this.triggerMailNotification(tabId, tabTitle);
       }

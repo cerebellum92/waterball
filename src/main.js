@@ -59,6 +59,7 @@ const settingSmartDbcs = document.getElementById('setting-smart-dbcs');
 const settingWheelScroll = document.getElementById('setting-wheel-scroll');
 const settingAutoCopy = document.getElementById('setting-auto-copy');
 const settingTheme = document.getElementById('setting-theme');
+const settingCursorStyle = document.getElementById('setting-cursor-style');
 const settingBlinkRate = document.getElementById('setting-blink-rate');
 const settingImagePreview = document.getElementById('setting-image-preview');
 const settingToolbarScale = document.getElementById('setting-toolbar-scale');
@@ -209,16 +210,26 @@ if (imeInput) {
   imeInput.addEventListener('compositionstart', () => {
     isComposing = true;
     imeInput.classList.add('composing');
+    const activeTab = tabManager.getActiveTab();
+    if (activeTab && activeTab.view) {
+      activeTab.view.updateImePosition();
+    }
   });
 
   imeInput.addEventListener('compositionupdate', () => {
     isComposing = true;
     imeInput.classList.add('composing');
+    const activeTab = tabManager.getActiveTab();
+    if (activeTab && activeTab.view) {
+      activeTab.view.updateImePosition();
+    }
   });
 
   imeInput.addEventListener('compositionend', (e) => {
     isComposing = false;
     imeInput.classList.remove('composing');
+    imeInput.style.left = '-9999px';
+    imeInput.style.top = '-9999px';
     const text = e.data || imeInput.value;
     imeInput.value = '';
     if (text) {
@@ -490,6 +501,7 @@ function loadSettingsToUI() {
   if (settingWheelScroll) settingWheelScroll.checked = s.wheelScrollPage;
   if (settingAutoCopy) settingAutoCopy.checked = s.autoCopySelection;
   if (settingTheme) settingTheme.value = s.theme || 'pcman';
+  if (settingCursorStyle) settingCursorStyle.value = s.cursorStyle || 'underline';
   if (settingBlinkRate) settingBlinkRate.value = String(s.cursorBlinkRate ?? 500);
   if (settingImagePreview) settingImagePreview.checked = s.imagePreviewEnabled !== false;
   if (settingToolbarScale) settingToolbarScale.value = s.toolbarScale || 'medium';
@@ -521,6 +533,7 @@ function saveSettingsFromModal() {
   const toolbarScale = settingToolbarScale ? settingToolbarScale.value : 'medium';
   const fontFamily = settingFontFamily ? settingFontFamily.value : 'auto';
   const customFont = settingCustomFont ? settingCustomFont.value.trim() : '';
+  const cursorStyle = settingCursorStyle ? settingCursorStyle.value : 'underline';
   imagePreview.enabled = isImgPrev;
 
   if (isNotify) {
@@ -529,9 +542,10 @@ function saveSettingsFromModal() {
 
   applyToolbarScale(toolbarScale);
 
-  // Apply font family across all tabs
+  // Apply font family and cursor style across all tabs
   tabManager.tabs.forEach((t) => {
     t.view?.setFontStyle(fontFamily, customFont);
+    t.view?.setCursorStyle(cursorStyle);
   });
 
   const antiIdleEnabled = settingAntiIdle.checked;
@@ -550,6 +564,7 @@ function saveSettingsFromModal() {
     wheelScrollPage: settingWheelScroll.checked,
     autoCopySelection: settingAutoCopy.checked,
     theme: settingTheme.value,
+    cursorStyle,
     cursorBlinkRate: parseInt(settingBlinkRate.value, 10),
     imagePreviewEnabled: isImgPrev,
     toolbarScale,

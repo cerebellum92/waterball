@@ -155,7 +155,8 @@ impl BbsConnection {
                 channel.shell()
                     .map_err(|e| format!("啟動 Shell 失敗: {}", e))?;
 
-                sess.set_blocking(false);
+                sess.set_blocking(true);
+                sess.set_timeout(15);
 
                 Ok((Arc::new(std::sync::Mutex::new(channel)), Arc::new(std::sync::Mutex::new(sess))))
             })();
@@ -325,7 +326,7 @@ impl BbsConnection {
                         });
                         break;
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    std::thread::yield_now();
                 }
                 Ok(n) => {
                     let mut data_to_process = Vec::with_capacity(pending_lead.len() + n);
@@ -346,7 +347,7 @@ impl BbsConnection {
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    std::thread::yield_now();
                     continue;
                 }
                 Err(_) => {

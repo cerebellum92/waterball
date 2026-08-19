@@ -252,6 +252,17 @@
               </select>
             </div>
             <div class="form-group">
+              <label for="setting-cursor-style">終端游標外觀樣式：</label>
+              <select id="setting-cursor-style">
+                <option value="underline">_ 經典底線 (推薦 / 不遮擋 BBS 圓標)</option>
+                <option value="none">🚫 隱藏游標 (極致純淨 / 由 BBS 原生標記引導)</option>
+                <option value="hollow">▢ 空心方框 (Outline)</option>
+                <option value="bar">| 垂直細線 (I-Beam)</option>
+                <option value="block">█ 傳統實心方塊 (Block)</option>
+              </select>
+              <p class="hint">預設為經典底線游標，可避免與 BBS 看板列表的 ● 圓球游標重疊混淆。</p>
+            </div>
+            <div class="form-group">
               <label for="setting-blink-rate">游標閃爍頻率：</label>
               <select id="setting-blink-rate">
                 <option value="500">正常 (500ms)</option>

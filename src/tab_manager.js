@@ -56,6 +56,7 @@ export class TabManager {
     const tab = new Tab(options);
     tab.view = new TermView(this.terminalContainerEl, tab.buf, this.imeInputEl);
     tab.view.setFontStyle(settingsManager.settings.fontFamily || 'auto', settingsManager.settings.customFont || '');
+    tab.view.setCursorStyle(settingsManager.settings.cursorStyle || 'underline');
 
     // Wire view callbacks to tab manager handlers
     tab.view.onUrlClick = (url) => this.onUrlClick?.(url, tab);

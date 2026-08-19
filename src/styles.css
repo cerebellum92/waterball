@@ -879,10 +879,10 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
 
 #ime-input {
   position: absolute;
-  top: 0;
-  left: 0;
-  width: 40px;
-  height: 24px;
+  top: -9999px;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
   padding: 0;
   margin: 0;
   border: none;
@@ -890,8 +890,9 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
   background: transparent;
   color: transparent;
   caret-color: transparent;
-  opacity: 0.01;
-  z-index: 100;
+  opacity: 0;
+  pointer-events: none;
+  z-index: -1;
   resize: none;
   overflow: hidden;
   white-space: pre;
@@ -899,7 +900,9 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
 
 #ime-input.composing {
   opacity: 1 !important;
-  background: rgba(20, 20, 20, 0.9) !important;
+  pointer-events: auto !important;
+  z-index: 1000 !important;
+  background: rgba(20, 20, 20, 0.95) !important;
   color: #58a6ff !important;
   caret-color: #ffffff !important;
   border-bottom: 2px solid #58a6ff !important;
@@ -910,7 +913,6 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
   min-width: 40px;
   max-width: 400px;
   overflow: visible !important;
-  z-index: 1000 !important;
 }
 
 /* xterm.js overrides for better appearance */

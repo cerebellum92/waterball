@@ -35,6 +35,7 @@ export class TermView {
 
     this.fontFamily = 'auto';
     this.customFont = '';
+    this.cursorStyle = 'underline';
 
     this.blinkState = true;
     this.blinkTimer = setInterval(() => {
@@ -199,6 +200,11 @@ export class TermView {
 
   updateImePosition() {
     if (!this.imeInput || !this.canvas) return;
+    if (!this.imeInput.classList.contains('composing')) {
+      this.imeInput.style.left = '-9999px';
+      this.imeInput.style.top = '-9999px';
+      return;
+    }
     const canvasRect = this.canvas.getBoundingClientRect();
     const wrapperRect = this.wrapper.getBoundingClientRect();
     const left = (canvasRect.left - wrapperRect.left) + this.buf.cur_x * this.cellW;
@@ -559,16 +565,42 @@ export class TermView {
     }
 
     // Draw cursor
-    if (buf.cursorVisible && this.blinkState) {
-      const curX = buf.cur_x * cellW;
-      const curY = buf.cur_y * cellH;
+    if (buf.cursorVisible && this.blinkState && this.cursorStyle !== 'none') {
+      const curX = Math.round(buf.cur_x * cellW);
+      const curY = Math.round(buf.cur_y * cellH);
+      const width = Math.round(cellW);
+      const height = Math.round(cellH);
+      const style = this.cursorStyle || 'underline';
+
       ctx.fillStyle = '#ffffff';
-      ctx.globalAlpha = 0.6;
-      ctx.fillRect(curX, curY, cellW, cellH);
-      ctx.globalAlpha = 1.0;
+      ctx.strokeStyle = '#ffffff';
+
+      if (style === 'underline') {
+        // Crisp bottom underline (never obscures BBS ● circle or text)
+        const lineH = Math.max(2, Math.round(height * 0.12));
+        ctx.fillRect(curX, curY + height - lineH, width, lineH);
+      } else if (style === 'hollow') {
+        // Hollow outline box
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(curX + 0.5, curY + 0.5, width - 1, height - 1);
+      } else if (style === 'bar') {
+        // Vertical I-Beam / Bar
+        const barW = Math.max(2, Math.round(width * 0.18));
+        ctx.fillRect(curX, curY, barW, height);
+      } else if (style === 'block') {
+        // Traditional semi-transparent block
+        ctx.globalAlpha = 0.6;
+        ctx.fillRect(curX, curY, width, height);
+        ctx.globalAlpha = 1.0;
+      }
     }
 
     this.updateImePosition();
+  }
+
+  setCursorStyle(style = 'underline') {
+    this.cursorStyle = style;
+    this.redraw();
   }
 
   setSearchResults(matches, activeIndex = -1) {
