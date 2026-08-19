@@ -377,8 +377,7 @@ impl BbsConnection {
     /// MapleBBS / PCMan ANSI Big5 byte-level decoder:
     /// - High bytes (0x80..=0xFF) at the very end of raw stream are held in `pending_bytes` for the next chunk
     /// - Partial Big5 lead bytes right before ESC are turned to a single space, preserving exact 80-column alignment
-    /// - Valid Big5 pairs are decoded into UTF-8 Chinese/special characters
-    /// - Smart Passthrough: If stream already contains valid UTF-8 sequences (from Windows ConPTY or UTF-8 mode), passes them directly without corrupting!
+    /// - Valid Big5 pairs are decoded into UTF-8 Chinese/special characters via encoding_rs
     fn decode_ansi_big5(raw: &[u8], pending_bytes: &mut Vec<u8>) -> String {
         let mut out = String::with_capacity(raw.len());
         let mut i = 0;
@@ -388,28 +387,6 @@ impl BbsConnection {
                 out.push(b as char);
                 i += 1;
                 continue;
-            }
-
-            // Check if this is already a valid UTF-8 multi-byte sequence (3-byte CJK or 2-byte symbol)
-            if b >= 0xE0 && b <= 0xEF && i + 2 < raw.len() {
-                let b2 = raw[i + 1];
-                let b3 = raw[i + 2];
-                if (0x80..=0xBF).contains(&b2) && (0x80..=0xBF).contains(&b3) {
-                    if let Ok(utf8_str) = std::str::from_utf8(&raw[i..i + 3]) {
-                        out.push_str(utf8_str);
-                        i += 3;
-                        continue;
-                    }
-                }
-            } else if b >= 0xC2 && b <= 0xDF && i + 1 < raw.len() {
-                let b2 = raw[i + 1];
-                if (0x80..=0xBF).contains(&b2) {
-                    if let Ok(utf8_str) = std::str::from_utf8(&raw[i..i + 2]) {
-                        out.push_str(utf8_str);
-                        i += 2;
-                        continue;
-                    }
-                }
             }
 
             if i + 1 < raw.len() {
@@ -437,7 +414,7 @@ impl BbsConnection {
         out
     }
 
-    /// GBK byte-level decoder with ANSI lead byte handling and UTF-8 passthrough
+    /// GBK byte-level decoder with ANSI lead byte handling
     fn decode_ansi_gbk(raw: &[u8], pending_bytes: &mut Vec<u8>) -> String {
         let mut out = String::with_capacity(raw.len());
         let mut i = 0;
@@ -447,28 +424,6 @@ impl BbsConnection {
                 out.push(b as char);
                 i += 1;
                 continue;
-            }
-
-            // Check if this is already a valid UTF-8 multi-byte sequence
-            if b >= 0xE0 && b <= 0xEF && i + 2 < raw.len() {
-                let b2 = raw[i + 1];
-                let b3 = raw[i + 2];
-                if (0x80..=0xBF).contains(&b2) && (0x80..=0xBF).contains(&b3) {
-                    if let Ok(utf8_str) = std::str::from_utf8(&raw[i..i + 3]) {
-                        out.push_str(utf8_str);
-                        i += 3;
-                        continue;
-                    }
-                }
-            } else if b >= 0xC2 && b <= 0xDF && i + 1 < raw.len() {
-                let b2 = raw[i + 1];
-                if (0x80..=0xBF).contains(&b2) {
-                    if let Ok(utf8_str) = std::str::from_utf8(&raw[i..i + 2]) {
-                        out.push_str(utf8_str);
-                        i += 2;
-                        continue;
-                    }
-                }
             }
 
             if i + 1 < raw.len() {
