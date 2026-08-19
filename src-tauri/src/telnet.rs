@@ -112,7 +112,7 @@ impl BbsConnection {
         })
     }
 
-    /// Connect via SSH using external ssh program with PTY
+    /// Connect via pure Rust native SSH (libssh2) with zero ConPTY / CodePage interference
     pub async fn connect_ssh(
         tab_id: String,
         address: &str,
@@ -120,65 +120,52 @@ impl BbsConnection {
         charset: BbsCharset,
         app: AppHandle,
     ) -> Result<Self, String> {
-        use portable_pty::{CommandBuilder, PtySize, native_pty_system};
-
-        let pty_system = native_pty_system();
-        let pair = pty_system.openpty(PtySize {
-            rows: 24,
-            cols: 80,
-            pixel_width: 0,
-            pixel_height: 0,
-        }).map_err(|e| format!("Failed to open PTY: {}", e))?;
-
-        // Build SSH command
-        let target = if address.contains('@') {
-            address.to_string()
+        let (user, host) = if let Some(idx) = address.find('@') {
+            (&address[..idx], &address[idx + 1..])
         } else {
-            format!("bbs@{}", address)
+            ("bbs", address)
         };
 
-        let mut cmd = CommandBuilder::new("ssh");
-        cmd.arg("-tt");
-        cmd.arg("-o");
-        cmd.arg("StrictHostKeyChecking=no");
-        cmd.arg("-o");
-        cmd.arg("UserKnownHostsFile=/dev/null");
-        cmd.arg("-o");
-        cmd.arg("GlobalKnownHostsFile=/dev/null");
-        cmd.arg("-o");
-        cmd.arg("LogLevel=ERROR");
-        cmd.arg("-o");
-        cmd.arg("HostKeyAlgorithms=+ssh-rsa");
-        cmd.arg("-o");
-        cmd.arg("PubkeyAcceptedAlgorithms=+ssh-rsa");
-        cmd.arg("-o");
-        cmd.arg("ServerAliveInterval=30");
-        cmd.arg("-o");
-        cmd.arg("ServerAliveCountMax=3");
-        if port != 22 {
-            cmd.arg("-p");
-            cmd.arg(port.to_string());
-        }
-        cmd.arg(&target);
-        cmd.env("TERM", "vt100");
-        cmd.env("LC_ALL", "C");
-        cmd.env("LANG", "C");
-        cmd.env("LC_CTYPE", "C");
-        cmd.env("LC_MESSAGES", "C");
+        let target_host = host.to_string();
+        let target_user = user.to_string();
+        let target_port = port;
 
-        let child = pair.slave.spawn_command(cmd)
-            .map_err(|e| format!("Failed to spawn ssh: {}", e))?;
+        let (tx, rx) = tokio::sync::oneshot::channel();
 
-        drop(pair.slave);
+        std::thread::spawn(move || {
+            let res = (|| -> Result<(Arc<std::sync::Mutex<ssh2::Channel>>, Arc<std::sync::Mutex<ssh2::Session>>), String> {
+                let addr = format!("{}:{}", target_host, target_port);
+                let tcp = std::net::TcpStream::connect(&addr)
+                    .map_err(|e| format!("無法連線到 {}: {}", addr, e))?;
+                tcp.set_nodelay(true).ok();
 
-        let reader = pair.master.try_clone_reader()
-            .map_err(|e| format!("Failed to clone reader: {}", e))?;
+                let mut sess = ssh2::Session::new()
+                    .map_err(|e| format!("建立 SSH Session 失敗: {}", e))?;
+                sess.set_tcp_stream(tcp);
+                sess.handshake()
+                    .map_err(|e| format!("SSH 握手失敗: {}", e))?;
 
-        let pty_writer = pair.master.take_writer()
-            .map_err(|e| format!("Failed to take writer: {}", e))?;
+                // Authenticate to BBS (PTT and MapleBBS accept password auth with any/empty password)
+                let _ = sess.userauth_password(&target_user, "");
 
-        let writer: Box<dyn Write + Send> = Box::new(pty_writer);
-        let writer = Arc::new(std::sync::Mutex::new(writer));
+                let mut channel = sess.channel_session()
+                    .map_err(|e| format!("開啟 SSH 通道失敗: {}", e))?;
+                channel.request_pty("vt100", None, Some((80, 24, 0, 0)))
+                    .map_err(|e| format!("請求 PTY 失敗: {}", e))?;
+                channel.shell()
+                    .map_err(|e| format!("啟動 Shell 失敗: {}", e))?;
+
+                sess.set_blocking(false);
+
+                Ok((Arc::new(std::sync::Mutex::new(channel)), Arc::new(std::sync::Mutex::new(sess))))
+            })();
+
+            let _ = tx.send(res);
+        });
+
+        let (channel, _sess) = rx.await
+            .map_err(|_| "SSH 連線被取消".to_string())??;
+
         let alive = Arc::new(AtomicBool::new(true));
         let charset = Arc::new(RwLock::new(charset));
 
@@ -192,10 +179,26 @@ impl BbsConnection {
         let charset_clone = charset.clone();
         let app_clone = app.clone();
         let tab_id_clone = tab_id.clone();
+        let channel_clone = channel.clone();
+
         std::thread::spawn(move || {
-            Self::read_loop_ssh(tab_id_clone, reader, alive_clone, charset_clone, app_clone);
+            Self::read_loop_ssh2(tab_id_clone, channel_clone, alive_clone, charset_clone, app_clone);
         });
 
+        struct SshChannelWriter(Arc<std::sync::Mutex<ssh2::Channel>>);
+        impl Write for SshChannelWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                let mut ch = self.0.lock().map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "Lock error"))?;
+                ch.write(buf)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                let mut ch = self.0.lock().map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "Lock error"))?;
+                ch.flush()
+            }
+        }
+
+        let writer: Box<dyn Write + Send> = Box::new(SshChannelWriter(channel));
+        let writer = Arc::new(std::sync::Mutex::new(writer));
         let last_activity = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
 
         Ok(BbsConnection {
@@ -204,8 +207,8 @@ impl BbsConnection {
             charset,
             is_ssh: true,
             last_activity,
-            _child: Some(child),
-            _master: Some(pair.master),
+            _child: None,
+            _master: None,
         })
     }
 
@@ -279,10 +282,10 @@ impl BbsConnection {
         }
     }
 
-    /// Read loop for SSH connections
-    fn read_loop_ssh(
+    /// Read loop for pure Rust native SSH connections
+    fn read_loop_ssh2(
         tab_id: String,
-        mut reader: Box<dyn Read + Send>,
+        channel: Arc<std::sync::Mutex<ssh2::Channel>>,
         alive: Arc<AtomicBool>,
         charset: Arc<RwLock<BbsCharset>>,
         app: AppHandle,
@@ -291,20 +294,38 @@ impl BbsConnection {
         let mut pending_lead = Vec::new();
 
         while alive.load(Ordering::Relaxed) {
-            match reader.read(&mut buf) {
+            let read_res = {
+                let mut ch = match channel.lock() {
+                    Ok(guard) => guard,
+                    Err(_) => break,
+                };
+                ch.read(&mut buf)
+            };
+
+            match read_res {
                 Ok(0) => {
-                    if !pending_lead.is_empty() {
-                        let _ = app.emit("terminal-data", TerminalDataPayload {
+                    let is_eof = {
+                        let ch = match channel.lock() {
+                            Ok(g) => g,
+                            Err(_) => break,
+                        };
+                        ch.eof()
+                    };
+                    if is_eof {
+                        if !pending_lead.is_empty() {
+                            let _ = app.emit("terminal-data", TerminalDataPayload {
+                                tab_id: tab_id.clone(),
+                                data: " ".to_string(),
+                            });
+                        }
+                        alive.store(false, Ordering::Relaxed);
+                        let _ = app.emit("connection-status", ConnectionStatusPayload {
                             tab_id: tab_id.clone(),
-                            data: " ".to_string(),
+                            status: "disconnected".to_string(),
                         });
+                        break;
                     }
-                    alive.store(false, Ordering::Relaxed);
-                    let _ = app.emit("connection-status", ConnectionStatusPayload {
-                        tab_id: tab_id.clone(),
-                        status: "disconnected".to_string(),
-                    });
-                    break;
+                    std::thread::sleep(std::time::Duration::from_millis(10));
                 }
                 Ok(n) => {
                     let mut data_to_process = Vec::with_capacity(pending_lead.len() + n);
