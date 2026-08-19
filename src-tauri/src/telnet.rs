@@ -155,8 +155,6 @@ impl BbsConnection {
         cmd.arg("ServerAliveInterval=30");
         cmd.arg("-o");
         cmd.arg("ServerAliveCountMax=3");
-        cmd.arg("-o");
-        cmd.arg("SendEnv=");
         if port != 22 {
             cmd.arg("-p");
             cmd.arg(port.to_string());
