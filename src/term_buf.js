@@ -284,32 +284,34 @@ export class TermBuf {
     const scrollStart = this.scrollTop;
     const scrollEnd = this.scrollBottom;
     const lines = this.lines;
-    const rows = this.rows;
     const cols = this.cols;
 
-    if (n >= rows) {
-      this.clear(2);
+    if (scrollStart >= scrollEnd) return;
+
+    if (n >= scrollEnd - scrollStart + 1) {
+      for (let r = scrollStart; r <= scrollEnd; r++) {
+        for (let c = 0; c < cols; c++) lines[r][c].copyFrom(this.newChar);
+      }
+      this.queueUpdate();
       return;
     }
 
+    const count = Math.min(n, scrollEnd - scrollStart + 1);
+
     if (up) {
-      // Move lines down
-      for (let i = 0; i < rows - 1 - scrollEnd; i++) lines.unshift(lines.pop());
-      while (--n >= 0) {
-        const line = lines.pop();
-        lines.splice(rows - 1 - scrollEnd + scrollStart, 0, line);
-        for (let col = 0; col < cols; col++) line[col].copyFrom(this.newChar);
+      // Move lines down within [scrollStart, scrollEnd] (Insert lines at top)
+      for (let i = 0; i < count; i++) {
+        const line = lines.splice(scrollEnd, 1)[0];
+        for (let c = 0; c < cols; c++) line[c].copyFrom(this.newChar);
+        lines.splice(scrollStart, 0, line);
       }
-      for (let i = 0; i < rows - 1 - scrollEnd; i++) lines.push(lines.shift());
     } else {
-      // Move lines up
-      for (let i = 0; i < scrollStart; i++) lines.push(lines.shift());
-      while (--n >= 0) {
-        const line = lines.shift();
-        lines.splice(scrollEnd - scrollStart, 0, line);
-        for (let col = 0; col < cols; col++) line[col].copyFrom(this.newChar);
+      // Move lines up within [scrollStart, scrollEnd] (Delete lines at top / scroll up)
+      for (let i = 0; i < count; i++) {
+        const line = lines.splice(scrollStart, 1)[0];
+        for (let c = 0; c < cols; c++) line[c].copyFrom(this.newChar);
+        lines.splice(scrollEnd, 0, line);
       }
-      for (let i = 0; i < scrollStart; i++) lines.unshift(lines.pop());
     }
     this.queueUpdate();
   }

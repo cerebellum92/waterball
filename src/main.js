@@ -62,6 +62,19 @@ const settingTheme = document.getElementById('setting-theme');
 const settingBlinkRate = document.getElementById('setting-blink-rate');
 const settingImagePreview = document.getElementById('setting-image-preview');
 const settingToolbarScale = document.getElementById('setting-toolbar-scale');
+const settingFontFamily = document.getElementById('setting-font-family');
+const settingCustomFont = document.getElementById('setting-custom-font');
+const customFontGroup = document.getElementById('custom-font-group');
+
+if (settingFontFamily && customFontGroup) {
+  settingFontFamily.addEventListener('change', () => {
+    if (settingFontFamily.value === 'custom') {
+      customFontGroup.classList.remove('hidden');
+    } else {
+      customFontGroup.classList.add('hidden');
+    }
+  });
+}
 
 // Tab Manager Setup
 const tabManager = new TabManager(tabBar, terminalContainer, imeInput);
@@ -480,6 +493,17 @@ function loadSettingsToUI() {
   if (settingBlinkRate) settingBlinkRate.value = String(s.cursorBlinkRate ?? 500);
   if (settingImagePreview) settingImagePreview.checked = s.imagePreviewEnabled !== false;
   if (settingToolbarScale) settingToolbarScale.value = s.toolbarScale || 'medium';
+  if (settingFontFamily) {
+    settingFontFamily.value = s.fontFamily || 'auto';
+    if (customFontGroup) {
+      if (s.fontFamily === 'custom') {
+        customFontGroup.classList.remove('hidden');
+      } else {
+        customFontGroup.classList.add('hidden');
+      }
+    }
+  }
+  if (settingCustomFont) settingCustomFont.value = s.customFont || '';
 }
 
 function applyToolbarScale(scale = 'medium') {
@@ -495,6 +519,8 @@ function saveSettingsFromModal() {
   const isNotify = settingNotifyEnabled ? settingNotifyEnabled.checked : true;
   const isSound = settingNotifySound ? settingNotifySound.checked : true;
   const toolbarScale = settingToolbarScale ? settingToolbarScale.value : 'medium';
+  const fontFamily = settingFontFamily ? settingFontFamily.value : 'auto';
+  const customFont = settingCustomFont ? settingCustomFont.value.trim() : '';
   imagePreview.enabled = isImgPrev;
 
   if (isNotify) {
@@ -502,6 +528,11 @@ function saveSettingsFromModal() {
   }
 
   applyToolbarScale(toolbarScale);
+
+  // Apply font family across all tabs
+  tabManager.tabs.forEach((t) => {
+    t.view?.setFontStyle(fontFamily, customFont);
+  });
 
   const antiIdleEnabled = settingAntiIdle.checked;
   const antiIdleInterval = parseInt(settingAntiIdleInterval.value, 10);
@@ -522,6 +553,8 @@ function saveSettingsFromModal() {
     cursorBlinkRate: parseInt(settingBlinkRate.value, 10),
     imagePreviewEnabled: isImgPrev,
     toolbarScale,
+    fontFamily,
+    customFont,
   });
   closeSettingsModal();
 }

@@ -33,6 +33,9 @@ export class TermView {
     this.cellW = 10;
     this.cellH = 20;
 
+    this.fontFamily = 'auto';
+    this.customFont = '';
+
     this.blinkState = true;
     this.blinkTimer = setInterval(() => {
       this.blinkState = !this.blinkState;
@@ -208,7 +211,83 @@ export class TermView {
     this.imeInput.style.height = `${this.cellH}px`;
     this.imeInput.style.fontSize = `${fontSize}px`;
     this.imeInput.style.lineHeight = `${this.cellH}px`;
-    this.imeInput.style.fontFamily = '"Noto Sans Mono CJK TC", "PingFang TC", "Microsoft JhengHei", monospace';
+    this.imeInput.style.fontFamily = this.getFontFamilyString();
+  }
+
+  getFontFamilyString() {
+    if (this.fontFamily === 'custom' && this.customFont && this.customFont.trim()) {
+      return `"${this.customFont.trim()}", "Noto Sans Mono CJK TC", "PingFang TC", "Microsoft JhengHei", "MingLiU", monospace`;
+    }
+    switch (this.fontFamily) {
+      // Windows
+      case 'mingliu':
+        return '"MingLiU", "PMingLiU", "Songti TC", "LiSong Pro", "AR PL UMing TW", serif, monospace';
+      case 'jhenghei':
+        return '"Microsoft JhengHei", "PingFang TC", "Noto Sans Mono CJK TC", sans-serif, monospace';
+      case 'yahei':
+        return '"Microsoft YaHei", "PingFang SC", "Noto Sans Mono CJK SC", sans-serif, monospace';
+      case 'kai':
+        return '"DFKai-SB", "BiauKai", "Kaiti TC", "KaiTi", cursive, serif, monospace';
+      case 'cascadia-code':
+      case 'cascadia':
+        return '"Cascadia Code", "Cascadia Mono", "Microsoft JhengHei", "PingFang TC", monospace';
+      case 'cascadia-mono':
+        return '"Cascadia Mono", "Cascadia Code", "Microsoft JhengHei", "PingFang TC", monospace';
+      case 'consolas':
+        return '"Consolas", "Microsoft JhengHei", "PingFang TC", monospace';
+      case 'lucida':
+        return '"Lucida Console", "Lucida Sans Typewriter", "MingLiU", monospace';
+
+      // macOS
+      case 'pingfang':
+        return '"PingFang TC", "Hiragino Sans GB", "Microsoft JhengHei", "Noto Sans Mono CJK TC", sans-serif, monospace';
+      case 'songti':
+        return '"Songti TC", "LiSong Pro", "MingLiU", "PMingLiU", serif, monospace';
+      case 'sfmono':
+        return '"SF Mono", "PingFang TC", "Microsoft JhengHei", monospace';
+      case 'menlo':
+        return '"Menlo", "PingFang TC", "Microsoft JhengHei", monospace';
+      case 'monaco':
+        return '"Monaco", "Menlo", "PingFang TC", monospace';
+
+      // Linux
+      case 'noto-sans':
+        return '"Noto Sans Mono CJK TC", "Noto Sans CJK TC", "PingFang TC", "Microsoft JhengHei", sans-serif, monospace';
+      case 'noto-serif':
+        return '"Noto Serif CJK TC", "Songti TC", "MingLiU", serif, monospace';
+      case 'wenquanyi':
+        return '"WenQuanYi Micro Hei Mono", "WenQuanYi Zen Hei Mono", "Noto Sans Mono CJK TC", monospace';
+      case 'zenhei':
+        return '"WenQuanYi Zen Hei Mono", "WenQuanYi Micro Hei Mono", "Noto Sans Mono CJK TC", monospace';
+      case 'ubuntumono':
+        return '"Ubuntu Mono", "DejaVu Sans Mono", "Noto Sans Mono CJK TC", monospace';
+      case 'dejavu':
+        return '"DejaVu Sans Mono", "Ubuntu Mono", "Noto Sans Mono CJK TC", monospace';
+
+      // BBS community favorite
+      case 'sarasa':
+        return '"Sarasa Mono TC", "Sarasa Gothic TC", "Taipei Sans TC Beta", "Noto Sans Mono CJK TC", "PingFang TC", "Microsoft JhengHei", monospace';
+      case 'cubic':
+        return '"Cubic 11", "Cubic 11 Regular", "Noto Sans Mono CJK TC", "MingLiU", monospace';
+      case 'iansui':
+        return '"Iansui", "Iansui094", "Noto Sans Mono CJK TC", "PingFang TC", monospace';
+      case 'jetbrains':
+        return '"JetBrains Mono", "Noto Sans Mono CJK TC", "PingFang TC", "Microsoft JhengHei", monospace';
+      case 'firacode':
+        return '"Fira Code", "Fira Mono", "Noto Sans Mono CJK TC", monospace';
+      case 'sourcecodepro':
+        return '"Source Code Pro", "Noto Sans Mono CJK TC", monospace';
+
+      case 'auto':
+      default:
+        return '"Noto Sans Mono CJK TC", "PingFang TC", "Microsoft JhengHei", "WenQuanYi Micro Hei Mono", "MingLiU", monospace';
+    }
+  }
+
+  setFontStyle(fontFamily = 'auto', customFont = '') {
+    this.fontFamily = fontFamily;
+    this.customFont = customFont;
+    this.redraw();
   }
 
   resize() {
@@ -260,7 +339,7 @@ export class TermView {
     const rows = buf.rows;
 
     const fontSize = Math.floor(cellH * 0.82);
-    ctx.font = `${fontSize}px "Noto Sans Mono CJK TC", "PingFang TC", "Microsoft JhengHei", "WenQuanYi Micro Hei Mono", "MingLiU", monospace`;
+    ctx.font = `${fontSize}px ${this.getFontFamilyString()}`;
     ctx.textBaseline = 'middle';
 
     // Clear background
@@ -274,6 +353,25 @@ export class TermView {
       const cellHeight = y2 - y1;
       const centerY = y1 + Math.round(cellHeight * 0.52);
 
+      // 1. Draw continuous background spans (100% eliminates fractional DPI grid lines and vertical seams on Windows)
+      let bgStartCol = 0;
+      let curBg = line[0].getBg();
+
+      for (let c = 1; c <= cols; c++) {
+        const bg = (c < cols) ? line[c].getBg() : -1;
+        if (bg !== curBg) {
+          if (curBg !== 0) {
+            const x1 = Math.round(bgStartCol * cellW);
+            const x2 = Math.round(c * cellW);
+            ctx.fillStyle = TERM_COLORS[curBg];
+            ctx.fillRect(x1, y1, x2 - x1, cellHeight);
+          }
+          bgStartCol = c;
+          curBg = bg;
+        }
+      }
+
+      // 2. Draw foreground characters & ANSI blocks
       for (let c = 0; c < cols; c++) {
         const cell = line[c];
         if (cell.isTrailByte) continue; // Handled by lead byte
@@ -283,13 +381,6 @@ export class TermView {
         const cellWidth = x2 - x1;
 
         const fgCol = TERM_COLORS[cell.getFg()];
-        const bgCol = TERM_COLORS[cell.getBg()];
-
-        // Draw background if not default black (guaranteed seamless coverage with zero black seams)
-        if (cell.getBg() !== 0) {
-          ctx.fillStyle = bgCol;
-          ctx.fillRect(x1, y1, cellWidth, cellHeight);
-        }
 
         // Draw character
         if (cell.ch && cell.ch !== ' ') {
@@ -298,19 +389,19 @@ export class TermView {
 
             // Direct pixel-perfect solid block drawing for BBS ANSI art (zero seams)
             if (cell.ch === '█') {
-              ctx.fillRect(x1, y1, cellWidth, cellHeight);
+              ctx.fillRect(x1, y1, cellWidth + 0.5, cellHeight);
             } else if (cell.ch === '▀') {
               const halfH = Math.round(cellHeight / 2);
-              ctx.fillRect(x1, y1, cellWidth, halfH);
+              ctx.fillRect(x1, y1, cellWidth + 0.5, halfH);
             } else if (cell.ch === '▄') {
               const halfH = Math.round(cellHeight / 2);
-              ctx.fillRect(x1, y1 + halfH, cellWidth, cellHeight - halfH);
+              ctx.fillRect(x1, y1 + halfH, cellWidth + 0.5, cellHeight - halfH);
             } else if (cell.ch === '▌') {
               const halfW = Math.round(cellWidth / 2);
               ctx.fillRect(x1, y1, halfW, cellHeight);
             } else if (cell.ch === '▐') {
               const halfW = Math.round(cellWidth / 2);
-              ctx.fillRect(x1 + halfW, y1, cellWidth - halfW, cellHeight);
+              ctx.fillRect(x1 + halfW, y1, cellWidth - halfW + 0.5, cellHeight);
             } else if (cell.ch === '◢') {
               ctx.beginPath();
               ctx.moveTo(x2, y1);

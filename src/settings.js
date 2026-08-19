@@ -59,6 +59,8 @@ export const DEFAULT_SETTINGS = {
   cursorBlinkRate: 500, // ms
   imagePreviewEnabled: true,
   toolbarScale: 'medium', // 'standard' | 'medium' | 'large'
+  fontFamily: 'auto', // 'auto' | 'mingliu' | 'jhenghei' | 'monospace'
+  customFont: '', // Custom font name
 };
 
 class SettingsManager {

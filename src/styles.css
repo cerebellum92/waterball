@@ -354,10 +354,12 @@ select option:disabled {
   gap: 6px;
   font-size: 12px;
   color: var(--text-secondary);
-  padding: 0 8px;
+  padding: 0 14px 0 10px;
   border-left: 1px solid var(--border-color);
-  margin-left: 4px;
+  margin-left: 6px;
+  margin-right: 6px;
   flex-shrink: 0;
+  white-space: nowrap;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -853,7 +855,9 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
 #status-text {
   font-size: 12px;
   color: var(--text-secondary);
-  min-width: 48px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 52px;
 }
 
 /* Terminal container */

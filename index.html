@@ -191,6 +191,59 @@
               <p class="hint">自訂工具列、分頁標籤、設定中心與彈窗介面的整體字體與按鈕縮放比例。</p>
             </div>
             <div class="form-group">
+              <label for="setting-font-family">終端機文字字體：</label>
+              <select id="setting-font-family">
+                <option value="auto" selected>🌟 【智慧推薦】自動適配當前系統最佳字體</option>
+                
+                <optgroup label="🪟 Windows 經典與常用系列">
+                  <option value="mingliu">📜 PCMan 經典新細明體 / 細明體 (MingLiU / PMingLiU)</option>
+                  <option value="jhenghei">💻 微軟正黑體 (Microsoft JhengHei)</option>
+                  <option value="yahei">💻 微軟雅黑體 (Microsoft YaHei)</option>
+                  <option value="kai">📜 標楷體 / 華康楷體 (DFKai-SB / BiauKai)</option>
+                  <option value="cascadia-code">⌨️ Cascadia Code (Win 11 終端預設)</option>
+                  <option value="cascadia-mono">⌨️ Cascadia Mono (無連字版等寬)</option>
+                  <option value="consolas">⌨️ Consolas (Windows 經典程式碼體)</option>
+                  <option value="lucida">⌨️ Lucida Console (Windows 復古等寬)</option>
+                </optgroup>
+
+                <optgroup label="🍏 macOS 精品系列">
+                  <option value="pingfang">💻 蘋方等寬黑體 (PingFang TC)</option>
+                  <option value="songti">📜 蘋果宋體 / 儷宋 (Songti TC / LiSong Pro)</option>
+                  <option value="sfmono">⌨️ SF Mono (Apple 官方系統等寬)</option>
+                  <option value="menlo">⌨️ Menlo (macOS 經典終端等寬)</option>
+                  <option value="monaco">⌨️ Monaco (Mac OS X 復古等寬)</option>
+                </optgroup>
+
+                <optgroup label="🐧 Linux (Ubuntu / Debian) 系列">
+                  <option value="noto-sans">💻 思源等寬黑體 (Noto Sans Mono CJK TC)</option>
+                  <option value="noto-serif">📜 思源明體 (Noto Serif CJK TC)</option>
+                  <option value="wenquanyi">💻 文泉驛微米黑 (WenQuanYi Micro Hei Mono)</option>
+                  <option value="zenhei">💻 文泉驛正黑 (WenQuanYi Zen Hei Mono)</option>
+                  <option value="ubuntumono">⌨️ Ubuntu Mono (Ubuntu 系統預設等寬)</option>
+                  <option value="dejavu">⌨️ DejaVu Sans Mono (Linux 經典等寬)</option>
+                </optgroup>
+
+                <optgroup label="⭐ BBS 鄉民與開源等寬神級字型">
+                  <option value="sarasa">💎 更紗黑體 / 台北黑體 (Sarasa Mono TC)</option>
+                  <option value="cubic">👾 俐方體 11 號 (Cubic 11 像素點陣風)</option>
+                  <option value="iansui">🌿 芫荽 (Iansui 台灣日系手寫黑體)</option>
+                  <option value="jetbrains">⌨️ JetBrains Mono (現代頂級編程字體)</option>
+                  <option value="firacode">⌨️ Fira Code (熱門程式等寬體)</option>
+                  <option value="sourcecodepro">⌨️ Source Code Pro (Adobe 開源等寬)</option>
+                </optgroup>
+
+                <optgroup label="🛠️ 進階自訂">
+                  <option value="custom">✏️ 手動輸入自訂字體名稱...</option>
+                </optgroup>
+              </select>
+              <p class="hint">直接用滑鼠點選您喜歡的字體，支援跨平台自動相容適配。</p>
+            </div>
+            <div id="custom-font-group" class="form-group hidden">
+              <label for="setting-custom-font">自訂字體名稱：</label>
+              <input type="text" id="setting-custom-font" placeholder="例如：Fira Code, Source Code Pro..." style="width: 100%; padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-secondary); color: var(--text-primary);" />
+              <p class="hint">請輸入您電腦中已安裝的字體名稱。</p>
+            </div>
+            <div class="form-group">
               <label for="setting-theme">ANSI 色彩主題風格：</label>
               <select id="setting-theme">
                 <option value="pcman">PCMan 經典標準色</option>

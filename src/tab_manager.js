@@ -1,8 +1,7 @@
-// Multi-Tab & Multi-Session Manager for bbsterm
-
 import { TermBuf } from './term_buf.js';
 import { AnsiParser } from './ansi_parser.js';
 import { TermView } from './term_view.js';
+import { settingsManager } from './settings.js';
 
 let tabCounter = 1;
 
@@ -56,6 +55,7 @@ export class TabManager {
   createTab(options = {}) {
     const tab = new Tab(options);
     tab.view = new TermView(this.terminalContainerEl, tab.buf, this.imeInputEl);
+    tab.view.setFontStyle(settingsManager.settings.fontFamily || 'auto', settingsManager.settings.customFont || '');
 
     // Wire view callbacks to tab manager handlers
     tab.view.onUrlClick = (url) => this.onUrlClick?.(url, tab);
