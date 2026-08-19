@@ -45,8 +45,13 @@ jobs:
       - name: Install Linux system dependencies (Ubuntu)
         if: matrix.platform == 'ubuntu-22.04'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+          # Configure apt timeouts, IPv4 and Azure high-speed mirror to prevent archive.ubuntu.com hangs
+          echo 'Acquire::http::Timeout "15";' | sudo tee /etc/apt/apt.conf.d/99timeout
+          echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4
+          sudo sed -i 's/archive.ubuntu.com/azure.archive.ubuntu.com/g' /etc/apt/sources.list
+          sudo sed -i 's/security.ubuntu.com/azure.archive.ubuntu.com/g' /etc/apt/sources.list
+          sudo apt-get update -o Acquire::Retries=3 -y || sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
       - name: Install Frontend Dependencies
         run: npm ci
