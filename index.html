@@ -344,7 +344,23 @@
       </div>
       <div class="modal-body push-modal-body">
         <div class="push-input-group">
-          <label for="push-input-text">請輸入推文內容（長文將自動智慧斷行分段）：</label>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <label for="push-input-text" style="margin-bottom: 0;">請輸入推文內容（長文將自動智慧斷行分段）：</label>
+            <div id="push-template-controls" style="display: flex; gap: 6px; align-items: center;">
+              <select id="push-template-select" style="height: 24px; padding: 0 4px; font-size: 11.5px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius); color: var(--text-primary); outline: none; cursor: pointer; max-width: 180px;">
+                <option value="">-- 📋 選擇常用範本 --</option>
+              </select>
+              <button id="push-template-save" class="push-item-btn" style="height: 24px; padding: 0 8px; font-size: 11.5px; border-radius: var(--radius);" title="將目前輸入框內容存為常用範本">💾 存為常用</button>
+              <button id="push-template-delete" class="push-item-btn" style="height: 24px; padding: 0 8px; font-size: 11.5px; border-radius: var(--radius);" title="刪除選中的常用範本">🗑️ 刪除</button>
+              <span id="push-template-status" style="font-size: 11.5px; color: var(--green); display: none;">✅ 已儲存！</span>
+            </div>
+            <!-- In-modal Inline Save Prompt Bar -->
+            <div id="push-template-save-bar" style="display: none; gap: 6px; align-items: center;">
+              <input type="text" id="push-template-name-input" placeholder="請輸入範本名稱" style="height: 24px; padding: 0 6px; font-size: 11.5px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius); color: var(--text-primary); outline: none; width: 140px;" />
+              <button id="push-template-save-confirm" class="push-item-btn" style="height: 24px; padding: 0 8px; font-size: 11.5px; background: var(--accent-color); color: #fff; border: none; border-radius: var(--radius);">確定</button>
+              <button id="push-template-save-cancel" class="push-item-btn" style="height: 24px; padding: 0 8px; font-size: 11.5px; border-radius: var(--radius);">取消</button>
+            </div>
+          </div>
           <textarea id="push-input-text" placeholder="在此貼上或輸入想說的話，長篇大論也能自動幫您分段排版推文..." rows="4"></textarea>
         </div>
 

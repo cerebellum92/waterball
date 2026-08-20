@@ -2485,6 +2485,12 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
   font-family: monospace;
 }
 
+.push-item-text[contenteditable="true"]:focus {
+  border-bottom: 1px solid var(--accent-color) !important;
+  background: var(--bg-hover);
+  border-radius: var(--radius);
+}
+
 .push-item-len {
   font-size: 11px;
   color: var(--text-secondary);

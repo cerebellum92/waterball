@@ -1,5 +1,16 @@
 // Smart Auto-Split Multi-Push Assistant (長推文智慧自動分段發送小幫手)
 
+const DEFAULT_TEMPLATES = {
+  "┬─┬ノ( º _ ºノ) 淡定與翻桌": "( ′_>`) ┬─┬  淡定放好\n(╯°Д°)╯ ︵ ┴─┴ 再次翻桌！",
+  "◢▆▅▄▃ 崩潰大星光 ▃▄▅▆◣": "◢▆▅▄▃ 崩╰(〒皿〒)╯潰 ▃▄▅▆◣",
+  "(づ′・ω・）づ 摸摸抱抱": "(づ′・ω・）づ 摸摸抱抱，不哭不哭，眼淚是珍珠",
+  "(σ′▽′)′▽′)σ 哈哈看看你": "(σ′▽′)′▽′)σ 哈哈你看看你！",
+  "( ￣ c￣)y▂ξ 搬板凳幹古": "( ￣ c￣)y▂ξ 搬板凳拿香腸，坐看鄉民大亂鬥",
+  "(╬ﾟдﾟ)▄︻┻┳═一 狙擊開槍": "(╬ﾟдﾟ)▄︻┻┳═一 給我退下！",
+  "🐾 經典萌貓 喵~ (3行)": "   /\\_/\\   喵~\n  (=._.=)\n  (\")_(\")",
+  "印 5樓專業蓋章 (3行)": " ┌───┐\n │  5樓 │  專業蓋章！\n └───┘"
+};
+
 export class PushHelper {
   constructor(sendDataFn, getActiveTabFn) {
     this.sendData = sendDataFn;
@@ -25,15 +36,67 @@ export class PushHelper {
     this.progressCountdown = document.getElementById('push-progress-countdown');
     this.progressBarFill = document.getElementById('push-progress-bar-fill');
 
+    // Templates
+    this.tplSelect = document.getElementById('push-template-select');
+    this.tplSaveBtn = document.getElementById('push-template-save');
+    this.tplDeleteBtn = document.getElementById('push-template-delete');
+    this.tplControls = document.getElementById('push-template-controls');
+    this.tplSaveBar = document.getElementById('push-template-save-bar');
+    this.tplNameInput = document.getElementById('push-template-name-input');
+    this.tplSaveConfirmBtn = document.getElementById('push-template-save-confirm');
+    this.tplSaveCancelBtn = document.getElementById('push-template-save-cancel');
+    this.tplStatus = document.getElementById('push-template-status');
+    this.templates = {};
+
     this.initEvents();
+  }
+
+  showTplStatus(msg, isSuccess = true) {
+    if (!this.tplStatus) return;
+    this.tplStatus.textContent = msg;
+    this.tplStatus.style.color = isSuccess ? 'var(--green)' : 'var(--red)';
+    this.tplStatus.style.display = 'inline';
+    clearTimeout(this._statusTimer);
+    this._statusTimer = setTimeout(() => {
+      if (this.tplStatus) this.tplStatus.style.display = 'none';
+    }, 2000);
+  }
+
+  loadTemplates() {
+    let tpls = {};
+    try {
+      const saved = localStorage.getItem('bbsterm_push_templates_v2');
+      if (saved) {
+        tpls = JSON.parse(saved);
+      } else {
+        tpls = { ...DEFAULT_TEMPLATES };
+        localStorage.setItem('bbsterm_push_templates_v2', JSON.stringify(tpls));
+      }
+    } catch (e) {
+      tpls = { ...DEFAULT_TEMPLATES };
+    }
+    this.templates = tpls;
+
+    // Refresh select options
+    if (this.tplSelect) {
+      const prevVal = this.tplSelect.value;
+      this.tplSelect.innerHTML = '<option value="">-- 📋 選擇常用範本 --</option>';
+      Object.keys(this.templates).forEach((name) => {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        this.tplSelect.appendChild(opt);
+      });
+      if (prevVal && this.templates[prevVal]) {
+        this.tplSelect.value = prevVal;
+      }
+    }
   }
 
   initEvents() {
     this.closeBtn?.addEventListener('click', () => this.close());
     this.cancelBtn?.addEventListener('click', () => this.close());
     this.abortBtn?.addEventListener('click', () => this.abort());
-
-
 
     this.idInput?.addEventListener('input', () => {
       try {
@@ -48,6 +111,79 @@ export class PushHelper {
     this.textInput?.addEventListener('input', () => this.updatePreview());
     this.textInput?.addEventListener('paste', () => setTimeout(() => this.updatePreview(), 50));
     this.sendBtn?.addEventListener('click', () => this.startPushing());
+
+    // Templates Events
+    this.tplSelect?.addEventListener('change', () => {
+      const val = this.tplSelect.value;
+      if (val && this.templates[val]) {
+        this.textInput.value = this.templates[val];
+        this.updatePreview();
+      }
+    });
+
+    this.tplSaveBtn?.addEventListener('click', () => {
+      const txt = (this.textInput?.value || '').trim();
+      if (!txt) {
+        this.showTplStatus('⚠️ 輸入框為空', false);
+        return;
+      }
+      if (this.tplControls) this.tplControls.style.display = 'none';
+      if (this.tplSaveBar) {
+        this.tplSaveBar.style.display = 'flex';
+        this.tplNameInput.value = this.tplSelect?.value || '';
+        this.tplNameInput.focus();
+        this.tplNameInput.select();
+      }
+    });
+
+    const doSave = () => {
+      const cleanName = (this.tplNameInput?.value || '').trim();
+      if (!cleanName) {
+        this.showTplStatus('⚠️ 名稱不能為空', false);
+        return;
+      }
+      this.templates[cleanName] = this.textInput.value;
+      try {
+        localStorage.setItem('bbsterm_push_templates_v2', JSON.stringify(this.templates));
+      } catch (e) {}
+      this.loadTemplates();
+      if (this.tplSelect) this.tplSelect.value = cleanName;
+
+      if (this.tplSaveBar) this.tplSaveBar.style.display = 'none';
+      if (this.tplControls) this.tplControls.style.display = 'flex';
+      this.showTplStatus(`✅ 已儲存！`, true);
+    };
+
+    this.tplSaveConfirmBtn?.addEventListener('click', doSave);
+    this.tplNameInput?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        doSave();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        if (this.tplSaveBar) this.tplSaveBar.style.display = 'none';
+        if (this.tplControls) this.tplControls.style.display = 'flex';
+      }
+    });
+
+    this.tplSaveCancelBtn?.addEventListener('click', () => {
+      if (this.tplSaveBar) this.tplSaveBar.style.display = 'none';
+      if (this.tplControls) this.tplControls.style.display = 'flex';
+    });
+
+    this.tplDeleteBtn?.addEventListener('click', () => {
+      const val = this.tplSelect?.value;
+      if (!val) {
+        this.showTplStatus('⚠️ 請先選取範本', false);
+        return;
+      }
+      delete this.templates[val];
+      try {
+        localStorage.setItem('bbsterm_push_templates_v2', JSON.stringify(this.templates));
+      } catch (e) {}
+      this.loadTemplates();
+      this.showTplStatus(`🗑️ 已刪除！`, true);
+    });
   }
 
   open() {
@@ -60,6 +196,10 @@ export class PushHelper {
     this.modalEl?.classList.remove('hidden');
     this.isPushing = false;
     this.abortController = false;
+    if (this.tplSaveBar) this.tplSaveBar.style.display = 'none';
+    if (this.tplControls) this.tplControls.style.display = 'flex';
+    if (this.tplStatus) this.tplStatus.style.display = 'none';
+    this.loadTemplates();
     this.progressBox?.classList.add('hidden');
     this.sendBtn?.classList.remove('hidden');
     this.cancelBtn?.classList.remove('hidden');
@@ -146,7 +286,7 @@ export class PushHelper {
     const punctRegex = /([，。！？；：、,.!?;:~～—…\s]+)/;
 
     for (const rawLine of rawLines) {
-      const line = rawLine.trim();
+      const line = rawLine.trimEnd();
       if (!line) continue;
 
       let current = '';
@@ -174,18 +314,18 @@ export class PushHelper {
             }
 
             if (splitPos !== -1) {
-              const part1 = current.slice(0, splitPos).trim();
+              const part1 = current.slice(0, splitPos).trimEnd();
               const part2 = current.slice(splitPos);
               if (part1) segments.push(part1);
               current = part2 + ch;
               currentBytes = this.getStringByteWidth(current);
             } else {
-              segments.push(current.trim());
+              segments.push(current.trimEnd());
               current = ch;
               currentBytes = chWidth;
             }
           } else {
-            segments.push(current.trim());
+            segments.push(current.trimEnd());
             current = ch;
             currentBytes = chWidth;
           }
@@ -194,7 +334,7 @@ export class PushHelper {
       }
 
       if (current.trim()) {
-        segments.push(current.trim());
+        segments.push(current.trimEnd());
       }
     }
 
@@ -233,6 +373,8 @@ export class PushHelper {
       'author': { label: '作者 ✍️', cls: 'push-type-neutral' },
     };
 
+    this.currentSegments = segments; // Store split segments for editing support
+
     segments.forEach((seg, idx) => {
       const badgeInfo = typeBadges[typeKey] || typeBadges['1'];
 
@@ -245,11 +387,36 @@ export class PushHelper {
 
       const textEl = document.createElement('div');
       textEl.className = 'push-item-text';
+      textEl.contentEditable = 'true';
       textEl.textContent = seg;
+      textEl.style.outline = 'none';
+      textEl.style.borderBottom = '1px dashed var(--border-color)';
+      textEl.style.cursor = 'text';
 
       const lenEl = document.createElement('div');
       lenEl.className = 'push-item-len';
-      lenEl.textContent = `${seg.length}字`;
+      
+      const updateLen = (txt) => {
+        const bytes = this.getStringByteWidth(txt);
+        if (bytes > maxBytes) {
+          lenEl.innerHTML = `<span style="color: var(--red); font-weight: bold; cursor: help;" title="已超過單行安全長度限制 ${maxBytes} 位元組，可能導致亂碼或折行">⚠️ ${bytes}B</span>`;
+        } else {
+          lenEl.textContent = `${txt.length}字 (${bytes}B)`;
+        }
+      };
+      updateLen(seg);
+
+      textEl.oninput = () => {
+        // Strip non-breaking space (0xA0 / &nbsp;) generated by browser contenteditable
+        const newText = (textEl.textContent || '').replace(/\u00A0/g, ' ');
+        this.currentSegments[idx] = newText;
+        updateLen(newText);
+
+        // Two-way sync: update main textarea so saving template saves the edited version!
+        if (this.textInput) {
+          this.textInput.value = this.currentSegments.join('\n');
+        }
+      };
 
       const btnSendSingle = document.createElement('button');
       btnSendSingle.className = 'push-item-btn';
@@ -264,7 +431,7 @@ export class PushHelper {
         }
         btnSendSingle.disabled = true;
         btnSendSingle.textContent = '⏳ 送出...';
-        await this.sendSegmentSequence(seg, typeKey);
+        await this.sendSegmentSequence(this.currentSegments[idx], typeKey);
         btnSendSingle.textContent = '✅ 已送出';
         setTimeout(() => {
           btnSendSingle.disabled = false;
@@ -278,7 +445,7 @@ export class PushHelper {
       btnCopy.textContent = '📋 複製';
       btnCopy.onclick = (e) => {
         e.stopPropagation();
-        navigator.clipboard.writeText(seg);
+        navigator.clipboard.writeText(this.currentSegments[idx]);
         btnCopy.textContent = '✓ 已複製';
         setTimeout(() => { btnCopy.textContent = '📋 複製'; }, 1000);
       };
@@ -360,16 +527,13 @@ export class PushHelper {
       return;
     }
 
-    const text = this.textInput?.value || '';
-    const strategy = this.strategySelect?.value || 'fill';
-    const typeKey = this.typeSelect?.value || '1';
-    const maxBytes = this.getMaxSafeBytes();
-    const segments = this.splitText(text, maxBytes, strategy);
+    const segments = this.currentSegments || [];
     if (segments.length === 0) {
       alert('請先輸入推文內容！');
       return;
     }
 
+    const typeKey = this.typeSelect?.value || '1';
     const delayMs = parseInt(this.delaySelect?.value || '2000', 10);
 
     this.isPushing = true;
