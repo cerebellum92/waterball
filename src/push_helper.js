@@ -557,8 +557,11 @@ export class PushHelper {
       if (this.progressBarFill) {
         this.progressBarFill.style.width = `${percent}%`;
       }
+      const isPtt = this.detectTargetStation() === 'ptt';
+      // On PTT, all subsequent pushes (i > 0) after the first one automatically become arrows and skip the 1/2/3 menu
+      const effectiveTypeKey = (isPtt && i > 0) ? 'author' : typeKey;
 
-      await this.sendSegmentSequence(seg, typeKey);
+      await this.sendSegmentSequence(seg, effectiveTypeKey);
       if (this.abortController) break;
 
       if (i < segments.length - 1 && !this.abortController) {
