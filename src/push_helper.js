@@ -33,11 +33,7 @@ export class PushHelper {
     this.cancelBtn?.addEventListener('click', () => this.close());
     this.abortBtn?.addEventListener('click', () => this.abort());
 
-    this.modalEl?.addEventListener('click', (e) => {
-      if (e.target === this.modalEl && !this.isPushing) {
-        this.close();
-      }
-    });
+
 
     this.idInput?.addEventListener('input', () => {
       try {
@@ -131,10 +127,12 @@ export class PushHelper {
 
   getMaxSafeBytes() {
     const id = (this.idInput?.value || '').trim();
+    // PTT has a hard push text limit of 50-52 bytes. 
+    // We set the maximum safe bytes to 46 to leave a buffer, preventing boundary byte truncation and 'y' key merging.
     if (id.length > 0) {
-      return Math.max(20, Math.min(56, 60 - id.length));
+      return Math.max(20, Math.min(46, 56 - id.length));
     }
-    return 52;
+    return 46;
   }
 
   splitText(rawText, maxBytes = null, strategy = 'fill') {
@@ -231,6 +229,8 @@ export class PushHelper {
     const typeBadges = {
       '1': { label: '推 👍', cls: 'push-type-up' },
       '2': { label: '噓 👎', cls: 'push-type-down' },
+      '3': { label: '→ 箭頭', cls: 'push-type-neutral' },
+      'author': { label: '作者 ✍️', cls: 'push-type-neutral' },
     };
 
     segments.forEach((seg, idx) => {
@@ -296,17 +296,61 @@ export class PushHelper {
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
+  detectTargetStation() {
+    const tab = this.getActiveTab?.();
+    const addr = (tab?.address || '').toLowerCase();
+    if (addr.includes('ptt.cc') || addr.includes('ptt2.cc') || addr.includes('ptt')) {
+      return 'ptt';
+    }
+    return 'maple';
+  }
+
   async sendSegmentSequence(seg, typeKey) {
-    this.sendData('%');
-    await this.sleep(350);
-    if (this.abortController) return;
+    const isPtt = this.detectTargetStation() === 'ptt';
+    const keyDelay = isPtt ? 500 : 750; // Dynamic delay: PTT is faster (500ms), MapleBBS needs more time (750ms) to prevent byte corruption
 
-    this.sendData(`${typeKey}\r`);
-    await this.sleep(350);
-    if (this.abortController) return;
+    if (typeKey === 'author') {
+      // Author mode: PTT directly transitions to text input bar, skipping the 1/2/3 choice prompt!
+      this.sendData('%');
+      await this.sleep(keyDelay);
+      if (this.abortController) return;
 
-    this.sendData(`${seg}\r`);
-    await this.sleep(350);
+      this.sendData(`${seg}\r`);
+      await this.sleep(keyDelay);
+      if (this.abortController) return;
+
+      if (isPtt) {
+        // PTT asks '確定要儲存檔案嗎(Y/N)? [N]'. We must send 'y\r' to confirm saving.
+        // Wait 200ms to ensure the prompt is open before sending y\r.
+        await this.sleep(200);
+        this.sendData('y\r');
+        await this.sleep(keyDelay);
+      }
+    } else {
+      this.sendData('%');
+      await this.sleep(keyDelay);
+      if (this.abortController) return;
+
+      // Step 2: Push Type selection
+      // PTT uses single-character prompt (no Enter); MapleBBS requires Enter to confirm selection!
+      const optionStr = isPtt ? typeKey : `${typeKey}\r`;
+      this.sendData(optionStr);
+      await this.sleep(keyDelay);
+      if (this.abortController) return;
+
+      // Step 3: Segment text followed by Enter
+      this.sendData(`${seg}\r`);
+      await this.sleep(keyDelay);
+      if (this.abortController) return;
+
+      if (isPtt) {
+        // PTT asks '確定要儲存檔案嗎(Y/N)? [N]'. We must send 'y\r' to confirm saving.
+        // Wait 200ms to ensure the prompt is open before sending y\r.
+        await this.sleep(200);
+        this.sendData('y\r');
+        await this.sleep(keyDelay);
+      }
+    }
   }
 
   async startPushing() {
