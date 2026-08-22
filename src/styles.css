@@ -901,41 +901,26 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
 
 #ime-input {
   position: absolute;
-  top: -9999px;
-  left: -9999px;
-  width: 1px;
-  height: 1px;
+  top: 0;
+  left: 0;
+  width: 20px;
+  height: 20px;
   padding: 0;
   margin: 0;
   border: none;
   outline: none;
   background: transparent;
-  color: transparent;
+  color: #cccccc;
   caret-color: transparent;
-  opacity: 0;
-  pointer-events: none;
-  z-index: -1;
+  opacity: 1;
+  pointer-events: auto;
+  z-index: 10;
   resize: none;
-  overflow: hidden;
+  overflow: visible;
   white-space: pre;
 }
 
-#ime-input.composing {
-  opacity: 1 !important;
-  pointer-events: auto !important;
-  z-index: 1000 !important;
-  background: rgba(20, 20, 20, 0.95) !important;
-  color: #58a6ff !important;
-  caret-color: #ffffff !important;
-  border-bottom: 2px solid #58a6ff !important;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
-  border-radius: 2px;
-  padding: 0 4px !important;
-  width: auto !important;
-  min-width: 40px;
-  max-width: 400px;
-  overflow: visible !important;
-}
+/* Native-style inline composition (顯示注音 ㄅㄆㄇㄈ / 拼音組字過程，純白字體無雜色背景) */
 
 /* xterm.js overrides for better appearance */
 .xterm {
@@ -1179,7 +1164,7 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
 .reader-title {
   font-size: 22px;
   font-weight: 700;
-  color: #ffffff;
+  color: #cccccc;
   line-height: 1.4;
   margin-bottom: 14px;
 }
@@ -1230,7 +1215,6 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
 
 .reader-link {
   color: var(--accent);
-  text-decoration: underline;
   word-break: break-all;
   transition: opacity 0.15s;
 }
@@ -1280,11 +1264,9 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
 
 .reader-img-caption a {
   color: var(--accent);
-  text-decoration: none;
 }
 
 .reader-img-caption a:hover {
-  text-decoration: underline;
 }
 
 /* Loading Box */
@@ -1486,7 +1468,7 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
   right: 0;
   background: transparent;
   border: none;
-  color: #ffffff;
+  color: #cccccc;
   font-size: 32px;
   cursor: pointer;
 }
@@ -2244,7 +2226,6 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
   border-radius: var(--radius);
   color: var(--text-primary);
   font-size: 11px;
-  text-decoration: none;
   display: inline-flex;
   align-items: center;
   transition: all 0.15s ease;
@@ -2568,3 +2549,8 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
 }
 
 
+
+
+#ime-input.composing {
+  caret-color: #a0a0a0;
+}

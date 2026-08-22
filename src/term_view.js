@@ -17,6 +17,12 @@ export class TermView {
     this.wrapper.style.alignItems = 'center';
     this.wrapper.style.justifyContent = 'center';
     this.wrapper.style.backgroundColor = '#000000';
+    
+    // Prevent browser auto-scroll when focusing a wide input near the screen edge
+    this.wrapper.addEventListener('scroll', () => {
+      if (this.wrapper.scrollLeft > 0) this.wrapper.scrollLeft = 0;
+      if (this.wrapper.scrollTop > 0) this.wrapper.scrollTop = 0;
+    });
     this.wrapper.style.overflow = 'hidden';
 
     this.canvas = document.createElement('canvas');
@@ -214,20 +220,79 @@ export class TermView {
   }
 
   updateImePosition() {
-    if (!this.imeInput || !this.canvas) return;
+    if (!this.canvas || !this.imeInput) return;
+    
+    const isComposing = this.imeInput.dataset.composing === 'true';
     const canvasRect = this.canvas.getBoundingClientRect();
     const wrapperRect = this.wrapper.getBoundingClientRect();
-    const left = (canvasRect.left - wrapperRect.left) + this.buf.cur_x * this.cellW;
-    const top = (canvasRect.top - wrapperRect.top) + this.buf.cur_y * this.cellH;
-    const fontSize = Math.floor(this.cellH * 0.85);
 
-    this.imeInput.style.left = `${Math.max(0, left)}px`;
-    this.imeInput.style.top = `${Math.max(0, top)}px`;
-    this.imeInput.style.width = `${Math.max(40, this.cellW * 4)}px`;
-    this.imeInput.style.height = `${this.cellH}px`;
-    this.imeInput.style.fontSize = `${fontSize}px`;
-    this.imeInput.style.lineHeight = `${this.cellH}px`;
-    this.imeInput.style.fontFamily = this.getFontFamilyString();
+    // 1. INSTANT UPDATES (Width, Height, Font)
+    // We must update width instantly to prevent text clipping during the first 100ms of composition.
+    // Calculate left strictly for max width bounding (using current visual left, or fallback to exact left)
+    const currentLeft = parseFloat(this.imeInput.style.left) || 0;
+    const maxImeWidth = Math.max(20, canvasRect.right - wrapperRect.left - currentLeft);
+    const width = isComposing ? `${Math.min(600, maxImeWidth)}px` : `${Math.max(20, this.cellW)}px`;
+    const height = `${this.cellH}px`;
+    const fontSize = `${Math.floor(this.cellH * 0.85)}px`;
+    const fontFamily = this.getFontFamilyString();
+
+    if (this.imeInput.style.width !== width) this.imeInput.style.width = width;
+    if (this.imeInput.style.height !== height) this.imeInput.style.height = height;
+    if (this.imeInput.style.fontSize !== fontSize) this.imeInput.style.fontSize = fontSize;
+    if (this.imeInput.style.lineHeight !== height) this.imeInput.style.lineHeight = height;
+    if (this.imeInput.style.fontFamily !== fontFamily) this.imeInput.style.fontFamily = fontFamily;
+
+    // 2. ADAPTIVE DEBOUNCE (Left, Top)
+    // PTT sends intense screen redraws (line redraws + status bar updates) on EVERY keystroke.
+    // Over SSH, these updates are fragmented, causing the cursor to momentarily jump to col 0 
+    // or the bottom-right corner.
+    // 
+    // Our Adaptive Strategy:
+    // - If the cursor movement is "natural" (e.g. typing, backspace, enter), we apply it INSTANTLY (0ms).
+    // - If the cursor movement is "wild" (e.g. jumping to col 0 or row 23), it's likely an SSH artifact. 
+    //   We delay it by 30ms. If it's transient, a natural update will arrive and cancel it. 
+    //   If it's a real jump (like a mouse click or Page Down), it will apply after 30ms (unnoticeable).
+    const targetX = this.buf.cur_x;
+    const targetY = this.buf.cur_y;
+
+    const currentLeftPx = parseFloat(this.imeInput.style.left) || 0;
+    const currentTopPx = parseFloat(this.imeInput.style.top) || 0;
+    
+    const currentX = Math.round((currentLeftPx - Math.max(0, canvasRect.left - wrapperRect.left)) / this.cellW);
+    const currentY = Math.round((currentTopPx - Math.max(0, canvasRect.top - wrapperRect.top)) / this.cellH);
+    
+    const rowDiff = targetY - currentY;
+    const colDiff = targetX - currentX;
+    
+    // Natural movements: advancing a few chars, backspacing, or wrapping to the next line
+    const isSameLineAdvance = (rowDiff === 0 && colDiff >= -3 && colDiff <= 10);
+    const isNewLineWrap = (rowDiff === 1 && targetX <= 15);
+    const isNaturalMovement = isSameLineAdvance || isNewLineWrap;
+
+    const applyPosition = () => {
+      if (!this.canvas || !this.imeInput) return;
+      const newLeft = `${Math.max(0, (canvasRect.left - wrapperRect.left) + this.buf.cur_x * this.cellW)}px`;
+      const newTop = `${Math.max(0, (canvasRect.top - wrapperRect.top) + this.buf.cur_y * this.cellH)}px`;
+      
+      if (this.imeInput.style.left !== newLeft) this.imeInput.style.left = newLeft;
+      if (this.imeInput.style.top !== newTop) this.imeInput.style.top = newTop;
+    };
+
+    // Always clear any pending delayed jumps since we have a new update
+    if (this.imePositionTimeout) {
+      clearTimeout(this.imePositionTimeout);
+      this.imePositionTimeout = null;
+    }
+
+    if (isNaturalMovement) {
+      // It's a natural typing movement! Apply INSTANTLY (0ms lag)
+      applyPosition();
+    } else {
+      // It's a wild jump. Wait 30ms to see if it's just a transient SSH redraw artifact.
+      this.imePositionTimeout = setTimeout(() => {
+        applyPosition();
+      }, 30);
+    }
   }
 
   getFontFamilyString() {
@@ -564,7 +629,7 @@ export class TermView {
           ctx.fillStyle = 'rgba(255, 140, 0, 0.75)';
           ctx.fillRect(mx1, my1, mw, mh);
 
-          ctx.strokeStyle = '#ffffff';
+          ctx.strokeStyle = '#a0a0a0';
           ctx.lineWidth = 1.5;
           ctx.strokeRect(mx1 + 0.5, my1 + 0.5, mw - 1, mh - 1);
         } else {
@@ -625,7 +690,7 @@ export class TermView {
 
     // 2. Draw cursor (Smart mode: auto-hide on menu indicator ● / (F)avorite in list screens; always show in editor)
     let shouldDrawCursor = false;
-    if (this.blinkState && this.cursorStyle !== 'none') {
+    if (this.cursorStyle !== 'none') {
       if (this.cursorStyle !== 'smart' || isEditorScreen) {
         // In editor mode or non-smart modes, ALWAYS display the cursor!
         shouldDrawCursor = true;
@@ -660,8 +725,8 @@ export class TermView {
       const height = Math.round(cellH);
       const style = (this.cursorStyle === 'smart') ? 'underline' : (this.cursorStyle || 'underline');
 
-      ctx.fillStyle = '#ffffff';
-      ctx.strokeStyle = '#ffffff';
+      ctx.fillStyle = '#a0a0a0';
+      ctx.strokeStyle = '#a0a0a0';
 
       if (style === 'underline') {
         // Crisp bottom underline (never obscures text)

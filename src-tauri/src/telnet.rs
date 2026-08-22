@@ -144,21 +144,55 @@ impl BbsConnection {
                 let mut sess = ssh2::Session::new()
                     .map_err(|e| format!("建立 SSH Session 失敗: {}", e))?;
                 sess.set_tcp_stream(tcp);
+                sess.set_blocking(true);
+                sess.set_timeout(15000);
                 sess.handshake()
                     .map_err(|e| format!("SSH 握手失敗: {}", e))?;
 
-                // Authenticate to BBS (PTT and MapleBBS accept password auth with any/empty password)
-                let _ = sess.userauth_password(&target_user, "");
+                // Query supported auth methods (this also sends userauth_none which authenticates some BBS servers automatically)
+                let auth_methods = sess.auth_methods(&target_user).unwrap_or("");
+                println!("[SSH] Supported auth methods for {}: {}", target_user, auth_methods);
+
+                if !sess.authenticated() {
+                    let _ = sess.userauth_password(&target_user, "");
+                }
+                if !sess.authenticated() {
+                    let _ = sess.userauth_password(&target_user, "bbs");
+                }
+                if !sess.authenticated() {
+                    let _ = sess.userauth_password(&target_user, &target_user);
+                }
+                if !sess.authenticated() {
+                    struct EmptyPromptHandler;
+                    impl ssh2::KeyboardInteractivePrompt for EmptyPromptHandler {
+                        fn prompt<'a>(
+                            &mut self,
+                            _username: &str,
+                            _instructions: &str,
+                            prompts: &[ssh2::Prompt<'a>],
+                        ) -> Vec<String> {
+                            prompts.iter().map(|_| "".to_string()).collect()
+                        }
+                    }
+                    let mut handler = EmptyPromptHandler;
+                    let _ = sess.userauth_keyboard_interactive(&target_user, &mut handler);
+                }
+
+                if !sess.authenticated() {
+                    return Err(format!("SSH 認證失敗 (伺服器要求方式: {})", auth_methods));
+                }
 
                 let mut channel = sess.channel_session()
                     .map_err(|e| format!("開啟 SSH 通道失敗: {}", e))?;
+
                 channel.request_pty("vt100", None, Some((80, 24, 0, 0)))
                     .map_err(|e| format!("請求 PTY 失敗: {}", e))?;
+
                 channel.shell()
                     .map_err(|e| format!("啟動 Shell 失敗: {}", e))?;
 
-                sess.set_blocking(true);
-                sess.set_timeout(15);
+                // Switch SSH session to non-blocking mode for full-duplex non-blocking IO and instant user key writing
+                sess.set_blocking(false);
 
                 Ok((Arc::new(std::sync::Mutex::new(channel)), Arc::new(std::sync::Mutex::new(sess))))
             })();
@@ -224,13 +258,13 @@ impl BbsConnection {
         app: AppHandle,
     ) {
         let mut buf = [0u8; 4096];
-        let mut pending = Vec::new();
-        let mut pending_lead = Vec::new();
+        let mut pending_iac = Vec::new();
+        let mut pending_charset = Vec::new();
 
         while alive.load(Ordering::Relaxed) {
             match reader.read(&mut buf) {
                 Ok(0) => {
-                    if !pending_lead.is_empty() {
+                    if !pending_charset.is_empty() {
                         let _ = app.emit("terminal-data", TerminalDataPayload {
                             tab_id: tab_id.clone(),
                             data: " ".to_string(),
@@ -244,23 +278,21 @@ impl BbsConnection {
                     break;
                 }
                 Ok(n) => {
-                    let mut data_to_process = Vec::with_capacity(pending_lead.len() + pending.len() + n);
-                    if !pending_lead.is_empty() {
-                        data_to_process.extend_from_slice(&pending_lead);
-                        pending_lead.clear();
+                    // 1. Telnet Protocol IAC Stripping
+                    let mut iac_input = Vec::with_capacity(pending_iac.len() + n);
+                    if !pending_iac.is_empty() {
+                        iac_input.extend_from_slice(&pending_iac);
+                        pending_iac.clear();
                     }
-                    if !pending.is_empty() {
-                        data_to_process.extend_from_slice(&pending);
-                        pending.clear();
-                    }
-                    data_to_process.extend_from_slice(&buf[..n]);
+                    iac_input.extend_from_slice(&buf[..n]);
 
-                    let clean = Self::strip_telnet_commands(&mut data_to_process);
-                    pending.extend_from_slice(&data_to_process);
+                    let clean = Self::strip_telnet_commands(&mut iac_input);
+                    pending_iac.extend_from_slice(&iac_input);
 
+                    // 2. Charset & ANSI Decoding
                     if !clean.is_empty() {
                         let cs = charset.read().map(|g| *g).unwrap_or(BbsCharset::Big5);
-                        let decoded = Self::decode_ansi_stream(&clean, cs, &mut pending_lead);
+                        let decoded = Self::decode_ansi_stream(&clean, cs, &mut pending_charset);
                         if !decoded.is_empty() {
                             let _ = app.emit("terminal-data", TerminalDataPayload {
                                 tab_id: tab_id.clone(),
@@ -294,7 +326,7 @@ impl BbsConnection {
         app: AppHandle,
     ) {
         let mut buf = [0u8; 4096];
-        let mut pending_lead = Vec::new();
+        let mut pending_charset = Vec::new();
 
         while alive.load(Ordering::Relaxed) {
             let read_res = {
@@ -315,7 +347,7 @@ impl BbsConnection {
                         ch.eof()
                     };
                     if is_eof {
-                        if !pending_lead.is_empty() {
+                        if !pending_charset.is_empty() {
                             let _ = app.emit("terminal-data", TerminalDataPayload {
                                 tab_id: tab_id.clone(),
                                 data: " ".to_string(),
@@ -328,18 +360,11 @@ impl BbsConnection {
                         });
                         break;
                     }
-                    std::thread::yield_now();
+                    std::thread::sleep(std::time::Duration::from_millis(5));
                 }
                 Ok(n) => {
-                    let mut data_to_process = Vec::with_capacity(pending_lead.len() + n);
-                    if !pending_lead.is_empty() {
-                        data_to_process.extend_from_slice(&pending_lead);
-                        pending_lead.clear();
-                    }
-                    data_to_process.extend_from_slice(&buf[..n]);
-
                     let cs = charset.read().map(|g| *g).unwrap_or(BbsCharset::Big5);
-                    let decoded = Self::decode_ansi_stream(&data_to_process, cs, &mut pending_lead);
+                    let decoded = Self::decode_ansi_stream(&buf[..n], cs, &mut pending_charset);
                     if !decoded.is_empty() {
                         let _ = app.emit("terminal-data", TerminalDataPayload {
                             tab_id: tab_id.clone(),
@@ -349,7 +374,7 @@ impl BbsConnection {
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut => {
-                    std::thread::yield_now();
+                    std::thread::sleep(std::time::Duration::from_millis(5));
                     continue;
                 }
                 Err(_) => {
@@ -382,23 +407,28 @@ impl BbsConnection {
     /// - Partial Big5 lead bytes right before ESC are turned to a single space, preserving exact 80-column alignment
     /// - Valid Big5 pairs are decoded into UTF-8 Chinese/special characters via encoding_rs
     fn decode_ansi_big5(raw: &[u8], pending_bytes: &mut Vec<u8>) -> String {
-        let mut out = String::with_capacity(raw.len());
+        let mut buffer = Vec::with_capacity(pending_bytes.len() + raw.len());
+        buffer.extend_from_slice(pending_bytes);
+        buffer.extend_from_slice(raw);
+        pending_bytes.clear();
+
+        let mut out = String::with_capacity(buffer.len());
         let mut i = 0;
-        while i < raw.len() {
-            let b = raw[i];
+        while i < buffer.len() {
+            let b = buffer[i];
             if b < 0x80 {
                 out.push(b as char);
                 i += 1;
                 continue;
             }
 
-            if i + 1 < raw.len() {
-                if raw[i + 1] == 0x1B {
+            if i + 1 < buffer.len() {
+                if buffer[i + 1] == 0x1B {
                     // Standalone lead byte right before ESC => emit single space to maintain 1-cell width
                     out.push(' ');
                     i += 1;
                 } else {
-                    let pair = &raw[i..i + 2];
+                    let pair = &buffer[i..i + 2];
                     let (decoded, _, malformed) = BIG5.decode(pair);
                     if !malformed {
                         out.push_str(&decoded);
@@ -419,22 +449,27 @@ impl BbsConnection {
 
     /// GBK byte-level decoder with ANSI lead byte handling
     fn decode_ansi_gbk(raw: &[u8], pending_bytes: &mut Vec<u8>) -> String {
-        let mut out = String::with_capacity(raw.len());
+        let mut buffer = Vec::with_capacity(pending_bytes.len() + raw.len());
+        buffer.extend_from_slice(pending_bytes);
+        buffer.extend_from_slice(raw);
+        pending_bytes.clear();
+
+        let mut out = String::with_capacity(buffer.len());
         let mut i = 0;
-        while i < raw.len() {
-            let b = raw[i];
+        while i < buffer.len() {
+            let b = buffer[i];
             if b < 0x80 {
                 out.push(b as char);
                 i += 1;
                 continue;
             }
 
-            if i + 1 < raw.len() {
-                if raw[i + 1] == 0x1B {
+            if i + 1 < buffer.len() {
+                if buffer[i + 1] == 0x1B {
                     out.push(' ');
                     i += 1;
                 } else {
-                    let pair = &raw[i..i + 2];
+                    let pair = &buffer[i..i + 2];
                     let (decoded, _, malformed) = GBK.decode(pair);
                     if !malformed {
                         out.push_str(&decoded);

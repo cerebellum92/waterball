@@ -33,6 +33,11 @@ const settingsBtn = document.getElementById('settings-btn');
 const statusDot = document.getElementById('status-dot');
 const statusText = document.getElementById('status-text');
 const terminalContainer = document.getElementById('terminal-container');
+document.body.addEventListener("scroll", () => { if (document.body.scrollLeft > 0) document.body.scrollLeft = 0; if (document.body.scrollTop > 0) document.body.scrollTop = 0; });
+window.addEventListener("scroll", () => { if (window.scrollX > 0) window.scrollTo(0, window.scrollY); if (window.scrollY > 0) window.scrollTo(window.scrollX, 0); });
+
+terminalContainer.addEventListener("scroll", () => { if (terminalContainer.scrollLeft > 0) terminalContainer.scrollLeft = 0; if (terminalContainer.scrollTop > 0) terminalContainer.scrollTop = 0; });
+
 const imeInput = document.getElementById('ime-input');
 
 // Palette, Search, Board Switcher & Push Helper Setup
@@ -153,8 +158,6 @@ window.addEventListener('resize', () => {
   if (activeTab?.view) activeTab.view.resize();
 });
 
-let isComposing = false;
-
 function sendData(data) {
   const activeTab = tabManager.getActiveTab();
   if (!activeTab || !activeTab.isConnected || !data) return;
@@ -163,27 +166,40 @@ function sendData(data) {
   });
 }
 
-function focusTerminal() {
+function focusTerminal(force = false) {
   if (settingsModal && !settingsModal.classList.contains('hidden')) return;
   if (articleReader && articleReader.isOpen) return;
   if (searchWidget && searchWidget.isOpen) return;
-  if (
-    document.activeElement &&
-    (document.activeElement.tagName === 'INPUT' ||
-      document.activeElement.tagName === 'SELECT' ||
-      document.activeElement.tagName === 'BUTTON' ||
-      (document.activeElement.tagName === 'TEXTAREA' && document.activeElement !== imeInput))
-  ) {
-    return;
+  if (pushHelper && pushHelper.isOpen) return;
+  if (paletteWidget && paletteWidget.isOpen) return;
+  if (exportModal && exportModal.isOpen) return;
+  if (boardSwitcherWidget && boardSwitcherWidget.isOpen) return;
+
+  if (!force) {
+    if (
+      document.activeElement &&
+      (document.activeElement.tagName === 'INPUT' ||
+        document.activeElement.tagName === 'SELECT' ||
+        document.activeElement.tagName === 'BUTTON' ||
+        (document.activeElement.tagName === 'TEXTAREA' && document.activeElement !== imeInput))
+    ) {
+      return;
+    }
+  } else {
+    // If forcing focus back to BBS terminal, blur whatever toolbar element currently holds focus
+    if (document.activeElement && document.activeElement !== imeInput && document.activeElement !== document.body) {
+      document.activeElement.blur();
+    }
   }
-  if (imeInput && document.activeElement !== imeInput) {
+
+  if (imeInput) {
     imeInput.focus();
   }
 }
 
 // Click on terminal container focuses IME input
 terminalContainer.addEventListener('click', () => {
-  focusTerminal();
+  focusTerminal(true);
 });
 
 window.addEventListener('click', (e) => {
@@ -211,10 +227,15 @@ window.addEventListener('click', (e) => {
   focusTerminal();
 });
 
+let isComposing = false;
+let justComposed = false;
+
 // IME Composition Events (注音 / 倉頡 / 拼音 中文輸入法)
 if (imeInput) {
   imeInput.addEventListener('compositionstart', () => {
     isComposing = true;
+    justComposed = false;
+    imeInput.dataset.composing = 'true';
     imeInput.classList.add('composing');
     const activeTab = tabManager.getActiveTab();
     if (activeTab && activeTab.view) {
@@ -224,15 +245,15 @@ if (imeInput) {
 
   imeInput.addEventListener('compositionupdate', () => {
     isComposing = true;
+    justComposed = false;
+    imeInput.dataset.composing = 'true';
     imeInput.classList.add('composing');
-    const activeTab = tabManager.getActiveTab();
-    if (activeTab && activeTab.view) {
-      activeTab.view.updateImePosition();
-    }
   });
 
   imeInput.addEventListener('compositionend', (e) => {
     isComposing = false;
+    justComposed = true;
+    imeInput.dataset.composing = 'false';
     imeInput.classList.remove('composing');
     const text = e.data || imeInput.value;
     imeInput.value = '';
@@ -243,10 +264,21 @@ if (imeInput) {
     if (activeTab && activeTab.view) {
       activeTab.view.updateImePosition();
     }
+    setTimeout(() => {
+      justComposed = false;
+    }, 80);
   });
 
   imeInput.addEventListener('input', () => {
-    if (isComposing) return;
+    // During active composition, do NOT touch or clear the value!
+    if (isComposing) {
+      return;
+    }
+    // If just finished composition, ignore the trailing input event
+    if (justComposed) {
+      imeInput.value = '';
+      return;
+    }
     const text = imeInput.value;
     imeInput.value = '';
     if (text) {
@@ -329,20 +361,23 @@ async function doConnect() {
   activeTab.parser.feed(`\x1b[1;33m正在連線到 ${targetAddress}:${port} (${charset.toUpperCase()}) ...\r\n\x1b[0m`);
   tabManager.updateTabStatus(activeTab.id, 'connecting');
 
+  // Pre-initialize auto-login session before socket connection to catch the first incoming packet
+  const matchedBm = settingsManager.bookmarks.find(
+    (b) => b.address === targetAddress || b.address === raw || targetAddress.includes(b.address) || (host && b.address.includes(host))
+  );
+  if (matchedBm && matchedBm.username && matchedBm.password) {
+    autoLoginManager.startSession(
+      activeTab.id,
+      { username: matchedBm.username, password: matchedBm.password },
+      sendData
+    );
+  }
+
   try {
     await invoke('connect', { tabId: activeTab.id, address: targetAddress, port, charset });
-    // Check auto-login credentials
-    const matchedBm = settingsManager.bookmarks.find(
-      (b) => b.address === targetAddress || b.address === raw || targetAddress.includes(b.address)
-    );
-    if (matchedBm && matchedBm.username && matchedBm.password) {
-      autoLoginManager.startSession(
-        activeTab.id,
-        { username: matchedBm.username, password: matchedBm.password },
-        sendData
-      );
-    }
+    focusTerminal(true);
   } catch (err) {
+    autoLoginManager.stopSession(activeTab.id);
     activeTab.parser.feed(`\x1b[1;31m連線失敗: ${err}\r\n\x1b[0m`);
     tabManager.updateTabStatus(activeTab.id, 'disconnected');
   }
@@ -404,11 +439,17 @@ function updateToolbarConnectionState(state) {
   }
 }
 
-connectBtn.addEventListener('click', doConnect);
+connectBtn.addEventListener('click', () => {
+  connectBtn.blur();
+  focusTerminal(true);
+  doConnect();
+});
 disconnectBtn.addEventListener('click', doDisconnect);
 
 addressInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
+    addressInput.blur();
+    focusTerminal(true);
     const activeTab = tabManager.getActiveTab();
     if (activeTab?.isConnected) {
       doDisconnect().then(doConnect);
@@ -437,6 +478,8 @@ if (bookmarksSelect) {
       addressInput.value = bm.address;
       if (encodingSelect) encodingSelect.value = bm.encoding || 'big5';
       bookmarksSelect.selectedIndex = 0;
+      bookmarksSelect.blur();
+      focusTerminal(true);
       const activeTab = tabManager.getActiveTab();
       if (activeTab?.isConnected) {
         doDisconnect().then(doConnect);
@@ -858,6 +901,15 @@ invoke('set_anti_idle', {
 
 // Comprehensive Keyboard Mapping for BBS & Multi-Tab Shortcuts
 window.addEventListener('keydown', (e) => {
+  // Ignore bare modifier keys to not interfere with OS level HUDs (e.g., Cmd+Space input method HUD)
+  if (['Meta', 'Control', 'Alt', 'Shift', 'OS'].includes(e.key)) {
+    return;
+  }
+  // Immediately let OS handle Cmd+Space / Ctrl+Space without any interference or focus shifts
+  if ((e.metaKey || e.ctrlKey) && e.code === 'Space') {
+    return;
+  }
+
   imagePreview.hideImmediate();
   settingsManager.recordActivity();
 
@@ -1031,6 +1083,11 @@ window.addEventListener('keydown', (e) => {
   // Make sure terminal textarea has focus
   focusTerminal();
 
+  // Let macOS and OS handle CapsLock input method switching
+  if (e.code === 'CapsLock') {
+    return;
+  }
+
   // If user is actively in IME composition or candidate selection popup
   if (isComposing || e.isComposing || e.key === 'Process' || e.keyCode === 229) {
     return;
@@ -1076,8 +1133,8 @@ window.addEventListener('keydown', (e) => {
       seq = '\x1c'; // Ctrl+\
     } else if (e.code === 'Slash' || e.code === 'Minus') {
       seq = '\x1f'; // Ctrl+/ or Ctrl+_
-    } else if (e.code === 'Space' || e.code === 'Digit2') {
-      seq = '\x00'; // Ctrl+Space or Ctrl+@
+    } else if (e.code === 'Digit2') {
+      seq = '\x00'; // Ctrl+@ (NUL)
     } else if (e.key === 'ArrowLeft') {
       seq = e.metaKey ? '\x1b[1~' : '\x1b[1;5D'; // Cmd+Left -> Home, Ctrl+Left -> Word Left
     } else if (e.key === 'ArrowRight') {

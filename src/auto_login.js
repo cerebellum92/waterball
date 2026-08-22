@@ -6,7 +6,7 @@ export class AutoLoginManager {
     this.onStatusChange = null;
   }
 
-  startSession(tabId, credentials, sendDataFn) {
+  startSession(tabId, credentials, sendDataFn, initialBufferText = '') {
     if (!credentials || !credentials.username || !credentials.password) {
       return;
     }
@@ -19,7 +19,7 @@ export class AutoLoginManager {
       password: credentials.password,
       sendData: sendDataFn,
       state: 'WAIT_USER', // 'WAIT_USER' | 'WAIT_PASS' | 'WAIT_ANYKEY' | 'DONE'
-      buffer: '',
+      buffer: initialBufferText || '',
       timeoutTimer: null,
       actionTimer: null,
     };
@@ -31,6 +31,11 @@ export class AutoLoginManager {
 
     this.sessions.set(tabId, session);
     this.onStatusChange?.(tabId, '🔐 正在自動登入...');
+
+    // If initial buffer already has login prompt, process immediately
+    if (session.buffer) {
+      this.processBuffer(session);
+    }
   }
 
   feedData(tabId, data) {
@@ -43,6 +48,10 @@ export class AutoLoginManager {
       session.buffer = session.buffer.slice(-1024);
     }
 
+    this.processBuffer(session);
+  }
+
+  processBuffer(session) {
     const text = session.buffer;
 
     if (session.state === 'WAIT_USER') {
@@ -51,14 +60,9 @@ export class AutoLoginManager {
         session.buffer = ''; // reset buffer for next stage
         clearTimeout(session.actionTimer);
         session.actionTimer = setTimeout(() => {
-          // Send username string
-          session.sendData(session.username);
-          // Send Enter after 80ms to ensure BBS input loop receives full token + newline
-          setTimeout(() => {
-            session.sendData('\r');
-            session.state = 'WAIT_PASS';
-          }, 80);
-        }, 120);
+          session.sendData(session.username + '\r');
+          session.state = 'WAIT_PASS';
+        }, 30);
       }
     } else if (session.state === 'WAIT_PASS') {
       if (/請輸入密碼|password\s*[:：]|密碼\s*[:：]|您的密碼/i.test(text)) {
@@ -66,14 +70,9 @@ export class AutoLoginManager {
         session.buffer = '';
         clearTimeout(session.actionTimer);
         session.actionTimer = setTimeout(() => {
-          // Send password string
-          session.sendData(session.password);
-          // Send Enter after 80ms
-          setTimeout(() => {
-            session.sendData('\r');
-            session.state = 'WAIT_ANYKEY';
-          }, 80);
-        }, 150);
+          session.sendData(session.password + '\r');
+          session.state = 'WAIT_ANYKEY';
+        }, 30);
       }
     } else if (session.state === 'WAIT_ANYKEY') {
       if (/請按任意鍵|按任意鍵|請按\s*Enter|重複登入|嘗試錯誤|刪除以上錯誤/i.test(text)) {
@@ -83,9 +82,9 @@ export class AutoLoginManager {
         session.actionTimer = setTimeout(() => {
           session.sendData('\r');
           session.state = 'DONE';
-          this.onStatusChange?.(tabId, '自動登入完成');
-          setTimeout(() => this.stopSession(tabId), 1000);
-        }, 200);
+          this.onStatusChange?.(session.tabId, '自動登入完成');
+          setTimeout(() => this.stopSession(session.tabId), 1000);
+        }, 50);
       }
     }
   }
