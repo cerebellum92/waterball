@@ -251,17 +251,6 @@ if (imeInput) {
       sendData(text.replace(/\r\n/g, '\r').replace(/\n/g, '\r'));
     }
   });
-
-  imeInput.addEventListener('paste', (e) => {
-    e.preventDefault();
-    const text = (e.clipboardData || window.clipboardData)?.getData('text');
-    if (text) {
-      let clean = text.replace(/\r\n/g, '\r').replace(/\n/g, '\r');
-      clean = clean.replace(/\x1b\[/g, '\x15[');
-      clean = clean.replace(/\*\[([0-9;]*m)/g, '\x15[$1');
-      sendData(clean);
-    }
-  });
 }
 
 // Global paste handler for terminal
@@ -869,7 +858,6 @@ invoke('set_anti_idle', {
 window.addEventListener('keydown', (e) => {
   imagePreview.hideImmediate();
   settingsManager.recordActivity();
-  invoke('record_activity', { tabId: tabManager.getActiveTab()?.id || null }).catch(() => {});
 
   // If in Board Switcher Modal
   if (boardSwitcherWidget && boardSwitcherWidget.isOpen) {
@@ -1072,8 +1060,8 @@ window.addEventListener('keydown', (e) => {
       const letter = e.code.charAt(3).toUpperCase();
       const code = letter.charCodeAt(0) - 64; // 'A' (65) -> 1, 'X' (88) -> 24
       if (code >= 1 && code <= 26) {
-        // Handle Ctrl+V (let browser paste event handle paste if Cmd+V, else send \x16)
-        if (letter === 'V' && e.metaKey) {
+        // Handle Ctrl+V / Cmd+V (let browser paste event handle paste, do not send raw \x16)
+        if (letter === 'V') {
           return; // Let paste handler execute
         }
         seq = String.fromCharCode(code);
@@ -1181,6 +1169,27 @@ autoLoginManager.onStatusChange = (tabId, msg) => {
   }
 };
 
+let notificationScrapeTimer = null;
+function scheduleNotificationScrape(tabId) {
+  clearTimeout(notificationScrapeTimer);
+  notificationScrapeTimer = setTimeout(() => {
+    const tab = tabManager.getTabById(tabId);
+    if (tab && tab.buf) {
+      const lines = [];
+      for (let r = 0; r < tab.buf.rows; r++) {
+        let lineStr = '';
+        for (let c = 0; c < tab.buf.cols; c++) {
+          const cell = tab.buf.lines[r][c];
+          if (!cell || cell.isTrailByte) continue;
+          lineStr += cell.ch || ' ';
+        }
+        lines.push(lineStr);
+      }
+      notificationManager.feedScreenLines(tabId, lines, tab.title);
+    }
+  }, 300);
+}
+
 // Listen for backend data per tab
 listen('terminal-data', (event) => {
   try {
@@ -1188,21 +1197,7 @@ listen('terminal-data', (event) => {
     if (tab_id && data) {
       tabManager.feedData(tab_id, data);
       autoLoginManager.feedData(tab_id, data);
-
-      const tab = tabManager.getTabById(tab_id);
-      if (tab && tab.buf) {
-        const lines = [];
-        for (let r = 0; r < tab.buf.rows; r++) {
-          let lineStr = '';
-          for (let c = 0; c < tab.buf.cols; c++) {
-            const cell = tab.buf.lines[r][c];
-            if (!cell || cell.isTrailByte) continue;
-            lineStr += cell.ch || ' ';
-          }
-          lines.push(lineStr);
-        }
-        notificationManager.feedScreenLines(tab_id, lines, tab.title);
-      }
+      scheduleNotificationScrape(tab_id);
     }
   } catch (err) {
     console.error('Parser feed error:', err);

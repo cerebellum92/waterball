@@ -65,10 +65,12 @@ impl BbsConnection {
         ).map_err(|e| format!("Connection failed: {}", e))?;
 
         stream.set_nonblocking(false).ok();
+        stream.set_nodelay(true).ok();
         stream.set_read_timeout(Some(std::time::Duration::from_millis(100))).ok();
 
         let mut writer_stream = stream.try_clone()
             .map_err(|e| format!("Failed to clone stream: {}", e))?;
+        writer_stream.set_nodelay(true).ok();
         let reader_stream = stream;
 
         // Send initial Telnet terminal type negotiation: IAC WILL TTYPE, IAC WILL NAWS

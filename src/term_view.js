@@ -37,10 +37,13 @@ export class TermView {
     this.customFont = '';
     this.cursorStyle = 'underline';
 
+    this.renderRequested = false;
+    this.measureCache = new Map();
+
     this.blinkState = true;
     this.blinkTimer = setInterval(() => {
       this.blinkState = !this.blinkState;
-      this.redraw();
+      this.scheduleRedraw();
     }, 500);
 
     this.selection = null; // { startX, startY, endX, endY }
@@ -56,7 +59,7 @@ export class TermView {
 
     this.initMouseEvents();
 
-    this.buf.onUpdate = () => this.redraw();
+    this.buf.onUpdate = () => this.scheduleRedraw();
     this.resize();
   }
 
@@ -290,13 +293,33 @@ export class TermView {
     }
   }
 
+  scheduleRedraw() {
+    if (this.renderRequested) return;
+    this.renderRequested = true;
+    requestAnimationFrame(() => {
+      this.renderRequested = false;
+      this.redraw();
+    });
+  }
+
+  getCharWidth(ch, fontSize, ctx) {
+    let w = this.measureCache.get(ch);
+    if (w === undefined) {
+      w = ctx.measureText(ch).width;
+      this.measureCache.set(ch, w);
+    }
+    return w;
+  }
+
   setFontStyle(fontFamily = 'auto', customFont = '') {
     this.fontFamily = fontFamily;
     this.customFont = customFont;
-    this.redraw();
+    this.measureCache.clear();
+    this.scheduleRedraw();
   }
 
   resize() {
+    this.measureCache.clear();
     // Keep a comfortable 4px safe margin on all 4 borders to completely eliminate edge clipping
     const containerW = this.container.clientWidth || 800;
     const containerH = this.container.clientHeight || 500;
@@ -438,9 +461,9 @@ export class TermView {
               ctx.fill();
             } else if (cell.isLeadByte) {
               // Full-width character (CJK / special symbols): ensure exact fit into 2-cell width
-              const metrics = ctx.measureText(cell.ch);
-              if (metrics.width > 0) {
-                const scaleX = cellWidth / metrics.width;
+              const charW = this.getCharWidth(cell.ch, fontSize, ctx);
+              if (charW > 0 && Math.abs(charW - cellWidth) > 1.5) {
+                const scaleX = cellWidth / charW;
                 ctx.save();
                 ctx.translate(x1, centerY);
                 ctx.scale(scaleX, 1);
@@ -451,16 +474,16 @@ export class TermView {
               }
             } else {
               // Single-width character (ASCII): center inside cellWidth
-              const metrics = ctx.measureText(cell.ch);
-              if (metrics.width > cellWidth) {
-                const scaleX = cellWidth / metrics.width;
+              const charW = this.getCharWidth(cell.ch, fontSize, ctx);
+              if (charW > cellWidth + 0.5) {
+                const scaleX = cellWidth / charW;
                 ctx.save();
                 ctx.translate(x1, centerY);
                 ctx.scale(scaleX, 1);
                 ctx.fillText(cell.ch, 0, 0);
                 ctx.restore();
               } else {
-                ctx.fillText(cell.ch, x1 + (cellWidth - metrics.width) / 2, centerY);
+                ctx.fillText(cell.ch, x1 + (cellWidth - charW) * 0.5, centerY);
               }
             }
           }
