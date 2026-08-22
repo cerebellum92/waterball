@@ -255,15 +255,16 @@
               </select>
             </div>
             <div class="form-group">
-              <label for="setting-cursor-style">終端游標外觀樣式：</label>
+              <label for="setting-cursor-style">終端游標顯示模式與風格：</label>
               <select id="setting-cursor-style">
-                <option value="underline">_ 經典底線 (推薦 / 不遮擋 BBS 圓標)</option>
-                <option value="none">🚫 隱藏游標 (極致純淨 / 由 BBS 原生標記引導)</option>
-                <option value="hollow">▢ 空心方框 (Outline)</option>
-                <option value="bar">| 垂直細線 (I-Beam)</option>
-                <option value="block">█ 傳統實心方塊 (Block)</option>
+                <option value="smart" selected>✨ 【智慧推薦】文章/信件編輯時顯示光標，看板列表球 ● 處自動隱藏</option>
+                <option value="underline">_ 經典底線 (文章與看板選單總是顯示光標)</option>
+                <option value="bar">| 垂直細線 (I-Beam 直條光標)</option>
+                <option value="block">█ 傳統實心方塊 (Block 方形光標)</option>
+                <option value="hollow">▢ 空心方框 (Outline 矩形邊框)</option>
+                <option value="none">🚫 總是隱藏光標 (極致純淨)</option>
               </select>
-              <p class="hint">預設為經典底線游標，可避免與 BBS 看板列表的 ● 圓球游標重疊混淆。</p>
+              <p class="hint">智慧推薦模式：在文章/信件編輯輸入時自動顯示光標；在看板選單有 ● 水球游標時自動隱藏，兩全其美！</p>
             </div>
             <div class="form-group">
               <label for="setting-blink-rate">游標閃爍頻率：</label>

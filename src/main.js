@@ -234,12 +234,14 @@ if (imeInput) {
   imeInput.addEventListener('compositionend', (e) => {
     isComposing = false;
     imeInput.classList.remove('composing');
-    imeInput.style.left = '-9999px';
-    imeInput.style.top = '-9999px';
     const text = e.data || imeInput.value;
     imeInput.value = '';
     if (text) {
       sendData(text.replace(/\r\n/g, '\r').replace(/\n/g, '\r'));
+    }
+    const activeTab = tabManager.getActiveTab();
+    if (activeTab && activeTab.view) {
+      activeTab.view.updateImePosition();
     }
   });
 
@@ -1141,10 +1143,7 @@ window.addEventListener('keydown', (e) => {
         case 'F11': seq = '\x1b[23~'; break;
         case 'F12': seq = '\x1b[24~'; break;
         default:
-          // Direct printable ASCII key
-          if (e.key.length === 1 && e.key !== 'Process' && e.keyCode !== 229) {
-            seq = e.key;
-          }
+          // Printable characters (Chinese IME, English, symbols) flow naturally into imeInput
           break;
       }
     }

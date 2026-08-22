@@ -35,7 +35,7 @@ export class TermView {
 
     this.fontFamily = 'auto';
     this.customFont = '';
-    this.cursorStyle = 'underline';
+    this.cursorStyle = 'smart';
 
     this.renderRequested = false;
     this.measureCache = new Map();
@@ -59,8 +59,20 @@ export class TermView {
 
     this.initMouseEvents();
 
-    this.buf.onUpdate = () => this.scheduleRedraw();
+    this.buf.onUpdate = () => {
+      this.resetCursorBlink();
+      this.scheduleRedraw();
+    };
     this.resize();
+  }
+
+  resetCursorBlink() {
+    this.blinkState = true;
+    if (this.blinkTimer) clearInterval(this.blinkTimer);
+    this.blinkTimer = setInterval(() => {
+      this.blinkState = !this.blinkState;
+      this.scheduleRedraw();
+    }, 500);
   }
 
   initMouseEvents() {
@@ -203,11 +215,6 @@ export class TermView {
 
   updateImePosition() {
     if (!this.imeInput || !this.canvas) return;
-    if (!this.imeInput.classList.contains('composing')) {
-      this.imeInput.style.left = '-9999px';
-      this.imeInput.style.top = '-9999px';
-      return;
-    }
     const canvasRect = this.canvas.getBoundingClientRect();
     const wrapperRect = this.wrapper.getBoundingClientRect();
     const left = (canvasRect.left - wrapperRect.left) + this.buf.cur_x * this.cellW;
@@ -587,20 +594,78 @@ export class TermView {
       }
     }
 
-    // Draw cursor
-    if (buf.cursorVisible && this.blinkState && this.cursorStyle !== 'none') {
+    // 1. Check if the screen is in Article / Mail Editor mode (via precise row 23 editor signatures)
+    let isEditorScreen = false;
+    const bottomLine = buf.lines[buf.rows - 1];
+    if (bottomLine) {
+      let bStr = '';
+      for (let c = 0; c < buf.cols; c++) {
+        bStr += bottomLine[c]?.ch || '';
+      }
+      if (
+        bStr.includes('每行最多可容納') ||
+        bStr.includes('(Ctrl+X)') ||
+        bStr.includes('^X 發表') ||
+        bStr.includes('^X 寄出') ||
+        bStr.includes('^X 存檔') ||
+        bStr.includes('^X發表') ||
+        bStr.includes('^X寄出') ||
+        bStr.includes('^X存檔') ||
+        bStr.includes('檔案處理') ||
+        bStr.includes('(Ctrl+W)') ||
+        bStr.includes('請輸入推文') ||
+        bStr.includes('【推文】') ||
+        bStr.includes('請輸入標題') ||
+        bStr.includes('請輸入：') ||
+        bStr.includes('請輸入密碼')
+      ) {
+        isEditorScreen = true;
+      }
+    }
+
+    // 2. Draw cursor (Smart mode: auto-hide on menu indicator ● / (F)avorite in list screens; always show in editor)
+    let shouldDrawCursor = false;
+    if (this.blinkState && this.cursorStyle !== 'none') {
+      if (this.cursorStyle !== 'smart' || isEditorScreen) {
+        // In editor mode or non-smart modes, ALWAYS display the cursor!
+        shouldDrawCursor = true;
+      } else {
+        // In menu / list screens: check if the current row contains a BBS menu/list selector icon or (F) hotkey pattern
+        let hasMenuPointerOnRow = false;
+        const line = buf.lines[buf.cur_y];
+        if (line) {
+          let lineStr = '';
+          for (let c = 0; c < buf.cols; c++) {
+            const ch = line[c]?.ch || ' ';
+            lineStr += ch;
+            if (ch === '●' || ch === '○' || ch === '★' || ch === '☆' || ch === '◆' || ch === '◇' || ch === '▶' || ch === '▷' || ch === '>') {
+              hasMenuPointerOnRow = true;
+            }
+          }
+          // Also check for Main Menu bracketed hotkey pattern like (F)avorite, (C)lass, (M)ail, (U)ser, (X)系統資訊
+          if (!hasMenuPointerOnRow && /\([A-Za-z0-9]\)/.test(lineStr) && (lineStr.includes('【') || lineStr.includes('】') || lineStr.includes('Menu') || lineStr.includes('主功能表'))) {
+            hasMenuPointerOnRow = true;
+          }
+        }
+        if (!hasMenuPointerOnRow) {
+          shouldDrawCursor = true;
+        }
+      }
+    }
+
+    if (shouldDrawCursor) {
       const curX = Math.round(buf.cur_x * cellW);
       const curY = Math.round(buf.cur_y * cellH);
       const width = Math.round(cellW);
       const height = Math.round(cellH);
-      const style = this.cursorStyle || 'underline';
+      const style = (this.cursorStyle === 'smart') ? 'underline' : (this.cursorStyle || 'underline');
 
       ctx.fillStyle = '#ffffff';
       ctx.strokeStyle = '#ffffff';
 
       if (style === 'underline') {
-        // Crisp bottom underline (never obscures BBS ● circle or text)
-        const lineH = Math.max(2, Math.round(height * 0.12));
+        // Crisp bottom underline (never obscures text)
+        const lineH = Math.max(2, Math.round(height * 0.15));
         ctx.fillRect(curX, curY + height - lineH, width, lineH);
       } else if (style === 'hollow') {
         // Hollow outline box
@@ -608,7 +673,7 @@ export class TermView {
         ctx.strokeRect(curX + 0.5, curY + 0.5, width - 1, height - 1);
       } else if (style === 'bar') {
         // Vertical I-Beam / Bar
-        const barW = Math.max(2, Math.round(width * 0.18));
+        const barW = Math.max(2, Math.round(width * 0.2));
         ctx.fillRect(curX, curY, barW, height);
       } else if (style === 'block') {
         // Traditional semi-transparent block

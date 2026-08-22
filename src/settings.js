@@ -56,7 +56,7 @@ export const DEFAULT_SETTINGS = {
 
   // Display & Theme
   theme: 'pcman', // 'pcman' | 'welly' | 'high-contrast'
-  cursorStyle: 'underline', // 'underline' | 'none' | 'hollow' | 'bar' | 'block'
+  cursorStyle: 'smart', // 'smart' | 'underline' | 'bar' | 'block' | 'hollow' | 'none'
   cursorBlinkRate: 500, // ms
   imagePreviewEnabled: true,
   toolbarScale: 'medium', // 'standard' | 'medium' | 'large'
