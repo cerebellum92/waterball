@@ -228,13 +228,13 @@ window.addEventListener('click', (e) => {
 });
 
 let isComposing = false;
-let justComposed = false;
+let lastComposedText = '';
+let lastComposedTimeout = null;
 
 // IME Composition Events (注音 / 倉頡 / 拼音 中文輸入法)
 if (imeInput) {
   imeInput.addEventListener('compositionstart', () => {
     isComposing = true;
-    justComposed = false;
     imeInput.dataset.composing = 'true';
     imeInput.classList.add('composing');
     const activeTab = tabManager.getActiveTab();
@@ -245,28 +245,36 @@ if (imeInput) {
 
   imeInput.addEventListener('compositionupdate', () => {
     isComposing = true;
-    justComposed = false;
     imeInput.dataset.composing = 'true';
     imeInput.classList.add('composing');
   });
 
   imeInput.addEventListener('compositionend', (e) => {
     isComposing = false;
-    justComposed = true;
     imeInput.dataset.composing = 'false';
     imeInput.classList.remove('composing');
+    
+    // In some browsers (macOS/Windows), e.data contains the committed text.
+    // In others (some Linux IMEs), e.data might be empty and we rely on imeInput.value.
     const text = e.data || imeInput.value;
     imeInput.value = '';
+    
     if (text) {
+      // Save the exact text we just sent. The browser will likely fire an `input` 
+      // event immediately after this containing the same text. We use this to deduplicate.
+      lastComposedText = text;
       sendData(text.replace(/\r\n/g, '\r').replace(/\n/g, '\r'));
+      
+      if (lastComposedTimeout) clearTimeout(lastComposedTimeout);
+      lastComposedTimeout = setTimeout(() => {
+        lastComposedText = '';
+      }, 300); // 300ms is a safe window to catch trailing Linux/Windows double events
     }
+    
     const activeTab = tabManager.getActiveTab();
     if (activeTab && activeTab.view) {
       activeTab.view.updateImePosition();
     }
-    setTimeout(() => {
-      justComposed = false;
-    }, 80);
   });
 
   imeInput.addEventListener('input', () => {
@@ -274,14 +282,17 @@ if (imeInput) {
     if (isComposing) {
       return;
     }
-    // If just finished composition, ignore the trailing input event
-    if (justComposed) {
-      imeInput.value = '';
-      return;
-    }
+    
     const text = imeInput.value;
     imeInput.value = '';
+    
     if (text) {
+      // If this text is EXACTLY the same as what we just sent in compositionend,
+      // it is a trailing double-event from the browser/OS (very common on Linux Fcitx/IBus).
+      // We ignore it to prevent outputting the Chinese text twice.
+      if (text === lastComposedText) {
+        return;
+      }
       sendData(text.replace(/\r\n/g, '\r').replace(/\n/g, '\r'));
     }
   });
