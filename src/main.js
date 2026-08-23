@@ -268,6 +268,7 @@ if (imeInput) {
       if (lastComposedTimeout) clearTimeout(lastComposedTimeout);
       lastComposedTimeout = setTimeout(() => {
         lastComposedText = '';
+        lastComposedTimeout = null;
       }, 300); // 300ms is a safe window to catch trailing Linux/Windows double events
     }
     
@@ -287,14 +288,15 @@ if (imeInput) {
     imeInput.value = '';
     
     if (text) {
-      // In Linux Fcitx/IBus, the OS often synthesizes an `input` event containing the 
-      // already-committed text. Sometimes it even bundles it with the NEXT keystroke 
-      // (e.g., if you press Enter to commit, it inserts "text\n" into the textarea).
-      // We check if it starts with the text we JUST sent in `compositionend`, and if so, 
-      // we strip that prefix out to avoid double output!
-      if (lastComposedText && text.startsWith(lastComposedText)) {
-        text = text.substring(lastComposedText.length);
-        if (!text) return; // It was an exact duplicate, ignore it completely.
+      if (lastComposedTimeout !== null && lastComposedText) {
+        // If this text is EXACTLY the same as what we just sent, ignore it (Linux/Windows double-fire bug)
+        if (text === lastComposedText) {
+          return;
+        }
+        // If Fcitx bundled the committed text with the Enter key (e.g., "哈\n")
+        if (text === lastComposedText + '\n' || text === lastComposedText + '\r' || text === lastComposedText + '\r\n') {
+          text = '\n'; // Strip the Chinese word, only send the Enter key
+        }
       }
       sendData(text.replace(/\r\n/g, '\r').replace(/\n/g, '\r'));
     }
