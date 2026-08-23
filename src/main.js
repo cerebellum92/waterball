@@ -283,15 +283,18 @@ if (imeInput) {
       return;
     }
     
-    const text = imeInput.value;
+    let text = imeInput.value;
     imeInput.value = '';
     
     if (text) {
-      // If this text is EXACTLY the same as what we just sent in compositionend,
-      // it is a trailing double-event from the browser/OS (very common on Linux Fcitx/IBus).
-      // We ignore it to prevent outputting the Chinese text twice.
-      if (text === lastComposedText) {
-        return;
+      // In Linux Fcitx/IBus, the OS often synthesizes an `input` event containing the 
+      // already-committed text. Sometimes it even bundles it with the NEXT keystroke 
+      // (e.g., if you press Enter to commit, it inserts "text\n" into the textarea).
+      // We check if it starts with the text we JUST sent in `compositionend`, and if so, 
+      // we strip that prefix out to avoid double output!
+      if (lastComposedText && text.startsWith(lastComposedText)) {
+        text = text.substring(lastComposedText.length);
+        if (!text) return; // It was an exact duplicate, ignore it completely.
       }
       sendData(text.replace(/\r\n/g, '\r').replace(/\n/g, '\r'));
     }
