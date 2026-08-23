@@ -158,12 +158,41 @@ window.addEventListener('resize', () => {
   if (activeTab?.view) activeTab.view.resize();
 });
 
+const sendQueue = [];
+let isSending = false;
+
+async function processSendQueue() {
+  if (isSending || sendQueue.length === 0) return;
+  isSending = true;
+
+  while (sendQueue.length > 0) {
+    const item = sendQueue.shift();
+    if (!item) continue;
+
+    // Coalesce contiguous queued items intended for the same tab into a single IPC packet
+    let combinedData = item.data;
+    const currentTabId = item.tabId;
+    while (sendQueue.length > 0 && sendQueue[0].tabId === currentTabId) {
+      combinedData += sendQueue.shift().data;
+    }
+
+    if (combinedData) {
+      try {
+        await invoke('send_input', { tabId: currentTabId, data: combinedData });
+      } catch (err) {
+        console.error('Send error:', err);
+      }
+    }
+  }
+
+  isSending = false;
+}
+
 function sendData(data) {
   const activeTab = tabManager.getActiveTab();
   if (!activeTab || !activeTab.isConnected || !data) return;
-  invoke('send_input', { tabId: activeTab.id, data }).catch((err) => {
-    console.error('Send error:', err);
-  });
+  sendQueue.push({ tabId: activeTab.id, data });
+  processSendQueue();
 }
 
 function focusTerminal(force = false) {
