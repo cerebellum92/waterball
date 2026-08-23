@@ -228,8 +228,6 @@ window.addEventListener('click', (e) => {
 });
 
 let isComposing = false;
-let lastComposedText = '';
-let lastComposedTimeout = null;
 
 // IME Composition Events (注音 / 倉頡 / 拼音 中文輸入法)
 if (imeInput) {
@@ -249,55 +247,37 @@ if (imeInput) {
     imeInput.classList.add('composing');
   });
 
-  imeInput.addEventListener('compositionend', (e) => {
+  imeInput.addEventListener('compositionend', () => {
     isComposing = false;
     imeInput.dataset.composing = 'false';
     imeInput.classList.remove('composing');
-    
-    // In some browsers (macOS/Windows), e.data contains the committed text.
-    // In others (some Linux IMEs), e.data might be empty and we rely on imeInput.value.
-    const text = e.data || imeInput.value;
-    imeInput.value = '';
-    
-    if (text) {
-      // Save the exact text we just sent. The browser will likely fire an `input` 
-      // event immediately after this containing the same text. We use this to deduplicate.
-      lastComposedText = text;
-      sendData(text.replace(/\r\n/g, '\r').replace(/\n/g, '\r'));
-      
-      if (lastComposedTimeout) clearTimeout(lastComposedTimeout);
-      lastComposedTimeout = setTimeout(() => {
-        lastComposedText = '';
-        lastComposedTimeout = null;
-      }, 300); // 300ms is a safe window to catch trailing Linux/Windows double events
-    }
-    
+
+    // In standard W3C DOM, text input is dispatched via the `input` event immediately after compositionend.
+    // We use queueMicrotask as a fallback to ensure text is dispatched even in environments where input event might not fire.
+    queueMicrotask(() => {
+      if (!isComposing && imeInput.value) {
+        const text = imeInput.value;
+        imeInput.value = '';
+        sendData(text.replace(/\r\n/g, '\r').replace(/\n/g, '\r'));
+      }
+    });
+
     const activeTab = tabManager.getActiveTab();
     if (activeTab && activeTab.view) {
       activeTab.view.updateImePosition();
     }
   });
 
-  imeInput.addEventListener('input', () => {
+  imeInput.addEventListener('input', (e) => {
     // During active composition, do NOT touch or clear the value!
-    if (isComposing) {
+    if (isComposing || (e && e.isComposing)) {
       return;
     }
-    
-    let text = imeInput.value;
+
+    const text = imeInput.value;
     imeInput.value = '';
-    
+
     if (text) {
-      if (lastComposedTimeout !== null && lastComposedText) {
-        // If this text is EXACTLY the same as what we just sent, ignore it (Linux/Windows double-fire bug)
-        if (text === lastComposedText) {
-          return;
-        }
-        // If Fcitx bundled the committed text with the Enter key (e.g., "哈\n")
-        if (text === lastComposedText + '\n' || text === lastComposedText + '\r' || text === lastComposedText + '\r\n') {
-          text = '\n'; // Strip the Chinese word, only send the Enter key
-        }
-      }
       sendData(text.replace(/\r\n/g, '\r').replace(/\n/g, '\r'));
     }
   });
