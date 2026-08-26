@@ -1,6 +1,6 @@
 [package]
 name = "bbsterm"
-version = "0.1.0"
+version = "0.1.1"
 description = "BBSTerm - A cross-platform BBS terminal client"
 authors = ["ytchen"]
 edition = "2021"

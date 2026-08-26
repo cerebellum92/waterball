@@ -69,8 +69,8 @@ jobs:
             mkdir -p dist_macos_dmg
             cp -R "$APP_PATH" dist_macos_dmg/
             rm -rf src-tauri/target/release/bundle/dmg
-            mkdir -p src-tauri/target/release/bundle/dmg
-            hdiutil create -volname "Waterball" -srcfolder dist_macos_dmg -ov -format UDZO src-tauri/target/release/bundle/dmg/Waterball_0.1.0_macOS.dmg
+            TAG_OR_VER="${{ github.ref_type == 'tag' && github.ref_name || 'v0.1.0' }}"
+            hdiutil create -volname "Waterball" -srcfolder dist_macos_dmg -ov -format UDZO "src-tauri/target/release/bundle/dmg/Waterball_${TAG_OR_VER}_macOS.dmg"
             rm -rf dist_macos_dmg
           fi
 
@@ -95,23 +95,24 @@ jobs:
             ### 📦 各作業系統下載與安裝說明：
 
             #### 🍏 macOS (`.dmg`)
-            1. 下載 `Waterball_0.1.0_macOS.dmg`，掛載後將 `Waterball.app` 拖移至「應用程式」。
+            1. 下載 `Waterball_${{ github.ref_name }}_macOS.dmg`，掛載後將 `Waterball.app` 拖移至「應用程式」。
             2. **首次開啟小提示**：本專案為社群開源軟體，未購買 Apple 商業憑證。首次開啟若出現安全性提示：
                - 在 App 上 **按住 `Control` 鍵（或右鍵）點選「打開」**，再點一次「打開」即可。
                - 或前往 Mac **「系統設定 ➔ 隱私權與安全性」** 點選 **「仍要打開」** 即可。
 
             #### 🐧 Linux (`.deb` / `.AppImage`)
-            - **Ubuntu / Debian**：下載 `Waterball_0.1.0_amd64.deb`，執行 `sudo dpkg -i Waterball_0.1.0_amd64.deb` 安裝。
-            - **其他 Linux**：下載 `Waterball_0.1.0_amd64.AppImage`，賦予執行權限後即可免安裝直接點開！
+            - **Ubuntu / Debian**：下載 `.deb` 檔案，執行 `sudo dpkg -i <檔案名稱>.deb` 安裝。
+            - **其他 Linux**：下載 `.AppImage` 檔案，賦予執行權限後即可免安裝直接點開！
 
             #### 🪟 Windows (`.zip` 綠色版 / `.msi`)
             - **推薦免安裝版**：下載 `Waterball_windows_x64_portable.zip`，解壓縮後點擊 `Waterball.exe` 即用。
-            - **標準安裝版**：下載 `Waterball_0.1.0_x64.msi` 進行安裝。
+            - **標準安裝版**：下載 `.msi` 進行安裝。
 
             ---
             詳細功能特色與說明請見 [GitHub 專案首頁](https://github.com/${{ github.repository }})。
           draft: false
           prerelease: false
+          make_latest: true
           fail_on_unmatched_files: false
           files: |
             src-tauri/target/release/bundle/dmg/*.dmg
