@@ -1,4 +1,5 @@
 mod telnet;
+pub mod uao;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

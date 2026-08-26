@@ -67,7 +67,7 @@ export class TabManager {
 
     // Initial welcome banner for new tab
     tab.parser.feed('\x1b[1;36m╔═════════════════════════════════════╗\r\n\x1b[0m');
-    tab.parser.feed('\x1b[1;36m║\x1b[0m  \x1b[1;33mWaterball (水球)\x1b[0m — 跨平台 BBS 連線終端 (Mac / Windows / Linux)         \x1b[1;36m║\r\n\x1b[0m');
+    tab.parser.feed('\x1b[1;36m║\x1b[0m  \x1b[1;33mWaterball (水球)\x1b[0m — 跨平台 BBS 連線終端 (Mac / Windows / Linux)          \x1b[1;36m║\r\n\x1b[0m');
     tab.parser.feed('\x1b[1;36m║\x1b[0m                                                                          \x1b[1;36m║\r\n\x1b[0m');
     tab.parser.feed('\x1b[1;36m║\x1b[0m  \x1b[1;32m★ 快捷鍵指南：\x1b[0m                                                         \x1b[1;36m║\r\n\x1b[0m');
     tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ ⌘ + K ]\x1b[0m  看板快速跳轉 (中英文板名即時直達)                         \x1b[1;36m║\r\n\x1b[0m');
@@ -77,7 +77,7 @@ export class TabManager {
     tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ ⌘+Shift+S ]\x1b[0m 畫面截圖匯出 (2x Retina PNG 與 ANSI 代碼)              \x1b[1;36m║\r\n\x1b[0m');
     tab.parser.feed('\x1b[1;36m║\x1b[0m                                                                          \x1b[1;36m║\r\n\x1b[0m');
     tab.parser.feed('\x1b[1;36m║\x1b[0m  \x1b[1;32m★ 連線方式：\x1b[0m                                                           \x1b[1;36m║\r\n\x1b[0m');
-    tab.parser.feed('\x1b[1;36m║\x1b[0m    請點選上方「⭐ 常用書籤」或直接輸入位址並按 Enter 連線                \x1b[1;36m║\r\n\x1b[0m');
+    tab.parser.feed('\x1b[1;36m║\x1b[0m    請點選上方「⭐ 常用書籤」或直接輸入位址並按 Enter 連線                 \x1b[1;36m║\r\n\x1b[0m');
     tab.parser.feed('\x1b[1;36m║\x1b[0m    例如: \x1b[1;33mbbs@ptt.cc:22\x1b[0m (SSH) 或 \x1b[1;33mnckugibbs.duckdns.org\x1b[0m (Telnet)           \x1b[1;36m║\r\n\x1b[0m');
     tab.parser.feed('\x1b[1;36m╚═════════════════════════════════════╝\r\n\x1b[0m');
 

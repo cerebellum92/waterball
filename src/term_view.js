@@ -242,6 +242,23 @@ export class TermView {
     if (this.imeInput.style.lineHeight !== height) this.imeInput.style.lineHeight = height;
     if (this.imeInput.style.fontFamily !== fontFamily) this.imeInput.style.fontFamily = fontFamily;
 
+    // Dynamically adapt IME text color and caret based on underlying BBS cell background luminance
+    // (e.g. In editor mode background is black -> text is #cccccc / #a0a0a0.
+    //  In push mode background is white/gray -> text must be #000000 / #333333 so it is clearly visible)
+    let isLightBackground = false;
+    if (this.buf && this.buf.lines && this.buf.lines[this.buf.cur_y]) {
+      const cell = this.buf.lines[this.buf.cur_y][this.buf.cur_x];
+      if (cell) {
+        const bgIdx = cell.getBg();
+        // Index 7 (light gray/white), 3 (yellow/brown), 6 (cyan) or bright counterparts have high luminance
+        isLightBackground = (bgIdx === 7 || bgIdx === 3 || bgIdx === 6 || bgIdx === 15 || bgIdx === 11 || bgIdx === 14);
+      }
+    }
+    const textColor = isLightBackground ? '#111111' : '#cccccc';
+    const caretColor = isComposing ? (isLightBackground ? '#333333' : '#a0a0a0') : 'transparent';
+    if (this.imeInput.style.color !== textColor) this.imeInput.style.color = textColor;
+    if (this.imeInput.style.caretColor !== caretColor) this.imeInput.style.caretColor = caretColor;
+
     // 2. ADAPTIVE DEBOUNCE (Left, Top)
     // PTT sends intense screen redraws (line redraws + status bar updates) on EVERY keystroke.
     // Over SSH, these updates are fragmented, causing the cursor to momentarily jump to col 0 
@@ -269,6 +286,9 @@ export class TermView {
     const isNewLineWrap = (rowDiff === 1 && targetX <= 15);
     const isNaturalMovement = isSameLineAdvance || isNewLineWrap;
 
+    // Detect bottom status line updates on PTT (e.g. push counter [ 12/45 ] or post status in bottom rows)
+    const isBottomStatusLine = (targetY >= 22 && targetX >= 45);
+
     const applyPosition = () => {
       if (!this.canvas || !this.imeInput) return;
       const newLeft = `${Math.max(0, (canvasRect.left - wrapperRect.left) + this.buf.cur_x * this.cellW)}px`;
@@ -287,8 +307,12 @@ export class TermView {
     if (isNaturalMovement) {
       // It's a natural typing movement! Apply INSTANTLY (0ms lag)
       applyPosition();
+    } else if (isComposing || isBottomStatusLine) {
+      // During active IME composition or when cursor jumped to status line,
+      // completely IGNORE wild jumps! Keep IME box anchored at current typing position.
+      return;
     } else {
-      // It's a wild jump. Wait 30ms to see if it's just a transient SSH redraw artifact.
+      // Non-composing real screen jump (e.g. PageDown / cursor navigation)
       this.imePositionTimeout = setTimeout(() => {
         applyPosition();
       }, 30);
@@ -703,12 +727,14 @@ export class TermView {
           for (let c = 0; c < buf.cols; c++) {
             const ch = line[c]?.ch || ' ';
             lineStr += ch;
-            if (ch === '●' || ch === '○' || ch === '★' || ch === '☆' || ch === '◆' || ch === '◇' || ch === '▶' || ch === '▷' || ch === '>') {
+            if (ch === '●' || ch === '○' || ch === '★' || ch === '☆' || ch === '◆' || ch === '◇' || ch === '▶' || ch === '▷' || ch === '>' || ch === '→') {
               hasMenuPointerOnRow = true;
             }
           }
-          // Also check for Main Menu bracketed hotkey pattern like (F)avorite, (C)lass, (M)ail, (U)ser, (X)系統資訊
-          if (!hasMenuPointerOnRow && /\([A-Za-z0-9]\)/.test(lineStr) && (lineStr.includes('【') || lineStr.includes('】') || lineStr.includes('Menu') || lineStr.includes('主功能表'))) {
+          // Also check for Main Menu bracketed hotkey pattern like (F)avorite, (C)分組討論區, (M)電子郵件, (U)個人設定, (X)休閒聊天, (T)即時動態
+          if (!hasMenuPointerOnRow && (/\([A-Za-z0-9]\)/.test(lineStr) || /\[[A-Za-z0-9]\]/.test(lineStr)) && (
+            lineStr.includes('【') || lineStr.includes('】') || lineStr.includes('Menu') || lineStr.includes('主功能表') || lineStr.includes('分組討論區') || lineStr.includes('看板') || lineStr.includes('郵件') || lineStr.includes('設定')
+          )) {
             hasMenuPointerOnRow = true;
           }
         }

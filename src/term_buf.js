@@ -120,20 +120,37 @@ export class TermBuf {
   }
 
   isFullWidth(ch) {
-    const code = ch.charCodeAt(0);
-    if (code > 0x7f) return true;
+    if (!ch) return false;
+    const code = ch.codePointAt(0);
+    // ASCII (0x00..0x7F) and Latin-1 / Latin Extended (0x80..0x024F, e.g. ô, ê, â, á, ō) are single-width (1 cell)
+    if (code <= 0x024F) return false;
+    // Combining Diacritical Marks (0x0300..0x036F)
+    if (code >= 0x0300 && code <= 0x036F) return false;
+    // General Punctuation / Latin additions (0x2000..0x206F)
+    if (code >= 0x2000 && code <= 0x206F) return false;
+
+    // East Asian Wide / Fullwidth characters (2 cells):
     return (
-      (code >= 0x1100 &&
-        (code <= 0x115f ||
-          code === 0x2329 ||
-          code === 0x232a ||
-          (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) ||
-          (code >= 0xac00 && code <= 0xd7a3) ||
-          (code >= 0xf900 && code <= 0xfaff) ||
-          (code >= 0xfe10 && code <= 0xfe19) ||
-          (code >= 0xfe30 && code <= 0xfe6f) ||
-          (code >= 0xff00 && code <= 0xff60) ||
-          (code >= 0xffe0 && code <= 0xffe6)))
+      (code >= 0x0370 && code <= 0x04FF) || // Greek and Cyrillic in East Asian BBS
+      (code >= 0x1100 && code <= 0x115F) || // Hangul Jamo
+      (code >= 0x2150 && code <= 0x218F) || // Roman Numerals / Number Forms
+      (code >= 0x2190 && code <= 0x21FF) || // Arrows (← ↑ → ↓ ↔ ↕ ↖ ↗ ↘ ↙)
+      (code >= 0x2200 && code <= 0x22FF) || // Mathematical Operators (≠ ≤ ≥ ∞ ∑ ∫ ∴ ∵)
+      (code >= 0x2300 && code <= 0x23FF) || // Misc Technical
+      (code >= 0x2460 && code <= 0x24FF) || // Enclosed Alphanumerics (① ② ③ ⑴ ⑵ ⑶)
+      (code >= 0x2500 && code <= 0x257F) || // Box Drawing (─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼)
+      (code >= 0x2580 && code <= 0x259F) || // Block Elements (█ ▌ ▐ ▀ ▄ ░ ▒ ▓)
+      (code >= 0x25A0 && code <= 0x25FF) || // Geometric Shapes (● ○ ▲ △ ▼ ▽ ◆ ◇ ★ ☆ ◢ ◣ ◥ ◤)
+      (code >= 0x2600 && code <= 0x27BF) || // Misc Symbols & Dingbats (☎ ☂ ☃ ♨ ✈ ✉ ✌ ✍)
+      (code >= 0x2E80 && code <= 0xA4CF && code !== 0x303F) || // CJK Radicals, Hiragana, Katakana, Bopomofo, CJK Ideographs, Yi
+      (code >= 0xAC00 && code <= 0xD7A3) || // Hangul Syllables
+      (code >= 0xF900 && code <= 0xFAFF) || // CJK Compatibility Ideographs
+      (code >= 0xFE10 && code <= 0xFE19) || // Vertical forms
+      (code >= 0xFE30 && code <= 0xFE6F) || // CJK Compatibility Forms, Small Form Variants
+      (code >= 0xFF01 && code <= 0xFF60) || // Fullwidth Forms (！＂＃＄％...)
+      (code >= 0xFFE0 && code <= 0xFFE6) || // Fullwidth Signs (￠￡￢￣￤￥￦)
+      (code >= 0x20000 && code <= 0x3FFFF) || // CJK Extensions B/C/D/E/F/G/H
+      (code >= 0x1F300 && code <= 0x1FAFF)   // Emojis
     );
   }
 

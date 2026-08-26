@@ -402,10 +402,11 @@ impl BbsConnection {
         }
     }
 
-    /// MapleBBS / PCMan ANSI Big5 byte-level decoder:
-    /// - High bytes (0x80..=0xFF) at the very end of raw stream are held in `pending_bytes` for the next chunk
-    /// - Partial Big5 lead bytes right before ESC are turned to a single space, preserving exact 80-column alignment
-    /// - Valid Big5 pairs are decoded into UTF-8 Chinese/special characters via encoding_rs
+    /// MapleBBS / PCMan ANSI Big5-UAO 2.50 byte-level decoder:
+    /// - Full Big5-UAO 2.50 Unicode-At-On table lookup (19,782 mappings including Taiwanese romanization, Japanese Kana, Cyrillic, Greek, symbols)
+    /// - Multi-byte UTF-8 passthrough fallback for pasted Unicode text
+    /// - High bytes at the very end of raw stream held in pending_bytes for the next chunk
+    /// - Standalone Big5 lead bytes right before ESC turned to single space, preserving exact 80-column alignment
     fn decode_ansi_big5(raw: &[u8], pending_bytes: &mut Vec<u8>) -> String {
         let mut buffer = Vec::with_capacity(pending_bytes.len() + raw.len());
         buffer.extend_from_slice(pending_bytes);
@@ -422,24 +423,64 @@ impl BbsConnection {
                 continue;
             }
 
+            // 1. 4-byte UTF-8 Passthrough (Emoji & Supplemental Symbols): 0xF0..=0xF4
+            if (0xF0..=0xF4).contains(&b) && i + 3 < buffer.len() {
+                let b2 = buffer[i + 1];
+                let b3 = buffer[i + 2];
+                let b4 = buffer[i + 3];
+                if (0x80..=0xBF).contains(&b2) && (0x80..=0xBF).contains(&b3) && (0x80..=0xBF).contains(&b4) {
+                    if let Ok(s) = std::str::from_utf8(&buffer[i..i + 4]) {
+                        out.push_str(s);
+                        i += 4;
+                        continue;
+                    }
+                }
+            }
+
+            // 2. 3-byte UTF-8 Passthrough: 0xE0..=0xEF
+            // If the 2nd byte is in 0x80..=0x9F, it is NOT a valid Big5 trail byte (Big5 trails are 0x40..=0x7E, 0xA1..=0xFE)
+            if (0xE0..=0xEF).contains(&b) && i + 2 < buffer.len() {
+                let b2 = buffer[i + 1];
+                let b3 = buffer[i + 2];
+                if (0x80..=0xBF).contains(&b2) && (0x80..=0xBF).contains(&b3) {
+                    if let Ok(s) = std::str::from_utf8(&buffer[i..i + 3]) {
+                        if b2 < 0xA1 || crate::uao::decode_uao_char(b, b2).is_none() {
+                            out.push_str(s);
+                            i += 3;
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            // 3. Big5 / Big5-UAO 2.50 2-Byte Decoding
             if i + 1 < buffer.len() {
                 if buffer[i + 1] == 0x1B {
                     // Standalone lead byte right before ESC => emit single space to maintain 1-cell width
                     out.push(' ');
                     i += 1;
                 } else {
-                    let pair = &buffer[i..i + 2];
-                    let (decoded, _, malformed) = BIG5.decode(pair);
-                    if !malformed {
-                        out.push_str(&decoded);
+                    let hi = b;
+                    let lo = buffer[i + 1];
+                    if let Some(ch) = crate::uao::decode_uao_char(hi, lo) {
+                        out.push(ch);
                         i += 2;
                     } else {
+                        // Fallback: Check if this is a 2-byte UTF-8 sequence (0xC2..=0xDF, 0x80..=0xBF)
+                        if (0xC2..=0xDF).contains(&hi) && (0x80..=0xBF).contains(&lo) {
+                            if let Ok(s) = std::str::from_utf8(&buffer[i..i + 2]) {
+                                out.push_str(s);
+                                i += 2;
+                                continue;
+                            }
+                        }
+                        // Truly invalid byte: emit space without skipping next byte if next byte is ASCII
                         out.push(' ');
                         i += 1;
                     }
                 }
             } else {
-                // b is the last byte in raw buffer. Hold for next packet to determine if followed by ESC or trail byte
+                // b is the last byte in raw buffer. Hold for next packet
                 pending_bytes.push(b);
                 i += 1;
             }
@@ -580,7 +621,18 @@ impl BbsConnection {
                 writer.write_all(data.as_bytes())?;
             }
             BbsCharset::Big5 => {
-                let (encoded, _, _) = BIG5.encode(data);
+                let mut encoded = Vec::with_capacity(data.len() * 2);
+                for ch in data.chars() {
+                    if ch.is_ascii() {
+                        encoded.push(ch as u8);
+                    } else if let Some(bytes) = crate::uao::encode_uao_char(ch) {
+                        encoded.extend_from_slice(&bytes);
+                    } else {
+                        let ch_str = ch.to_string();
+                        let (res, _, _) = BIG5.encode(&ch_str);
+                        encoded.extend_from_slice(&res);
+                    }
+                }
                 writer.write_all(&encoded)?;
             }
             BbsCharset::Gbk => {
@@ -634,6 +686,34 @@ impl BbsConnection {
     /// Disconnect
     pub fn disconnect(self) {
         self.alive.store(false, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_big5_uao_decoding() {
+        let mut pending = Vec::new();
+        // Big5 UAO bytes for "tông-tsê lâi"
+        // t=0x74, ô=0xA0F3, n=0x6E, g=0x67, -=0x2D, t=0x74, s=0x73, ê=0xA0F1, ' '=0x20, l=0x6C, â=0xA0F0, i=0x69
+        let bytes = [
+            0x74, 0xA0, 0xF3, 0x6E, 0x67, 0x2D, 0x74, 0x73, 0xA0, 0xF1, 0x20, 0x6C, 0xA0, 0xF0, 0x69
+        ];
+        let decoded = BbsConnection::decode_ansi_big5(&bytes, &mut pending);
+        assert_eq!(decoded, "tông-tsê lâi");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn test_utf8_emoji_passthrough() {
+        let mut pending = Vec::new();
+        // 4-byte UTF-8 emoji "😀" (0xF0 0x9F 0x98 0x80)
+        let bytes = [0xF0, 0x9F, 0x98, 0x80];
+        let decoded = BbsConnection::decode_ansi_big5(&bytes, &mut pending);
+        assert_eq!(decoded, "😀");
+        assert!(pending.is_empty());
     }
 }
 

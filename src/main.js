@@ -587,7 +587,7 @@ function loadSettingsToUI() {
   if (settingWheelScroll) settingWheelScroll.checked = s.wheelScrollPage;
   if (settingAutoCopy) settingAutoCopy.checked = s.autoCopySelection;
   if (settingTheme) settingTheme.value = s.theme || 'pcman';
-  if (settingCursorStyle) settingCursorStyle.value = s.cursorStyle || 'underline';
+  if (settingCursorStyle) settingCursorStyle.value = s.cursorStyle || 'smart';
   if (settingBlinkRate) settingBlinkRate.value = String(s.cursorBlinkRate ?? 500);
   if (settingImagePreview) settingImagePreview.checked = s.imagePreviewEnabled !== false;
   if (settingToolbarScale) settingToolbarScale.value = s.toolbarScale || 'medium';
@@ -619,7 +619,7 @@ function saveSettingsFromModal() {
   const toolbarScale = settingToolbarScale ? settingToolbarScale.value : 'medium';
   const fontFamily = settingFontFamily ? settingFontFamily.value : 'auto';
   const customFont = settingCustomFont ? settingCustomFont.value.trim() : '';
-  const cursorStyle = settingCursorStyle ? settingCursorStyle.value : 'underline';
+  const cursorStyle = settingCursorStyle ? settingCursorStyle.value : 'smart';
   imagePreview.enabled = isImgPrev;
 
   if (isNotify) {
