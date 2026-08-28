@@ -27,3 +27,4 @@ target/
 *.sln
 *.sw?
 DEPLOY.md
+DEVELOPER.md
