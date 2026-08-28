@@ -307,9 +307,12 @@ export class TermView {
     if (isNaturalMovement) {
       // It's a natural typing movement! Apply INSTANTLY (0ms lag)
       applyPosition();
-    } else if (isComposing || isBottomStatusLine) {
-      // During active IME composition or when cursor jumped to status line,
-      // completely IGNORE wild jumps! Keep IME box anchored at current typing position.
+    } else if (isComposing) {
+      // During active IME composition, keep IME box anchored at current typing position.
+      applyPosition();
+      return;
+    } else if (isBottomStatusLine) {
+      // When cursor jumps to bottom status line, ignore the jump.
       return;
     } else {
       // Non-composing real screen jump (e.g. PageDown / cursor navigation)
