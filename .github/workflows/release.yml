@@ -59,6 +59,14 @@ jobs:
       - name: Build Tauri Application
         run: npx tauri build
 
+      - name: Get latest tag
+        id: get_tag
+        shell: bash
+        run: |
+          git fetch --tags
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.1.1")
+          echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+
       - name: Fix macOS Ad-hoc Codesign & Repackage DMG
         if: matrix.platform == 'macos-latest'
         run: |
@@ -70,7 +78,7 @@ jobs:
             cp -R "$APP_PATH" dist_macos_dmg/
             rm -rf src-tauri/target/release/bundle/dmg
             mkdir -p src-tauri/target/release/bundle/dmg
-            TAG_OR_VER="${{ github.ref_type == 'tag' && github.ref_name || 'v0.1.0' }}"
+            TAG_OR_VER="${{ steps.get_tag.outputs.tag }}"
             hdiutil create -volname "Waterball" -srcfolder dist_macos_dmg -ov -format UDZO "src-tauri/target/release/bundle/dmg/Waterball_${TAG_OR_VER}_macOS.dmg"
             rm -rf dist_macos_dmg
           fi
@@ -85,9 +93,9 @@ jobs:
 
       - name: Upload Artifacts to GitHub Release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
         with:
-          name: Waterball ${{ github.ref_name }}
+          tag_name: ${{ steps.get_tag.outputs.tag }}
+          name: Waterball ${{ steps.get_tag.outputs.tag }}
           body: |
             💧 **Waterball (水球) 新世代跨平台 BBS 連線軟體正式發布！**
 
@@ -96,7 +104,7 @@ jobs:
             ### 📦 各作業系統下載與安裝說明：
 
             #### 🍏 macOS (`.dmg`)
-            1. 下載 `Waterball_${{ github.ref_name }}_macOS.dmg`，掛載後將 `Waterball.app` 拖移至「應用程式」。
+            1. 下載 `Waterball_${{ steps.get_tag.outputs.tag }}_macOS.dmg`，掛載後將 `Waterball.app` 拖移至「應用程式」。
             2. **首次開啟小提示**：本專案為社群開源軟體，未購買 Apple 商業憑證。首次開啟若出現安全性提示：
                - 在 App 上 **按住 `Control` 鍵（或右鍵）點選「打開」**，再點一次「打開」即可。
                - 或前往 Mac **「系統設定 ➔ 隱私權與安全性」** 點選 **「仍要打開」** 即可。
@@ -124,3 +132,4 @@ jobs:
             Waterball_windows_x64_portable.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
