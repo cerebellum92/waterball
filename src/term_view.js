@@ -314,17 +314,12 @@ export class TermView {
   updateImePosition() {
     if (!this.canvas || !this.imeInput) return;
     
-    const isComposing = this.imeInput.dataset.composing === 'true';
     const canvasRect = this.canvas.getBoundingClientRect();
     const wrapperRect = this.wrapper.getBoundingClientRect();
 
-    // 1. INSTANT UPDATES (Width, Height, Font)
-    // We must update width instantly to prevent text clipping during the first 100ms of composition.
-    // Calculate left strictly for max width bounding (using current visual left, or fallback to exact left)
-    const currentLeft = parseFloat(this.imeInput.style.left) || 0;
-    const maxImeWidth = Math.max(20, canvasRect.right - wrapperRect.left - currentLeft);
-    const width = isComposing ? `${Math.min(600, maxImeWidth)}px` : `${Math.max(20, this.cellW)}px`;
-    const height = `${this.cellH}px`;
+    // Set exact cell dimensions and font metrics for OS native floating IME anchor
+    const width = `${Math.max(10, Math.round(this.cellW))}px`;
+    const height = `${Math.max(10, Math.round(this.cellH))}px`;
     const fontSize = `${Math.floor(this.cellH * 0.85)}px`;
     const fontFamily = this.getFontFamilyString();
 
@@ -334,33 +329,7 @@ export class TermView {
     if (this.imeInput.style.lineHeight !== height) this.imeInput.style.lineHeight = height;
     if (this.imeInput.style.fontFamily !== fontFamily) this.imeInput.style.fontFamily = fontFamily;
 
-    // Dynamically adapt IME text color and caret based on underlying BBS cell background luminance
-    // (e.g. In editor mode background is black -> text is #cccccc / #a0a0a0.
-    //  In push mode background is white/gray -> text must be #000000 / #333333 so it is clearly visible)
-    let isLightBackground = false;
-    if (this.buf && this.buf.lines && this.buf.lines[this.buf.cur_y]) {
-      const cell = this.buf.lines[this.buf.cur_y][this.buf.cur_x];
-      if (cell) {
-        const bgIdx = cell.getBg();
-        // Index 7 (light gray/white), 3 (yellow/brown), 6 (cyan) or bright counterparts have high luminance
-        isLightBackground = (bgIdx === 7 || bgIdx === 3 || bgIdx === 6 || bgIdx === 15 || bgIdx === 11 || bgIdx === 14);
-      }
-    }
-    const textColor = isLightBackground ? '#111111' : '#cccccc';
-    const caretColor = isComposing ? (isLightBackground ? '#333333' : '#a0a0a0') : 'transparent';
-    if (this.imeInput.style.color !== textColor) this.imeInput.style.color = textColor;
-    if (this.imeInput.style.caretColor !== caretColor) this.imeInput.style.caretColor = caretColor;
-
-    // 2. ADAPTIVE DEBOUNCE (Left, Top)
-    // PTT sends intense screen redraws (line redraws + status bar updates) on EVERY keystroke.
-    // Over SSH, these updates are fragmented, causing the cursor to momentarily jump to col 0 
-    // or the bottom-right corner.
-    // 
-    // Our Adaptive Strategy:
-    // - If the cursor movement is "natural" (e.g. typing, backspace, enter), we apply it INSTANTLY (0ms).
-    // - If the cursor movement is "wild" (e.g. jumping to col 0 or row 23), it's likely an SSH artifact. 
-    //   We delay it by 30ms. If it's transient, a natural update will arrive and cancel it. 
-    //   If it's a real jump (like a mouse click or Page Down), it will apply after 30ms (unnoticeable).
+    // ADAPTIVE POSITIONING (Left, Top)
     const targetX = this.buf.cur_x;
     const targetY = this.buf.cur_y;
 
@@ -378,7 +347,7 @@ export class TermView {
     const isNewLineWrap = (rowDiff === 1 && targetX <= 15);
     const isNaturalMovement = isSameLineAdvance || isNewLineWrap;
 
-    // Detect bottom status line updates on PTT (e.g. push counter [ 12/45 ] or post status in bottom rows)
+    // Detect bottom status line updates on PTT
     const isBottomStatusLine = (targetY >= 22 && targetX >= 45);
 
     const applyPosition = () => {
@@ -390,24 +359,19 @@ export class TermView {
       if (this.imeInput.style.top !== newTop) this.imeInput.style.top = newTop;
     };
 
-    // Always clear any pending delayed jumps since we have a new update
     if (this.imePositionTimeout) {
       clearTimeout(this.imePositionTimeout);
       this.imePositionTimeout = null;
     }
 
     if (isNaturalMovement) {
-      // It's a natural typing movement! Apply INSTANTLY (0ms lag)
       applyPosition();
-    } else if (isComposing) {
-      // During active IME composition, keep IME box anchored at current typing position.
+    } else if (this.imeInput.dataset.composing === 'true') {
       applyPosition();
       return;
     } else if (isBottomStatusLine) {
-      // When cursor jumps to bottom status line, ignore the jump.
       return;
     } else {
-      // Non-composing real screen jump (e.g. PageDown / cursor navigation)
       this.imePositionTimeout = setTimeout(() => {
         applyPosition();
       }, 30);

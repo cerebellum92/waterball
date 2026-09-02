@@ -903,24 +903,28 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
   position: absolute;
   top: 0;
   left: 0;
-  width: 20px;
+  width: 10px;
   height: 20px;
   padding: 0;
   margin: 0;
   border: none;
   outline: none;
   background: transparent;
-  color: #cccccc;
-  caret-color: transparent;
-  opacity: 1;
+  color: transparent !important;
+  caret-color: transparent !important;
+  opacity: 0.001;
   pointer-events: auto;
   z-index: 10;
   resize: none;
-  overflow: visible;
-  white-space: pre;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
-/* Native-style inline composition (顯示注音 ㄅㄆㄇㄈ / 拼音組字過程，純白字體無雜色背景) */
+/* Native OS Floating IME candidate window anchor */
+#ime-input.composing {
+  color: transparent !important;
+  caret-color: transparent !important;
+}
 
 /* xterm.js overrides for better appearance */
 .xterm {
