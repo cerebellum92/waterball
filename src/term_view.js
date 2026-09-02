@@ -48,8 +48,10 @@ export class TermView {
 
     this.blinkState = true;
     this.blinkTimer = setInterval(() => {
-      this.blinkState = !this.blinkState;
-      this.scheduleRedraw();
+      if (this.hasBlinkingCharacters()) {
+        this.blinkState = !this.blinkState;
+        this.scheduleRedraw();
+      }
     }, 500);
 
     this.selection = null; // { startX, startY, endX, endY }
@@ -78,12 +80,26 @@ export class TermView {
     this.resize();
   }
 
+  hasBlinkingCharacters() {
+    if (!this.buf || !this.buf.lines) return false;
+    for (let r = 0; r < this.buf.rows; r++) {
+      const line = this.buf.lines[r];
+      if (!line) continue;
+      for (let c = 0; c < this.buf.cols; c++) {
+        if (line[c]?.blink) return true;
+      }
+    }
+    return false;
+  }
+
   resetCursorBlink() {
     this.blinkState = true;
     if (this.blinkTimer) clearInterval(this.blinkTimer);
     this.blinkTimer = setInterval(() => {
-      this.blinkState = !this.blinkState;
-      this.scheduleRedraw();
+      if (this.hasBlinkingCharacters()) {
+        this.blinkState = !this.blinkState;
+        this.scheduleRedraw();
+      }
     }, 500);
   }
 
@@ -548,11 +564,14 @@ export class TermView {
       buf.markAllDirty();
     }
 
-    // Mark previous and current cursor rows dirty so cursor clears and moves cleanly
-    if (this.lastCursorY >= 0 && this.lastCursorY < rows) {
-      buf.markRowDirty(this.lastCursorY);
+    // Only mark previous and current cursor rows dirty if cursor position actually changed
+    const cursorMoved = (this.lastCursorX !== buf.cur_x || this.lastCursorY !== buf.cur_y);
+    if (cursorMoved) {
+      if (this.lastCursorY >= 0 && this.lastCursorY < rows) {
+        buf.markRowDirty(this.lastCursorY);
+      }
+      buf.markRowDirty(buf.cur_y);
     }
-    buf.markRowDirty(buf.cur_y);
 
     // Mark selection rows dirty if selection was present or changed
     if (this.lastSelection) {
@@ -842,7 +861,8 @@ export class TermView {
 
     // 2. Draw cursor (Smart mode: auto-hide on menu indicator ● / (F)avorite in list screens; always show in editor)
     let shouldDrawCursor = false;
-    if (this.cursorStyle !== 'none') {
+    const isComposing = this.imeInput?.dataset.composing === 'true';
+    if (this.cursorStyle !== 'none' && !isComposing) {
       if (this.cursorStyle !== 'smart' || isEditorScreen) {
         // In editor mode or non-smart modes, ALWAYS display the cursor!
         shouldDrawCursor = true;
