@@ -9,7 +9,7 @@ export class Tab {
   constructor(options = {}) {
     this.id = options.id || `tab-${Date.now()}-${tabCounter++}`;
     this.title = options.title || `連線 ${tabCounter - 1}`;
-    this.address = options.address || 'nckugibbs.duckdns.org';
+    this.address = options.address || 'bbs@ptt.cc:22';
     this.encoding = options.encoding || 'big5';
     this.status = 'disconnected'; // 'disconnected' | 'connecting' | 'connected'
     this.unread = false;
@@ -45,8 +45,8 @@ export class TabManager {
   init() {
     // Create initial first tab
     const firstTab = this.createTab({
-      title: '成大物治',
-      address: 'nckugibbs.duckdns.org',
+      title: '批踢踢實業坊',
+      address: 'bbs@ptt.cc:22',
       encoding: 'big5',
     });
     this.switchTab(firstTab.id);
@@ -151,8 +151,8 @@ export class TabManager {
     if (this.tabs.length === 0) {
       // If all tabs closed, create a fresh new tab
       const freshTab = this.createTab({
-        title: '新連線',
-        address: 'nckugibbs.duckdns.org',
+        title: '批踢踢實業坊',
+        address: 'bbs@ptt.cc:22',
         encoding: 'big5',
       });
       this.switchTab(freshTab.id);
@@ -254,7 +254,7 @@ export class TabManager {
     newTabBtn.onclick = () => {
       const newTab = this.createTab({
         title: `連線 ${this.tabs.length + 1}`,
-        address: 'nckugibbs.duckdns.org',
+        address: 'bbs@ptt.cc:22',
         encoding: 'big5',
       });
       this.switchTab(newTab.id);

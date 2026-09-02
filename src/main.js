@@ -1343,13 +1343,12 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
-  // Multi-Tab Global Shortcuts:
   // Cmd+T: New Tab
   if (e.metaKey && e.code === 'KeyT' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
     e.preventDefault();
     const newTab = tabManager.createTab({
       title: `連線 ${tabManager.tabs.length + 1}`,
-      address: 'nckugibbs.duckdns.org',
+      address: 'bbs@ptt.cc:22',
       encoding: 'big5',
     });
     tabManager.switchTab(newTab.id);
