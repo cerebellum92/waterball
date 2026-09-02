@@ -1,12 +1,12 @@
-// Canvas 80x24 Aspect-Ratio-Preserving Renderer (PttChrome/Welly style)
-
 import { TERM_COLORS } from './term_buf.js';
+import { blacklistManager } from './blacklist.js';
 
 export class TermView {
   constructor(container, termBuf, imeInput = null) {
     this.container = container;
     this.buf = termBuf;
     this.imeInput = imeInput;
+    this.onContextMenu = null;
 
     // Create wrapper & canvas
     this.wrapper = document.createElement('div');
@@ -175,6 +175,76 @@ export class TermView {
         this.onWheel?.(e.deltaY > 0 ? 'down' : 'up');
       }
     }, { passive: false });
+
+    // Right-click context menu (Copy, Search, Blacklist user)
+    this.canvas.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      const pos = this.getGridPos(e);
+      let selectedText = this.getSelectionText() || '';
+      let word = '';
+      if (!selectedText) {
+        word = this.getWordAt(pos.col, pos.row);
+      }
+      this.onContextMenu?.({
+        clientX: e.clientX,
+        clientY: e.clientY,
+        gridX: pos.col,
+        gridY: pos.row,
+        selectedText: selectedText.trim(),
+        word: word.trim(),
+      });
+    });
+  }
+
+  getWordAt(col, row) {
+    const line = this.buf.lines[row];
+    if (!line || col < 0 || col >= this.buf.cols) return '';
+    let start = col;
+    while (start > 0 && /[a-zA-Z0-9_-]/.test(line[start - 1]?.ch)) {
+      start--;
+    }
+    let end = col;
+    while (end < this.buf.cols - 1 && /[a-zA-Z0-9_-]/.test(line[end + 1]?.ch)) {
+      end++;
+    }
+    let word = '';
+    for (let c = start; c <= end; c++) {
+      const cell = line[c];
+      if (cell && !cell.isTrailByte && /[a-zA-Z0-9_-]/.test(cell.ch)) {
+        word += cell.ch;
+      }
+    }
+    return word;
+  }
+
+  getRowAuthor(r) {
+    const line = this.buf.lines[r];
+    if (!line) return null;
+    let lineStr = '';
+    for (let c = 0; c < this.buf.cols; c++) {
+      const cell = line[c];
+      if (!cell || cell.isTrailByte) continue;
+      lineStr += cell.ch || ' ';
+    }
+    // Match PTT article row pattern: e.g. " 1234 + 9/02 username □ [標題]" or " 1234 爆 9/02 username □"
+    const match = lineStr.match(/^\s*\d+\s+([+爆M~!\d\s]+)?\s*\d{1,2}\/\d{1,2}\s+([a-zA-Z0-9_-]+)/);
+    if (match && match[2]) {
+      return match[2];
+    }
+    // Also match PTT Push row pattern: "推 username: " or "噓 username: " or "→ username: "
+    const pushMatch = lineStr.match(/^([推噓→])\s+([a-zA-Z0-9_-]+)\s*[:：]/);
+    if (pushMatch && pushMatch[2]) {
+      return pushMatch[2];
+    }
+    return null;
+  }
+
+  isRowBlacklisted(r) {
+    const author = this.getRowAuthor(r);
+    if (author) {
+      return blacklistManager.isBlacklisted(author);
+    }
+    return false;
   }
 
   getGridPos(evt) {
@@ -475,6 +545,11 @@ export class TermView {
     ctx.fillRect(0, 0, cellW * cols, cellH * rows);
 
     for (let r = 0; r < rows; r++) {
+      const isBlacklisted = this.isRowBlacklisted(r);
+      if (isBlacklisted) {
+        ctx.globalAlpha = 0.22;
+      }
+
       const line = buf.lines[r];
       const y1 = Math.round(r * cellH);
       const y2 = Math.round((r + 1) * cellH);
@@ -601,6 +676,10 @@ export class TermView {
           ctx.lineTo(x2, y2 - 1.5);
           ctx.stroke();
         }
+      }
+
+      if (isBlacklisted) {
+        ctx.globalAlpha = 1.0;
       }
     }
 

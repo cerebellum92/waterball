@@ -64,6 +64,8 @@ export const DEFAULT_SETTINGS = {
   customFont: '', // Custom font name
 };
 
+import { encryptSecret, decryptSecret } from './crypto.js';
+
 class SettingsManager {
   constructor() {
     this.settings = this.loadSettings();
@@ -72,6 +74,22 @@ class SettingsManager {
     this.lastActivityTime = Date.now();
     this.onSettingsChange = null;
     this.onBookmarkSelect = null;
+
+    // Auto-migrate legacy plaintext passwords to AES-256-GCM in the background
+    this.migratePasswordsToEncrypted();
+  }
+
+  async migratePasswordsToEncrypted() {
+    let changed = false;
+    for (const bm of this.bookmarks) {
+      if (bm.password && !bm.password.startsWith('enc:v1:')) {
+        bm.password = await encryptSecret(bm.password);
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.saveBookmarks(this.bookmarks);
+    }
   }
 
   loadSettings() {
@@ -111,8 +129,18 @@ class SettingsManager {
     return [...DEFAULT_BOOKMARKS];
   }
 
-  saveBookmarks(bookmarks) {
-    this.bookmarks = bookmarks;
+  async saveBookmarks(bookmarks) {
+    // Ensure all passwords in bookmarks are encrypted with AES-256-GCM before writing to storage
+    const secureBookmarks = [];
+    for (const bm of bookmarks) {
+      const copy = { ...bm };
+      if (copy.password && !copy.password.startsWith('enc:v1:')) {
+        copy.password = await encryptSecret(copy.password);
+      }
+      secureBookmarks.push(copy);
+    }
+
+    this.bookmarks = secureBookmarks;
     try {
       localStorage.setItem('bbsterm_bookmarks', JSON.stringify(this.bookmarks));
     } catch (e) {
@@ -120,21 +148,29 @@ class SettingsManager {
     }
   }
 
-  addBookmark(bookmark) {
+  async addBookmark(bookmark) {
+    const copy = { ...bookmark };
+    if (copy.password && !copy.password.startsWith('enc:v1:')) {
+      copy.password = await encryptSecret(copy.password);
+    }
     const newBm = {
       id: 'bm-' + Date.now(),
-      ...bookmark,
+      ...copy,
     };
     this.bookmarks.push(newBm);
-    this.saveBookmarks(this.bookmarks);
+    await this.saveBookmarks(this.bookmarks);
     return newBm;
   }
 
-  updateBookmark(id, updated) {
+  async updateBookmark(id, updated) {
     const idx = this.bookmarks.findIndex((b) => b.id === id);
     if (idx !== -1) {
-      this.bookmarks[idx] = { ...this.bookmarks[idx], ...updated };
-      this.saveBookmarks(this.bookmarks);
+      const copy = { ...updated };
+      if (copy.password && !copy.password.startsWith('enc:v1:')) {
+        copy.password = await encryptSecret(copy.password);
+      }
+      this.bookmarks[idx] = { ...this.bookmarks[idx], ...copy };
+      await this.saveBookmarks(this.bookmarks);
     }
   }
 
@@ -147,6 +183,17 @@ class SettingsManager {
     this.bookmarks = [...DEFAULT_BOOKMARKS];
     this.saveBookmarks(this.bookmarks);
     return this.bookmarks;
+  }
+
+  /**
+   * Securely decrypt bookmark credentials on demand for auto-login
+   */
+  async getDecryptedCredentials(bookmark) {
+    if (!bookmark) return null;
+    return {
+      username: bookmark.username || '',
+      password: bookmark.password ? await decryptSecret(bookmark.password) : '',
+    };
   }
 
   recordActivity() {

@@ -64,6 +64,7 @@ export class TabManager {
     tab.view.onUrlLeave = () => this.onUrlLeave?.(tab);
     tab.view.onWheel = (direction) => this.onWheel?.(direction, tab);
     tab.view.onSelectionChange = (sel) => this.onSelectionChange?.(sel, tab);
+    tab.view.onContextMenu = (info) => this.onContextMenu?.(info, tab);
 
     // Initial welcome banner for new tab
     tab.parser.feed('\x1b[1;36m╔═════════════════════════════════════╗\r\n\x1b[0m');

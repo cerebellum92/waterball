@@ -87,6 +87,7 @@
           <button class="tab-btn" data-tab="tab-connection">⏱️ 連線與防閒置</button>
           <button class="tab-btn" data-tab="tab-keyboard">⌨️ 鍵盤與滑鼠</button>
           <button class="tab-btn" data-tab="tab-display">🎨 顯示與主題</button>
+          <button class="tab-btn" data-tab="tab-blacklist">🚫 黑名單管理</button>
           <button class="tab-btn" data-tab="tab-about">ℹ️ 關於與致謝</button>
         </div>
         <div class="settings-content">
@@ -283,7 +284,50 @@
             </div>
           </div>
 
-          <!-- Tab 5: About & Acknowledgements (關於與致謝) -->
+          <!-- Tab 5: Blacklist Management (黑名單管理) -->
+          <div id="tab-blacklist" class="tab-pane">
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="setting-blacklist-enabled" checked />
+                <span>啟用智慧黑名單過濾 (Enable Blacklist Filtering)</span>
+              </label>
+              <p class="hint">開啟後，黑名單作者的文章在列表將自動淡化顯示（22% 透明度），好讀模式留言推文亦會自動淡化標註。</p>
+            </div>
+
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="setting-blacklist-great-treasure" checked />
+                <span>啟用「PTT 大秘寶」社群公關網軍過濾清單</span>
+                <span id="great-treasure-badge" style="margin-left: 6px; font-size: 11px; padding: 2px 6px; border-radius: 4px; background: rgba(59, 130, 246, 0.2); color: var(--accent);">已收錄 30+ 帳號</span>
+              </label>
+              <p class="hint">一鍵訂閱並過濾 PTT 鄉民社群公開整理的知名網軍、公關公司洗板與惡意宣傳帳號。</p>
+            </div>
+
+            <div class="blacklist-custom-section" style="margin-top: 14px; border-top: 1px solid var(--border-color); padding-top: 14px;">
+              <div class="add-box-title" style="font-weight: 600; margin-bottom: 8px; font-size: 13px;">➕ 新增自訂黑名單用戶 ID：</div>
+              <div class="add-box-inputs" style="display: flex; gap: 8px;">
+                <input type="text" id="input-blacklist-add" placeholder="輸入 PTT 使用者 ID (如: spammer5566)" style="flex: 1;" />
+                <button id="btn-blacklist-add" class="btn-primary" style="flex-shrink: 0; padding: 0 14px;">加入黑名單</button>
+              </div>
+            </div>
+
+            <div class="blacklist-list-header-row" style="display: flex; justify-content: space-between; align-items: center; margin-top: 16px; margin-bottom: 8px;">
+              <div class="blacklist-list-header" style="font-size: 12px; font-weight: 600;">已封鎖的自訂帳號清單 (<span id="blacklist-count">0</span>)：</div>
+              <div style="display: flex; gap: 6px;">
+                <button id="btn-blacklist-import" class="btn-secondary" style="height: 24px; padding: 0 8px; font-size: 11px; cursor: pointer;">📥 匯入名單</button>
+                <input type="file" id="file-blacklist-import" accept=".txt,.json" class="hidden" />
+                <button id="btn-blacklist-export-txt" class="btn-secondary" style="height: 24px; padding: 0 8px; font-size: 11px; cursor: pointer;">📤 匯出 TXT</button>
+                <button id="btn-blacklist-export-json" class="btn-secondary" style="height: 24px; padding: 0 8px; font-size: 11px; cursor: pointer;">📤 匯出 JSON</button>
+                <button id="btn-blacklist-clear" class="btn-danger" style="height: 24px; padding: 0 8px; font-size: 11px; cursor: pointer;">🗑️ 清空名單</button>
+              </div>
+            </div>
+
+            <div id="blacklist-tags-container" class="blacklist-tags-container">
+              <!-- Rendered dynamically -->
+            </div>
+          </div>
+
+          <!-- Tab 6: About & Acknowledgements (關於與致謝) -->
           <div id="tab-about" class="tab-pane">
             <div class="about-hero">
               <div class="about-logo">💧</div>
@@ -429,6 +473,16 @@
         <button id="push-btn-abort" class="btn-danger hidden">⏹️ 中途停止</button>
       </div>
     </div>
+  </div>
+
+  <!-- Global Terminal Context Menu (右鍵選單) -->
+  <div id="terminal-context-menu" class="context-menu hidden">
+    <div class="context-menu-item" id="ctx-copy">📋 複製選取文字 (Cmd+C)</div>
+    <div class="context-menu-item" id="ctx-copy-ansi">🎨 複製含色彩 ANSI 代碼</div>
+    <div class="context-menu-item" id="ctx-search-google">🔍 Google 搜尋此文字</div>
+    <div class="context-menu-separator"></div>
+    <div class="context-menu-item" id="ctx-blacklist-toggle">🚫 加入黑名單</div>
+    <div class="context-menu-item" id="ctx-quick-push">💬 快速開啟長推文小幫手 (Alt+X)</div>
   </div>
 
   <script type="module" src="/src/main.js"></script>

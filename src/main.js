@@ -10,6 +10,7 @@ import { exportModal } from './exporter.js';
 import { BoardSwitcherWidget } from './board_switcher.js';
 import { UpdateChecker } from './updater.js';
 import { PushHelper } from './push_helper.js';
+import { blacklistManager } from './blacklist.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -75,6 +76,28 @@ const settingToolbarScale = document.getElementById('setting-toolbar-scale');
 const settingFontFamily = document.getElementById('setting-font-family');
 const settingCustomFont = document.getElementById('setting-custom-font');
 const customFontGroup = document.getElementById('custom-font-group');
+
+// Blacklist DOM elements
+const settingBlacklistEnabled = document.getElementById('setting-blacklist-enabled');
+const settingBlacklistGreatTreasure = document.getElementById('setting-blacklist-great-treasure');
+const greatTreasureBadge = document.getElementById('great-treasure-badge');
+const inputBlacklistAdd = document.getElementById('input-blacklist-add');
+const btnBlacklistAdd = document.getElementById('btn-blacklist-add');
+const blacklistTagsContainer = document.getElementById('blacklist-tags-container');
+const blacklistCount = document.getElementById('blacklist-count');
+const btnBlacklistImport = document.getElementById('btn-blacklist-import');
+const fileBlacklistImport = document.getElementById('file-blacklist-import');
+const btnBlacklistExportTxt = document.getElementById('btn-blacklist-export-txt');
+const btnBlacklistExportJson = document.getElementById('btn-blacklist-export-json');
+const btnBlacklistClear = document.getElementById('btn-blacklist-clear');
+
+// Global Context Menu DOM elements
+const contextMenuEl = document.getElementById('terminal-context-menu');
+const ctxCopy = document.getElementById('ctx-copy');
+const ctxCopyAnsi = document.getElementById('ctx-copy-ansi');
+const ctxSearchGoogle = document.getElementById('ctx-search-google');
+const ctxBlacklistToggle = document.getElementById('ctx-blacklist-toggle');
+const ctxQuickPush = document.getElementById('ctx-quick-push');
 
 if (settingFontFamily && customFontGroup) {
   settingFontFamily.addEventListener('change', () => {
@@ -391,11 +414,15 @@ async function doConnect() {
     (b) => b.address === targetAddress || b.address === raw || targetAddress.includes(b.address) || (host && b.address.includes(host))
   );
   if (matchedBm && matchedBm.username && matchedBm.password) {
-    autoLoginManager.startSession(
-      activeTab.id,
-      { username: matchedBm.username, password: matchedBm.password },
-      sendData
-    );
+    settingsManager.getDecryptedCredentials(matchedBm).then((creds) => {
+      if (creds && creds.username && creds.password) {
+        autoLoginManager.startSession(
+          activeTab.id,
+          creds,
+          sendData
+        );
+      }
+    });
   }
 
   try {
@@ -559,10 +586,10 @@ function showGlobalToast(message, duration = 2200) {
   }, duration);
 }
 
-// Settings Modal
 function openSettingsModal() {
   loadSettingsToUI();
   renderBookmarkList();
+  renderBlacklistUI();
   settingsModal.classList.remove('hidden');
   // Clear the update badge dot when settings are opened
   const badgeDot = settingsBtn?.querySelector('.tb-btn-badge-dot');
@@ -602,6 +629,53 @@ function loadSettingsToUI() {
     }
   }
   if (settingCustomFont) settingCustomFont.value = s.customFont || '';
+
+  // Blacklist settings
+  if (settingBlacklistEnabled) settingBlacklistEnabled.checked = blacklistManager.settings.enabled !== false;
+  if (settingBlacklistGreatTreasure) settingBlacklistGreatTreasure.checked = blacklistManager.settings.enableGreatTreasure !== false;
+}
+
+function renderBlacklistUI() {
+  if (!blacklistTagsContainer) return;
+  blacklistTagsContainer.innerHTML = '';
+
+  const list = blacklistManager.getCustomListArray();
+  if (blacklistCount) {
+    blacklistCount.textContent = String(list.length);
+  }
+  if (greatTreasureBadge) {
+    greatTreasureBadge.textContent = `已收錄 ${blacklistManager.getGreatTreasureCount()}+ 帳號`;
+  }
+
+  if (list.length === 0) {
+    const emptyHint = document.createElement('div');
+    emptyHint.className = 'blacklist-empty-hint';
+    emptyHint.textContent = '目前尚未加入任何自訂黑名單帳號。可在上方輸入 ID 或在畫面中點擊右鍵加入。';
+    blacklistTagsContainer.appendChild(emptyHint);
+    return;
+  }
+
+  list.forEach((userId) => {
+    const tag = document.createElement('div');
+    tag.className = 'blacklist-tag';
+    tag.innerHTML = `
+      <span>${userId}</span>
+      <span class="blacklist-tag-remove" title="移出黑名單" data-user="${userId}">&times;</span>
+    `;
+    blacklistTagsContainer.appendChild(tag);
+  });
+
+  blacklistTagsContainer.querySelectorAll('.blacklist-tag-remove').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const u = btn.dataset.user;
+      if (u) {
+        blacklistManager.remove(u);
+        renderBlacklistUI();
+        tabManager.getActiveTab()?.view?.redraw();
+      }
+    });
+  });
 }
 
 function applyToolbarScale(scale = 'medium') {
@@ -639,6 +713,15 @@ function saveSettingsFromModal() {
 
   // Sync with native Rust background anti-idle system (24/7 background protected)
   invoke('set_anti_idle', { enabled: antiIdleEnabled, intervalSecs: antiIdleInterval }).catch(() => {});
+
+  // Save Blacklist settings
+  const blacklistEnabled = settingBlacklistEnabled ? settingBlacklistEnabled.checked : true;
+  const greatTreasureEnabled = settingBlacklistGreatTreasure ? settingBlacklistGreatTreasure.checked : true;
+  blacklistManager.saveSettings({
+    enabled: blacklistEnabled,
+    enableGreatTreasure: greatTreasureEnabled,
+  });
+  tabManager.getActiveTab()?.view?.redraw();
 
   settingsManager.saveSettings({
     antiIdleEnabled,
@@ -907,6 +990,209 @@ if (pushHelperBtn) {
     pushHelper.open();
   });
 }
+
+// Blacklist Management Buttons
+if (btnBlacklistAdd && inputBlacklistAdd) {
+  const doAdd = () => {
+    const val = inputBlacklistAdd.value.trim();
+    if (val) {
+      if (blacklistManager.add(val)) {
+        showToast(`已將 ${val} 加入黑名單`);
+        renderBlacklistUI();
+        tabManager.getActiveTab()?.view?.redraw();
+      } else {
+        showToast(`${val} 已在黑名單中`);
+      }
+      inputBlacklistAdd.value = '';
+    }
+  };
+  btnBlacklistAdd.addEventListener('click', doAdd);
+  inputBlacklistAdd.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      doAdd();
+    }
+  });
+}
+
+if (btnBlacklistClear) {
+  btnBlacklistClear.addEventListener('click', () => {
+    if (confirm('確定要清空所有自訂黑名單帳號嗎？')) {
+      blacklistManager.customList.clear();
+      blacklistManager.saveCustomList();
+      renderBlacklistUI();
+      tabManager.getActiveTab()?.view?.redraw();
+      showToast('已清空自訂黑名單');
+    }
+  });
+}
+
+if (btnBlacklistExportTxt) {
+  btnBlacklistExportTxt.addEventListener('click', () => {
+    const txt = blacklistManager.exportAsText();
+    const blob = new Blob([txt], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `waterball_blacklist_${new Date().toISOString().slice(0, 10)}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('已匯出黑名單 (TXT)');
+  });
+}
+
+if (btnBlacklistExportJson) {
+  btnBlacklistExportJson.addEventListener('click', () => {
+    const json = blacklistManager.exportAsJSON();
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `waterball_blacklist_${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('已匯出黑名單 (JSON)');
+  });
+}
+
+if (btnBlacklistImport && fileBlacklistImport) {
+  btnBlacklistImport.addEventListener('click', () => {
+    fileBlacklistImport.click();
+  });
+  fileBlacklistImport.addEventListener('change', (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const content = evt.target?.result;
+      if (typeof content === 'string') {
+        let added = 0;
+        try {
+          if (file.name.endsWith('.json')) {
+            const parsed = JSON.parse(content);
+            if (Array.isArray(parsed.blacklist)) {
+              for (const id of parsed.blacklist) {
+                if (blacklistManager.add(id)) added++;
+              }
+            }
+          } else {
+            added = blacklistManager.importFromText(content);
+          }
+          showToast(`成功匯入 ${added} 個黑名單帳號`);
+          renderBlacklistUI();
+          tabManager.getActiveTab()?.view?.redraw();
+        } catch (err) {
+          showToast('匯入失敗，請確認檔案格式是否正確');
+        }
+      }
+      fileBlacklistImport.value = '';
+    };
+    reader.readAsText(file);
+  });
+}
+
+// Global Terminal Context Menu Controller
+let activeContextMenuTarget = '';
+let activeContextTab = null;
+
+function hideContextMenu() {
+  if (contextMenuEl && !contextMenuEl.classList.contains('hidden')) {
+    contextMenuEl.classList.add('hidden');
+    activeContextMenuTarget = '';
+    activeContextTab = null;
+  }
+}
+
+tabManager.onContextMenu = (info, tab) => {
+  if (!contextMenuEl) return;
+  activeContextTab = tab;
+  const targetText = info.selectedText || info.word || '';
+  activeContextMenuTarget = targetText;
+
+  if (ctxBlacklistToggle) {
+    if (targetText) {
+      const isBl = blacklistManager.isBlacklisted(targetText);
+      ctxBlacklistToggle.textContent = isBl ? `🚫 從黑名單移除 (${targetText})` : `🚫 加入黑名單 (${targetText})`;
+      ctxBlacklistToggle.style.display = 'flex';
+    } else {
+      ctxBlacklistToggle.style.display = 'none';
+    }
+  }
+
+  // Positioning with edge collision prevention
+  contextMenuEl.classList.remove('hidden');
+  const menuW = 200;
+  const menuH = 180;
+  let posX = info.clientX;
+  let posY = info.clientY;
+
+  if (posX + menuW > window.innerWidth) {
+    posX = window.innerWidth - menuW - 10;
+  }
+  if (posY + menuH > window.innerHeight) {
+    posY = window.innerHeight - menuH - 10;
+  }
+
+  contextMenuEl.style.left = `${Math.max(10, posX)}px`;
+  contextMenuEl.style.top = `${Math.max(10, posY)}px`;
+};
+
+// Context Menu Item Click Handlers
+ctxCopy?.addEventListener('click', () => {
+  if (activeContextMenuTarget) {
+    navigator.clipboard.writeText(activeContextMenuTarget);
+    showToast('已複製文字至剪貼簿');
+  } else if (activeContextTab?.view) {
+    const sel = activeContextTab.view.getSelectionText();
+    if (sel) {
+      navigator.clipboard.writeText(sel);
+      showToast('已複製文字至剪貼簿');
+    }
+  }
+  hideContextMenu();
+});
+
+ctxCopyAnsi?.addEventListener('click', () => {
+  if (activeContextTab?.view) {
+    const ansi = activeContextTab.view.getSelectionAnsi();
+    if (ansi) {
+      navigator.clipboard.writeText(ansi);
+      showToast('已複製含色彩 ANSI 代碼');
+    }
+  }
+  hideContextMenu();
+});
+
+ctxSearchGoogle?.addEventListener('click', () => {
+  if (activeContextMenuTarget) {
+    window.open(`https://www.google.com/search?q=${encodeURIComponent(activeContextMenuTarget)}`, '_blank');
+  }
+  hideContextMenu();
+});
+
+ctxBlacklistToggle?.addEventListener('click', () => {
+  if (activeContextMenuTarget) {
+    const isNowAdded = blacklistManager.toggle(activeContextMenuTarget);
+    showToast(isNowAdded ? `已將 ${activeContextMenuTarget} 加入黑名單` : `已將 ${activeContextMenuTarget} 從黑名單移除`);
+    renderBlacklistUI();
+    tabManager.getActiveTab()?.view?.redraw();
+  }
+  hideContextMenu();
+});
+
+ctxQuickPush?.addEventListener('click', () => {
+  hideContextMenu();
+  pushHelper.open();
+});
+
+// Dismiss context menu on click outside, blur or escape
+window.addEventListener('click', (e) => {
+  if (contextMenuEl && !contextMenuEl.contains(e.target)) {
+    hideContextMenu();
+  }
+});
+window.addEventListener('resize', hideContextMenu);
+window.addEventListener('blur', hideContextMenu);
 
 if (settingsModal) {
   settingsModal.addEventListener('click', (e) => {
@@ -1248,6 +1534,10 @@ autoLoginManager.onStatusChange = (tabId, msg) => {
       else statusText.textContent = '未連線';
     }, 2500);
   }
+};
+
+autoLoginManager.onLoginError = (tabId, errorMsg) => {
+  showToast(`⚠️ ${errorMsg}`, 6000);
 };
 
 let notificationScrapeTimer = null;

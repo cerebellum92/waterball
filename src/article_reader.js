@@ -1,6 +1,5 @@
-// Rich Article Reader Mode (圖文好讀版) for bbsterm
-
 import { isImageUrl, normalizeImageUrl } from './image_preview.js';
+import { blacklistManager } from './blacklist.js';
 
 export class ArticleParser {
   static parseFromBuf(buf) {
@@ -464,7 +463,12 @@ export class ArticleReaderModal {
     const boardEl = document.getElementById('reader-board-badge');
 
     if (titleEl) titleEl.textContent = article.title;
-    if (authorEl) authorEl.textContent = article.author;
+    const isAuthorBlacklisted = blacklistManager.isBlacklisted(article.author);
+    if (authorEl) {
+      authorEl.innerHTML = isAuthorBlacklisted
+        ? `${article.author} <span class="reader-author-badge blacklisted" title="此作者已被列入黑名單">🚫 黑名單作者</span>`
+        : article.author;
+    }
     if (timeEl) timeEl.textContent = article.time;
     if (boardEl) boardEl.textContent = article.board;
 
@@ -528,12 +532,13 @@ export class ArticleReaderModal {
         pushListEl.innerHTML = '<div class="push-empty">目前此篇文章尚無推文</div>';
       } else {
         article.pushList.forEach((p) => {
+          const isPushBlacklisted = blacklistManager.isBlacklisted(p.user);
           const row = document.createElement('div');
-          row.className = `push-item push-type-${p.tag === '推' ? 'up' : p.tag === '噓' ? 'down' : 'neutral'}`;
+          row.className = `push-item push-type-${p.tag === '推' ? 'up' : p.tag === '噓' ? 'down' : 'neutral'}${isPushBlacklisted ? ' blacklisted-push' : ''}`;
 
           row.innerHTML = `
             <span class="push-tag">${p.tag}</span>
-            <span class="push-user">${p.user}</span>
+            <span class="push-user">${p.user}${isPushBlacklisted ? ' <span class="push-blacklist-badge" title="黑名單用戶">🚫</span>' : ''}</span>
             <span class="push-content">${this.formatLineHtml(p.content)}</span>
             <span class="push-time">${p.ip ? p.ip + ' ' : ''}${p.time}</span>
           `;

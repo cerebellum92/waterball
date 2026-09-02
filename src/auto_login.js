@@ -54,6 +54,20 @@ export class AutoLoginManager {
   processBuffer(session) {
     const text = session.buffer;
 
+    // 0. Safety Emergency Brake: Check for login failure / wrong password
+    // Prevent continuous retry loops that could lock the user's PTT account!
+    if (session.state !== 'WAIT_USER') {
+      if (/密碼不對|密碼錯誤|無此帳號|密碼嘗試錯誤|密碼輸入錯誤|請重新輸入密碼|嘗試次數過多/i.test(text)) {
+        session.state = 'FAILED';
+        clearTimeout(session.actionTimer);
+        clearTimeout(session.timeoutTimer);
+        this.onStatusChange?.(session.tabId, '❌ 密碼錯誤！已停止自動登入以避免帳號被鎖');
+        this.onLoginError?.(session.tabId, '偵測到密碼錯誤或無此帳號，已立即停止自動登入，避免帳號被鎖定。');
+        this.stopSession(session.tabId);
+        return;
+      }
+    }
+
     if (session.state === 'WAIT_USER') {
       if (/請輸入代號|請輸入帳號|login\s*[:：]|代號\s*[:：]|帳號\s*[:：]|guest.*參觀|new.*註冊/i.test(text)) {
         session.state = 'SENDING_USER';
@@ -75,7 +89,7 @@ export class AutoLoginManager {
         }, 30);
       }
     } else if (session.state === 'WAIT_ANYKEY') {
-      if (/請按任意鍵|按任意鍵|請按\s*Enter|重複登入|嘗試錯誤|刪除以上錯誤/i.test(text)) {
+      if (/請按任意鍵|按任意鍵|請按\s*Enter|重複登入|刪除以上錯誤/i.test(text)) {
         session.state = 'SENDING_ANYKEY';
         session.buffer = '';
         clearTimeout(session.actionTimer);
