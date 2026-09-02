@@ -625,18 +625,48 @@ impl BbsConnection {
                 for ch in data.chars() {
                     if ch.is_ascii() {
                         encoded.push(ch as u8);
+                    } else if ch == '\u{00a0}' || ('\u{2000}'..='\u{200b}').contains(&ch) || ch == '\u{202f}' || ch == '\u{205f}' || ch == '\u{feff}' {
+                        // Normalize non-breaking and various Unicode spaces to standard ASCII space (0x20)
+                        encoded.push(b' ');
+                    } else if ch == '\u{3000}' {
+                        // Fullwidth ideographic space -> Big5 A140 (UAO encode handles this, but fallback explicitly)
+                        if let Some(bytes) = crate::uao::encode_uao_char(ch) {
+                            encoded.extend_from_slice(&bytes);
+                        } else {
+                            encoded.extend_from_slice(&[0xA1, 0x40]);
+                        }
                     } else if let Some(bytes) = crate::uao::encode_uao_char(ch) {
                         encoded.extend_from_slice(&bytes);
                     } else {
                         let ch_str = ch.to_string();
-                        let (res, _, _) = BIG5.encode(&ch_str);
-                        encoded.extend_from_slice(&res);
+                        let (res, _, had_errors) = BIG5.encode(&ch_str);
+                        if had_errors {
+                            // Do NOT emit &#12345; HTML NCR entities into BBS terminal! Replace with '?' (0x3F)
+                            encoded.push(b'?');
+                        } else {
+                            encoded.extend_from_slice(&res);
+                        }
                     }
                 }
                 writer.write_all(&encoded)?;
             }
             BbsCharset::Gbk => {
-                let (encoded, _, _) = GBK.encode(data);
+                let mut encoded = Vec::with_capacity(data.len() * 2);
+                for ch in data.chars() {
+                    if ch.is_ascii() {
+                        encoded.push(ch as u8);
+                    } else if ch == '\u{00a0}' || ('\u{2000}'..='\u{200b}').contains(&ch) || ch == '\u{202f}' || ch == '\u{205f}' || ch == '\u{feff}' {
+                        encoded.push(b' ');
+                    } else {
+                        let ch_str = ch.to_string();
+                        let (res, _, had_errors) = GBK.encode(&ch_str);
+                        if had_errors {
+                            encoded.push(b'?');
+                        } else {
+                            encoded.extend_from_slice(&res);
+                        }
+                    }
+                }
                 writer.write_all(&encoded)?;
             }
         }

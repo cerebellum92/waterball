@@ -214,7 +214,13 @@ async function processSendQueue() {
 function sendData(data) {
   const activeTab = tabManager.getActiveTab();
   if (!activeTab || !activeTab.isConnected || !data) return;
-  sendQueue.push({ tabId: activeTab.id, data });
+
+  // Sanitize non-breaking spaces (\u00A0) and invisible Unicode spaces into standard ASCII spaces
+  const cleanData = data
+    .replace(/\u00a0/g, ' ')
+    .replace(/[\u2000-\u200b\u202f\u205f\ufeff]/g, ' ');
+
+  sendQueue.push({ tabId: activeTab.id, data: cleanData });
   processSendQueue();
 }
 
