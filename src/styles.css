@@ -926,6 +926,39 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
   caret-color: transparent !important;
 }
 
+/* Floating IME Composition Bubble (專屬懸浮組字選字小視窗) */
+#ime-bubble {
+  position: fixed;
+  background: #1c2128;
+  color: #58a6ff;
+  border: 1px solid #388bfd;
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 15px;
+  font-weight: 500;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Microsoft JhengHei", monospace;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(88, 166, 255, 0.25);
+  z-index: 10000;
+  pointer-events: none;
+  white-space: pre;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1.4;
+  letter-spacing: 0.5px;
+  transition: opacity 0.08s ease;
+}
+
+#ime-bubble.hidden {
+  display: none !important;
+}
+
+#ime-bubble::before {
+  content: '✏️';
+  font-size: 13px;
+  opacity: 0.9;
+}
+
 /* xterm.js overrides for better appearance */
 .xterm {
   height: 100%;

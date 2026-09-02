@@ -279,30 +279,81 @@ window.addEventListener('click', (e) => {
   focusTerminal();
 });
 
+const imeBubble = document.getElementById('ime-bubble');
+const imeBubbleText = document.getElementById('ime-bubble-text');
+
+function updateImeBubble(text = '') {
+  if (!imeBubble) return;
+  const str = text || imeInput?.value || '';
+  if (!str) {
+    hideImeBubble();
+    return;
+  }
+
+  const activeTab = tabManager.getActiveTab();
+  const view = activeTab?.view;
+  if (!view || !view.canvas) {
+    hideImeBubble();
+    return;
+  }
+
+  const canvasRect = view.canvas.getBoundingClientRect();
+  const curX = canvasRect.left + (activeTab.buf.cur_x * view.cellW);
+  const curY = canvasRect.top + (activeTab.buf.cur_y * view.cellH);
+  const cellH = view.cellH;
+
+  if (imeBubbleText) imeBubbleText.textContent = str;
+  imeBubble.classList.remove('hidden');
+
+  let left = curX;
+  let top = curY + cellH + 4;
+
+  const bubbleRect = imeBubble.getBoundingClientRect();
+  if (top + bubbleRect.height > window.innerHeight - 8) {
+    top = Math.max(8, curY - bubbleRect.height - 4);
+  }
+  if (left + bubbleRect.width > window.innerWidth - 8) {
+    left = Math.max(8, window.innerWidth - bubbleRect.width - 8);
+  }
+
+  imeBubble.style.left = `${Math.round(left)}px`;
+  imeBubble.style.top = `${Math.round(top)}px`;
+}
+
+function hideImeBubble() {
+  if (imeBubble) {
+    imeBubble.classList.add('hidden');
+    if (imeBubbleText) imeBubbleText.textContent = '';
+  }
+}
+
 let isComposing = false;
 
 // IME Composition Events (注音 / 倉頡 / 拼音 中文輸入法)
 if (imeInput) {
-  imeInput.addEventListener('compositionstart', () => {
+  imeInput.addEventListener('compositionstart', (e) => {
     isComposing = true;
     imeInput.dataset.composing = 'true';
     imeInput.classList.add('composing');
+    updateImeBubble(e.data || '');
     const activeTab = tabManager.getActiveTab();
     if (activeTab && activeTab.view) {
       activeTab.view.updateImePosition();
     }
   });
 
-  imeInput.addEventListener('compositionupdate', () => {
+  imeInput.addEventListener('compositionupdate', (e) => {
     isComposing = true;
     imeInput.dataset.composing = 'true';
     imeInput.classList.add('composing');
+    updateImeBubble(e.data || '');
   });
 
   imeInput.addEventListener('compositionend', () => {
     isComposing = false;
     imeInput.dataset.composing = 'false';
     imeInput.classList.remove('composing');
+    hideImeBubble();
 
     // In standard W3C DOM, text input is dispatched via the `input` event immediately after compositionend.
     // We use queueMicrotask as a fallback to ensure text is dispatched even in environments where input event might not fire.
@@ -1191,8 +1242,14 @@ window.addEventListener('click', (e) => {
     hideContextMenu();
   }
 });
-window.addEventListener('resize', hideContextMenu);
-window.addEventListener('blur', hideContextMenu);
+window.addEventListener('resize', () => {
+  hideContextMenu();
+  hideImeBubble();
+});
+window.addEventListener('blur', () => {
+  hideContextMenu();
+  hideImeBubble();
+});
 
 if (settingsModal) {
   settingsModal.addEventListener('click', (e) => {
