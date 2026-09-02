@@ -71,9 +71,6 @@
         tabindex="0"
         aria-label="Terminal Input"
       ></textarea>
-      <div id="ime-bubble" class="ime-bubble hidden">
-        <span id="ime-bubble-text"></span>
-      </div>
     </div>
   </div>
 
@@ -486,6 +483,11 @@
     <div class="context-menu-separator"></div>
     <div class="context-menu-item" id="ctx-blacklist-toggle">🚫 加入黑名單</div>
     <div class="context-menu-item" id="ctx-quick-push">💬 快速開啟長推文小幫手 (Alt+X)</div>
+  </div>
+
+  <!-- Dedicated Floating IME Composition Tooltip (懸浮組字預覽視窗) -->
+  <div id="ime-bubble" class="ime-bubble hidden">
+    <span id="ime-bubble-text"></span>
   </div>
 
   <script type="module" src="/src/main.js"></script>

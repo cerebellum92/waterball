@@ -279,11 +279,11 @@ window.addEventListener('click', (e) => {
   focusTerminal();
 });
 
-const imeBubble = document.getElementById('ime-bubble');
-const imeBubbleText = document.getElementById('ime-bubble-text');
-
 function updateImeBubble(text = '') {
-  if (!imeBubble) return;
+  const el = document.getElementById('ime-bubble');
+  const txtEl = document.getElementById('ime-bubble-text');
+  if (!el || !txtEl) return;
+
   const str = text || imeInput?.value || '';
   if (!str) {
     hideImeBubble();
@@ -302,28 +302,34 @@ function updateImeBubble(text = '') {
   const curY = canvasRect.top + (activeTab.buf.cur_y * view.cellH);
   const cellH = view.cellH;
 
-  if (imeBubbleText) imeBubbleText.textContent = str;
-  imeBubble.classList.remove('hidden');
+  txtEl.textContent = str;
+  el.classList.remove('hidden');
+  el.style.display = 'flex';
 
   let left = curX;
   let top = curY + cellH + 4;
 
-  const bubbleRect = imeBubble.getBoundingClientRect();
-  if (top + bubbleRect.height > window.innerHeight - 8) {
-    top = Math.max(8, curY - bubbleRect.height - 4);
+  const bubbleRect = el.getBoundingClientRect();
+  if (top + (bubbleRect.height || 26) > window.innerHeight - 8) {
+    top = Math.max(8, curY - (bubbleRect.height || 26) - 4);
   }
-  if (left + bubbleRect.width > window.innerWidth - 8) {
-    left = Math.max(8, window.innerWidth - bubbleRect.width - 8);
+  if (left + (bubbleRect.width || 80) > window.innerWidth - 8) {
+    left = Math.max(8, window.innerWidth - (bubbleRect.width || 80) - 8);
   }
 
-  imeBubble.style.left = `${Math.round(left)}px`;
-  imeBubble.style.top = `${Math.round(top)}px`;
+  el.style.left = `${Math.round(left)}px`;
+  el.style.top = `${Math.round(top)}px`;
 }
 
 function hideImeBubble() {
-  if (imeBubble) {
-    imeBubble.classList.add('hidden');
-    if (imeBubbleText) imeBubbleText.textContent = '';
+  const el = document.getElementById('ime-bubble');
+  const txtEl = document.getElementById('ime-bubble-text');
+  if (el) {
+    el.classList.add('hidden');
+    el.style.display = 'none';
+  }
+  if (txtEl) {
+    txtEl.textContent = '';
   }
 }
 
@@ -335,7 +341,7 @@ if (imeInput) {
     isComposing = true;
     imeInput.dataset.composing = 'true';
     imeInput.classList.add('composing');
-    updateImeBubble(e.data || '');
+    updateImeBubble(e.data || imeInput.value || '');
     const activeTab = tabManager.getActiveTab();
     if (activeTab && activeTab.view) {
       activeTab.view.updateImePosition();
@@ -346,7 +352,7 @@ if (imeInput) {
     isComposing = true;
     imeInput.dataset.composing = 'true';
     imeInput.classList.add('composing');
-    updateImeBubble(e.data || '');
+    updateImeBubble(e.data || imeInput.value || '');
   });
 
   imeInput.addEventListener('compositionend', () => {
@@ -372,8 +378,9 @@ if (imeInput) {
   });
 
   imeInput.addEventListener('input', (e) => {
-    // During active composition, do NOT touch or clear the value!
+    // During active composition, update floating bubble and do not commit yet
     if (isComposing || (e && e.isComposing)) {
+      updateImeBubble(imeInput.value);
       return;
     }
 
