@@ -89,7 +89,7 @@ export class AutoLoginManager {
         }, 30);
       }
     } else if (session.state === 'WAIT_ANYKEY') {
-      if (/請按任意鍵|按任意鍵|請按\s*Enter|重複登入|刪除以上錯誤/i.test(text)) {
+      if (/請按任意鍵|按任意鍵|請按\s*Enter|刪除以上錯誤/i.test(text)) {
         session.state = 'SENDING_ANYKEY';
         session.buffer = '';
         clearTimeout(session.actionTimer);

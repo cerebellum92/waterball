@@ -1510,7 +1510,10 @@ window.addEventListener('keydown', (e) => {
         case 'F11': seq = '\x1b[23~'; break;
         case 'F12': seq = '\x1b[24~'; break;
         default:
-          // Printable characters (Chinese IME, English, symbols) flow naturally into imeInput
+          // Direct printable ASCII characters (English letters, numbers, symbols, y/n) when not in IME composition
+          if (!isComposing && !e.isComposing && e.key.length === 1 && e.key.charCodeAt(0) >= 32 && e.key.charCodeAt(0) <= 126) {
+            seq = e.key;
+          }
           break;
       }
     }
