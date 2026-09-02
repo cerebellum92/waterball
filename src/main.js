@@ -380,7 +380,7 @@ if (imeInput) {
   imeInput.addEventListener('input', (e) => {
     // During active composition, update floating bubble and do not commit yet
     if (isComposing || (e && e.isComposing)) {
-      updateImeBubble(imeInput.value);
+      updateImeBubble(e.data || imeInput.value || '');
       return;
     }
 
@@ -1574,10 +1574,7 @@ window.addEventListener('keydown', (e) => {
         case 'F11': seq = '\x1b[23~'; break;
         case 'F12': seq = '\x1b[24~'; break;
         default:
-          // Direct printable ASCII characters (English letters, numbers, symbols, y/n) when not in IME composition
-          if (!isComposing && !e.isComposing && e.key.length === 1 && e.key.charCodeAt(0) >= 32 && e.key.charCodeAt(0) <= 126) {
-            seq = e.key;
-          }
+          // Printable characters (Chinese IME like Boshiamy/Cangjie/Zhuyin, English, symbols) flow naturally into imeInput
           break;
       }
     }
