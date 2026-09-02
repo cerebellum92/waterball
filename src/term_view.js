@@ -502,10 +502,14 @@ export class TermView {
       // 2. Draw foreground characters & ANSI blocks
       for (let c = 0; c < cols; c++) {
         const cell = line[c];
-        if (cell.isTrailByte) continue; // Handled by lead byte
+        // Only skip trail byte if it is actually preceded by a valid lead byte
+        if (cell.isTrailByte && c > 0 && line[c - 1].isLeadByte) continue;
+
+        // Verify that lead byte is genuinely followed by a trail byte before spanning 2 cells
+        const isLead = cell.isLeadByte && (c + 1 < cols) && !!line[c + 1].isTrailByte;
 
         const x1 = Math.round(c * cellW);
-        const x2 = Math.round((c + (cell.isLeadByte ? 2 : 1)) * cellW);
+        const x2 = Math.round((c + (isLead ? 2 : 1)) * cellW);
         const cellWidth = x2 - x1;
 
         const fgCol = TERM_COLORS[cell.getFg()];
@@ -558,7 +562,7 @@ export class TermView {
               ctx.lineTo(x1, y2 + 0.6);
               ctx.closePath();
               ctx.fill();
-            } else if (cell.isLeadByte) {
+            } else if (isLead) {
               // Full-width character (CJK / special symbols): ensure exact fit into 2-cell width
               const charW = this.getCharWidth(cell.ch, fontSize, ctx);
               if (charW > 0 && Math.abs(charW - cellWidth) > 1.5) {

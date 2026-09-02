@@ -130,6 +130,24 @@ export class TermBuf {
     return true;
   }
 
+  clearCellAt(line, col) {
+    if (col < 0 || col >= this.cols) return;
+    const cell = line[col];
+    if (cell.isTrailByte && col > 0) {
+      const prev = line[col - 1];
+      prev.isLeadByte = false;
+      prev.isTrailByte = false;
+      prev.ch = ' ';
+    }
+    if (cell.isLeadByte && col + 1 < this.cols) {
+      const next = line[col + 1];
+      next.isLeadByte = false;
+      next.isTrailByte = false;
+      next.ch = ' ';
+    }
+    cell.copyFrom(this.newChar);
+  }
+
   puts(str) {
     if (!str) return;
     const cols = this.cols;
@@ -175,7 +193,23 @@ export class TermBuf {
       if (this.cur_y >= rows || this.cur_x >= cols) continue;
 
       const line = lines[this.cur_y];
-      const cell = line[this.cur_x];
+      const curX = this.cur_x;
+
+      // Sever any existing DBCS pair at curX before overwriting
+      if (line[curX].isTrailByte && curX > 0) {
+        const prev = line[curX - 1];
+        prev.isLeadByte = false;
+        prev.isTrailByte = false;
+        prev.ch = ' ';
+      }
+      if (line[curX].isLeadByte && curX + 1 < cols) {
+        const next = line[curX + 1];
+        next.isLeadByte = false;
+        next.isTrailByte = false;
+        next.ch = ' ';
+      }
+
+      const cell = line[curX];
       cell.ch = ch;
       cell.copyAttr(this.curAttr);
 
@@ -185,6 +219,13 @@ export class TermBuf {
         this.cur_x++;
         if (this.cur_x < cols) {
           const nextCell = line[this.cur_x];
+          // If nextCell is already part of another DBCS pair, clean up its partner
+          if (nextCell.isLeadByte && this.cur_x + 1 < cols) {
+            const nextNext = line[this.cur_x + 1];
+            nextNext.isLeadByte = false;
+            nextNext.isTrailByte = false;
+            nextNext.ch = ' ';
+          }
           nextCell.ch = '';
           nextCell.copyAttr(this.curAttr);
           nextCell.isLeadByte = false;
@@ -373,7 +414,7 @@ export class TermBuf {
     let cur_x = this.cur_x;
     const n = cur_x + param > cols ? cols : cur_x + param;
     for (let col = cur_x; col < n; col++) {
-      line[col].copyFrom(this.newChar);
+      this.clearCellAt(line, col);
     }
     this.queueUpdate();
   }
@@ -384,17 +425,17 @@ export class TermBuf {
     switch (param) {
       case 0: // Erase right
         for (let col = this.cur_x; col < cols; col++) {
-          line[col].copyFrom(this.newChar);
+          this.clearCellAt(line, col);
         }
         break;
       case 1: // Erase left
         for (let col = 0; col <= this.cur_x && col < cols; col++) {
-          line[col].copyFrom(this.newChar);
+          this.clearCellAt(line, col);
         }
         break;
       case 2: // Erase all
         for (let col = 0; col < cols; col++) {
-          line[col].copyFrom(this.newChar);
+          this.clearCellAt(line, col);
         }
         break;
     }
@@ -410,12 +451,12 @@ export class TermBuf {
       case 0: { // From cursor to end of screen
         let line = lines[this.cur_y];
         for (let col = this.cur_x; col < cols; col++) {
-          line[col].copyFrom(this.newChar);
+          this.clearCellAt(line, col);
         }
         for (let row = this.cur_y + 1; row < rows; row++) {
           line = lines[row];
           for (let col = 0; col < cols; col++) {
-            line[col].copyFrom(this.newChar);
+            this.clearCellAt(line, col);
           }
         }
         break;
@@ -424,12 +465,12 @@ export class TermBuf {
         for (let row = 0; row < this.cur_y; row++) {
           const line = lines[row];
           for (let col = 0; col < cols; col++) {
-            line[col].copyFrom(this.newChar);
+            this.clearCellAt(line, col);
           }
         }
         const line = lines[this.cur_y];
         for (let col = 0; col <= this.cur_x && col < cols; col++) {
-          line[col].copyFrom(this.newChar);
+          this.clearCellAt(line, col);
         }
         break;
       }
