@@ -57,6 +57,12 @@ export class TermView {
     this.mouseDownPos = null;
     this.hoverUrl = null;
 
+    // Differential rendering state cache
+    this.lastCursorX = -1;
+    this.lastCursorY = -1;
+    this.lastSelection = null;
+    this.lastBlinkState = true;
+
     this.onUrlClick = null;
     this.onUrlHover = null;
     this.onUrlLeave = null;
@@ -484,6 +490,7 @@ export class TermView {
     this.fontFamily = fontFamily;
     this.customFont = customFont;
     this.measureCache.clear();
+    this.buf.markAllDirty();
     this.scheduleRedraw();
   }
 
@@ -525,10 +532,11 @@ export class TermView {
     this.ctx.scale(dpr, dpr);
     this.ctx.textBaseline = 'middle';
 
+    this.buf.markAllDirty();
     this.redraw();
   }
 
-  redraw() {
+  redraw(forceFull = false) {
     const ctx = this.ctx;
     const buf = this.buf;
     const cellW = this.cellW;
@@ -536,15 +544,53 @@ export class TermView {
     const cols = buf.cols;
     const rows = buf.rows;
 
+    if (forceFull) {
+      buf.markAllDirty();
+    }
+
+    // Mark previous and current cursor rows dirty so cursor clears and moves cleanly
+    if (this.lastCursorY >= 0 && this.lastCursorY < rows) {
+      buf.markRowDirty(this.lastCursorY);
+    }
+    buf.markRowDirty(buf.cur_y);
+
+    // Mark selection rows dirty if selection was present or changed
+    if (this.lastSelection) {
+      buf.markRowsDirty(this.lastSelection.startY, this.lastSelection.endY);
+    }
+    if (this.selection) {
+      buf.markRowsDirty(this.selection.startY, this.selection.endY);
+    }
+
+    // Mark hover URL row dirty if hover changed
+    if (this.lastHoverUrl && this.lastHoverUrl.row >= 0 && this.lastHoverUrl.row < rows) {
+      buf.markRowDirty(this.lastHoverUrl.row);
+    }
+    if (this.hoverUrl && this.hoverUrl.row >= 0 && this.hoverUrl.row < rows) {
+      buf.markRowDirty(this.hoverUrl.row);
+    }
+
+    // When blink state changes, mark rows with blinking characters dirty
+    if (this.blinkState !== this.lastBlinkState) {
+      for (let r = 0; r < rows; r++) {
+        const line = buf.lines[r];
+        for (let c = 0; c < cols; c++) {
+          if (line[c].blink) {
+            buf.markRowDirty(r);
+            break;
+          }
+        }
+      }
+    }
+
     const fontSize = Math.floor(cellH * 0.82);
     ctx.font = `${fontSize}px ${this.getFontFamilyString()}`;
     ctx.textBaseline = 'middle';
 
-    // Clear background
-    ctx.fillStyle = '#000000';
-    ctx.fillRect(0, 0, cellW * cols, cellH * rows);
-
+    // Differential Row Rendering Loop: only process rows with actual modifications
     for (let r = 0; r < rows; r++) {
+      if (!buf.dirtyRows[r]) continue;
+
       const isBlacklisted = this.isRowBlacklisted(r);
       if (isBlacklisted) {
         ctx.globalAlpha = 0.22;
@@ -556,7 +602,11 @@ export class TermView {
       const cellHeight = y2 - y1;
       const centerY = y1 + Math.round(cellHeight * 0.52);
 
-      // 1. Draw continuous background spans (100% eliminates fractional DPI grid lines and vertical/horizontal seams on Windows)
+      // 0. Clear specific row background rectangle
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(0, y1, cellW * cols, cellHeight + 0.6);
+
+      // 1. Draw continuous background spans (100% eliminates fractional DPI grid lines)
       let bgStartCol = 0;
       let curBg = line[0].getBg();
 
@@ -678,18 +728,8 @@ export class TermView {
         }
       }
 
-      if (isBlacklisted) {
-        ctx.globalAlpha = 1.0;
-      }
-    }
-
-    // Highlight and Underline all clickable URLs on screen (PCManX / Welly style)
-    for (let r = 0; r < rows; r++) {
-      const urls = this.buf.getUrlsInRow(r);
-      const y1 = Math.round(r * cellH);
-      const y2 = Math.round((r + 1) * cellH);
-      const cellHeight = y2 - y1;
-
+      // 3. Highlight and Underline clickable URLs in this row
+      const urls = buf.getUrlsInRow(r);
       for (const u of urls) {
         const x1 = Math.round(u.startCol * cellW);
         const x2 = Math.round((u.endCol + 1) * cellW);
@@ -697,7 +737,6 @@ export class TermView {
         const isHovered = this.hoverUrl && this.hoverUrl.row === r && this.hoverUrl.startCol === u.startCol;
 
         if (isHovered) {
-          // Prominent hover highlight & solid blue underline
           ctx.fillStyle = 'rgba(88, 166, 255, 0.25)';
           ctx.fillRect(x1, y1, width, cellHeight);
 
@@ -708,7 +747,6 @@ export class TermView {
           ctx.lineTo(x2, y2 - 1.5);
           ctx.stroke();
         } else {
-          // Subtle hyperlink background tint & crisp underline for all clickable links
           ctx.fillStyle = 'rgba(88, 166, 255, 0.08)';
           ctx.fillRect(x1, y1, width, cellHeight);
 
@@ -719,6 +757,10 @@ export class TermView {
           ctx.lineTo(x2, y2 - 1.5);
           ctx.stroke();
         }
+      }
+
+      if (isBlacklisted) {
+        ctx.globalAlpha = 1.0;
       }
     }
 
@@ -861,22 +903,34 @@ export class TermView {
     }
 
     this.updateImePosition();
+
+    // Update tracking cache for differential rendering
+    this.lastCursorX = buf.cur_x;
+    this.lastCursorY = buf.cur_y;
+    this.lastSelection = this.selection ? { ...this.selection } : null;
+    this.lastHoverUrl = this.hoverUrl ? { ...this.hoverUrl } : null;
+    this.lastBlinkState = this.blinkState;
+
+    buf.clearDirty();
   }
 
   setCursorStyle(style = 'underline') {
     this.cursorStyle = style;
+    this.buf.markAllDirty();
     this.redraw();
   }
 
   setSearchResults(matches, activeIndex = -1) {
     this.searchMatches = matches || [];
     this.activeSearchIndex = activeIndex;
+    this.buf.markAllDirty();
     this.redraw();
   }
 
   clearSearch() {
     this.searchMatches = [];
     this.activeSearchIndex = -1;
+    this.buf.markAllDirty();
     this.redraw();
   }
 
