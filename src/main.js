@@ -483,27 +483,35 @@ async function doConnect(targetBm = null) {
   activeTab.parser.feed(`\x1b[1;33m正在連線到 ${targetAddress}:${port} (${charset.toUpperCase()}) ...\r\n\x1b[0m`);
   tabManager.updateTabStatus(activeTab.id, 'connecting');
 
-  // 1. Resolve matching bookmark with clear priority
+  // 1. Resolve matching bookmark for auto-login
   let matchedBm = targetBm;
-  if (!matchedBm) {
-    matchedBm = settingsManager.bookmarks.find((b) => b.address === raw);
-  }
-  if (!matchedBm) {
-    matchedBm = settingsManager.bookmarks.find((b) => b.address === targetAddress);
-  }
-  if (!matchedBm) {
-    matchedBm = settingsManager.bookmarks.find((b) => {
-      const hasCreds = Boolean(b.username && (b.password || b.hasPassword));
-      if (!hasCreds) return false;
-      const bInfo = parseAddress(b.address);
-      return bInfo.host === host && (!port || port === 23 || bInfo.port === port);
-    });
-  }
-  if (!matchedBm) {
-    matchedBm = settingsManager.bookmarks.find((b) => {
-      const bInfo = parseAddress(b.address);
-      return bInfo.host === host;
-    });
+  if (!matchedBm || !matchedBm.username) {
+    // Only search bookmarks that actually have an auto-login username configured
+    const credBookmarks = settingsManager.bookmarks.filter((b) => Boolean(b.username));
+    // Priority A: Exact raw address match among bookmarks with username
+    matchedBm = credBookmarks.find((b) => b.address === raw);
+    // Priority B: Exact targetAddress match among bookmarks with username
+    if (!matchedBm) {
+      matchedBm = credBookmarks.find((b) => b.address === targetAddress);
+    }
+    // Priority C: Same host & port
+    if (!matchedBm && host) {
+      matchedBm = credBookmarks.find((b) => {
+        const bInfo = parseAddress(b.address);
+        return bInfo.host === host && (!port || bInfo.port === port);
+      });
+    }
+    // Priority D: Same host match
+    if (!matchedBm && host) {
+      matchedBm = credBookmarks.find((b) => {
+        const bInfo = parseAddress(b.address);
+        return bInfo.host === host;
+      });
+    }
+    // Priority E: Loose match
+    if (!matchedBm && host) {
+      matchedBm = credBookmarks.find((b) => b.address.includes(host) || host.includes(b.address));
+    }
   }
 
   // 2. Pre-initialize auto-login session BEFORE socket connection
@@ -511,12 +519,11 @@ async function doConnect(targetBm = null) {
   if (matchedBm && matchedBm.username) {
     try {
       const creds = await settingsManager.getDecryptedCredentials(matchedBm);
-      if (creds && creds.username && creds.password) {
+      if (creds && creds.username) {
         autoLoginManager.startSession(
           activeTab.id,
           creds,
-          (data) => sendDataToTab(activeTab.id, data),
-          activeTab.buf ? activeTab.buf.getText(0, 0, activeTab.buf.cols - 1, activeTab.buf.rows - 1) : ''
+          (data) => sendDataToTab(activeTab.id, data)
         );
       }
     } catch (err) {

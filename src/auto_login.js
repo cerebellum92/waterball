@@ -8,7 +8,7 @@ export class AutoLoginManager {
   }
 
   startSession(tabId, credentials, sendDataFn, initialBufferText = '') {
-    if (!credentials || !credentials.username || !credentials.password) {
+    if (!credentials || !credentials.username) {
       return;
     }
 
@@ -17,7 +17,7 @@ export class AutoLoginManager {
     const session = {
       tabId,
       username: credentials.username,
-      password: credentials.password,
+      password: credentials.password || '',
       sendData: sendDataFn,
       state: 'WAIT_USER', // 'WAIT_USER' | 'SENDING_USER' | 'WAIT_PASS' | 'SENDING_PASS' | 'WAIT_ANYKEY' | 'DONE'
       buffer: initialBufferText || '',
@@ -89,20 +89,40 @@ export class AutoLoginManager {
         session.state = 'SENDING_USER';
         session.buffer = ''; // reset buffer for next stage
         clearTimeout(session.actionTimer);
+        this.onStatusChange?.(session.tabId, `🔐 正在輸入帳號 (${session.username})...`);
         session.actionTimer = setTimeout(() => {
-          session.sendData(session.username + '\r');
-          session.state = 'WAIT_PASS';
-        }, 60);
+          // Step 1: Send username string
+          session.sendData(session.username);
+          // Step 2: Send Enter (\r) after delay so BBS input loop registers token + newline
+          setTimeout(() => {
+            session.sendData('\r');
+            if (session.password) {
+              session.state = 'WAIT_PASS';
+              this.onStatusChange?.(session.tabId, '🔐 帳號已送出，等待密碼提示...');
+            } else {
+              session.state = 'DONE';
+              this.onStatusChange?.(session.tabId, '已輸入帳號，請手動輸入密碼');
+              setTimeout(() => this.stopSession(session.tabId), 3000);
+            }
+          }, 100);
+        }, 120);
       }
     } else if (session.state === 'WAIT_PASS') {
       if (/請輸入密碼|password\s*[:：]|密碼\s*[:：]|您的密碼/i.test(text)) {
         session.state = 'SENDING_PASS';
         session.buffer = '';
         clearTimeout(session.actionTimer);
+        this.onStatusChange?.(session.tabId, '🔐 正在輸入密碼...');
         session.actionTimer = setTimeout(() => {
-          session.sendData(session.password + '\r');
-          session.state = 'WAIT_ANYKEY';
-        }, 60);
+          // Step 1: Send password string
+          session.sendData(session.password);
+          // Step 2: Send Enter (\r) after delay
+          setTimeout(() => {
+            session.sendData('\r');
+            session.state = 'WAIT_ANYKEY';
+            this.onStatusChange?.(session.tabId, '🔐 密碼已送出，等待確認畫面...');
+          }, 100);
+        }, 120);
       }
     } else if (session.state === 'WAIT_ANYKEY') {
       if (/您想刪除其他重複登入的連線嗎/i.test(text)) {
@@ -110,13 +130,13 @@ export class AutoLoginManager {
         clearTimeout(session.actionTimer);
         session.actionTimer = setTimeout(() => {
           session.sendData('y\r');
-        }, 60);
+        }, 100);
       } else if (/您要刪除以上錯誤嘗試的記錄嗎/i.test(text)) {
         session.buffer = '';
         clearTimeout(session.actionTimer);
         session.actionTimer = setTimeout(() => {
           session.sendData('y\r');
-        }, 60);
+        }, 100);
       } else if (/請按任意鍵|按任意鍵|請按\s*Enter|請按\s*SPACE|按\s*Enter/i.test(text)) {
         session.buffer = '';
         session.anyKeyCount++;
@@ -128,7 +148,7 @@ export class AutoLoginManager {
             this.onStatusChange?.(session.tabId, '自動登入完成');
             setTimeout(() => this.stopSession(session.tabId), 1000);
           }
-        }, 80);
+        }, 100);
       } else if (/主功能表|休閒聊天|個人設定區|即時動態|分類看板/i.test(text)) {
         session.state = 'DONE';
         this.onStatusChange?.(session.tabId, '自動登入完成');
