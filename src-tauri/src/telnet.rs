@@ -39,8 +39,6 @@ pub struct BbsConnection {
     charset: Arc<RwLock<BbsCharset>>,
     is_ssh: bool,
     last_activity: Arc<std::sync::Mutex<std::time::Instant>>,
-    _child: Option<Box<dyn portable_pty::Child + Send>>,
-    _master: Option<Box<dyn portable_pty::MasterPty + Send>>,
 }
 
 impl BbsConnection {
@@ -109,8 +107,6 @@ impl BbsConnection {
             charset,
             is_ssh: false,
             last_activity,
-            _child: None,
-            _master: None,
         })
     }
 
@@ -244,8 +240,6 @@ impl BbsConnection {
             charset,
             is_ssh: true,
             last_activity,
-            _child: None,
-            _master: None,
         })
     }
 

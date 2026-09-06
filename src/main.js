@@ -487,7 +487,7 @@ async function doConnect() {
   const matchedBm = settingsManager.bookmarks.find(
     (b) => b.address === targetAddress || b.address === raw || targetAddress.includes(b.address) || (host && b.address.includes(host))
   );
-  if (matchedBm && matchedBm.username && matchedBm.password) {
+  if (matchedBm && matchedBm.username && (matchedBm.password || matchedBm.hasPassword)) {
     settingsManager.getDecryptedCredentials(matchedBm).then((creds) => {
       if (creds && creds.username && creds.password) {
         autoLoginManager.startSession(
@@ -660,6 +660,17 @@ function openSettingsModal() {
   renderBookmarkList();
   renderBlacklistUI();
   settingsModal.classList.remove('hidden');
+
+  // Update secure vault backend status badge
+  const vaultStatusEl = document.getElementById('secure-vault-backend-name');
+  if (vaultStatusEl) {
+    settingsManager.getSecureStorageStatus().then((backend) => {
+      vaultStatusEl.textContent = backend;
+    }).catch(() => {
+      vaultStatusEl.textContent = '系統原生鑰匙圈';
+    });
+  }
+
   // Clear the update badge dot when settings are opened
   const badgeDot = settingsBtn?.querySelector('.tb-btn-badge-dot');
   if (badgeDot) {
@@ -832,7 +843,7 @@ function renderBookmarkList() {
 
     const info = document.createElement('div');
     info.className = 'bm-info';
-    const autoLoginBadge = (bm.username && bm.password)
+    const autoLoginBadge = (bm.username && (bm.password || bm.hasPassword))
       ? `<span style="font-size: 11px; background: rgba(63, 185, 80, 0.18); color: var(--green); border: 1px solid rgba(63, 185, 80, 0.4); padding: 1px 6px; border-radius: 4px; margin-left: 6px;">🔐 自動登入 (${bm.username})</span>`
       : '';
     info.innerHTML = `
@@ -869,9 +880,9 @@ function renderBookmarkList() {
     const delBtn = document.createElement('button');
     delBtn.className = 'btn-danger';
     delBtn.textContent = '刪除';
-    delBtn.onclick = (e) => {
+    delBtn.onclick = async (e) => {
       e.stopPropagation();
-      settingsManager.deleteBookmark(bm.id);
+      await settingsManager.deleteBookmark(bm.id);
       renderBookmarksSelect();
       renderBookmarkList();
     };
@@ -885,7 +896,13 @@ function renderBookmarkList() {
   });
 }
 
-function renderInlineBookmarkEdit(item, bm) {
+async function renderInlineBookmarkEdit(item, bm) {
+  let existingPass = '';
+  if (bm.hasPassword || bm.password) {
+    const creds = await settingsManager.getDecryptedCredentials(bm);
+    existingPass = creds?.password || '';
+  }
+
   item.innerHTML = `
     <div class="bm-edit-box">
       <div style="font-size: 12px; font-weight: 600; color: var(--accent);">✏️ 編輯站台資訊與自動登入帳密</div>
@@ -900,7 +917,7 @@ function renderInlineBookmarkEdit(item, bm) {
       </div>
       <div class="bm-edit-row">
         <input type="text" id="edit-user-${bm.id}" value="${bm.username || ''}" placeholder="自動登入帳號 (選填)" />
-        <input type="password" id="edit-pass-${bm.id}" value="${bm.password || ''}" placeholder="自動登入密碼 (選填)" />
+        <input type="password" id="edit-pass-${bm.id}" value="${existingPass}" placeholder="自動登入密碼 (選填)" />
       </div>
       <div class="bm-edit-actions">
         <button id="edit-cancel-${bm.id}" class="btn-secondary">✕ 取消</button>
@@ -909,7 +926,7 @@ function renderInlineBookmarkEdit(item, bm) {
     </div>
   `;
 
-  document.getElementById(`edit-save-${bm.id}`)?.addEventListener('click', (e) => {
+  document.getElementById(`edit-save-${bm.id}`)?.addEventListener('click', async (e) => {
     e.stopPropagation();
     const newName = document.getElementById(`edit-name-${bm.id}`)?.value?.trim() || bm.name;
     const newAddr = document.getElementById(`edit-addr-${bm.id}`)?.value?.trim() || bm.address;
@@ -917,7 +934,7 @@ function renderInlineBookmarkEdit(item, bm) {
     const newUser = document.getElementById(`edit-user-${bm.id}`)?.value?.trim() || '';
     const newPass = document.getElementById(`edit-pass-${bm.id}`)?.value?.trim() || '';
 
-    settingsManager.updateBookmark(bm.id, {
+    await settingsManager.updateBookmark(bm.id, {
       name: newName,
       address: newAddr,
       encoding: newEnc,
@@ -937,7 +954,7 @@ function renderInlineBookmarkEdit(item, bm) {
 
 // Inline Bookmark Add in Settings Modal
 if (bmBtnAdd) {
-  bmBtnAdd.addEventListener('click', () => {
+  bmBtnAdd.addEventListener('click', async () => {
     const name = bmInputName?.value?.trim();
     const addr = bmInputAddr?.value?.trim();
     const enc = bmInputEnc?.value || 'big5';
@@ -950,7 +967,7 @@ if (bmBtnAdd) {
       return;
     }
 
-    settingsManager.addBookmark({
+    await settingsManager.addBookmark({
       name,
       address: addr,
       encoding: enc,

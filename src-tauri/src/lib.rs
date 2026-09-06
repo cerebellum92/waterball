@@ -1,5 +1,6 @@
 mod telnet;
 pub mod uao;
+mod secure_store;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -236,6 +237,10 @@ pub fn run() {
             set_anti_idle,
             disconnect,
             open_browser_url,
+            secure_store::secure_save_credential,
+            secure_store::secure_get_credential,
+            secure_store::secure_delete_credential,
+            secure_store::secure_store_backend,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

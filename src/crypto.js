@@ -105,3 +105,87 @@ export async function decryptSecret(ciphertext) {
     return '';
   }
 }
+
+/**
+ * Remove legacy AES crypto seed from localStorage once migrated to native vault.
+ */
+export function removeLegacyCryptoSeed() {
+  try {
+    localStorage.removeItem(SEED_STORAGE_KEY);
+  } catch (e) {
+    console.warn('Failed to remove legacy crypto seed:', e);
+  }
+}
+
+/**
+ * Save credential into OS Native Keyring / Restricted File Vault
+ */
+export async function secureSaveCredential(key, secret) {
+  if (!key) return;
+  if (!secret) {
+    return secureDeleteCredential(key);
+  }
+  if (window.__TAURI__?.core?.invoke) {
+    try {
+      await window.__TAURI__.core.invoke('secure_save_credential', { key, secret });
+      return;
+    } catch (err) {
+      console.error('Tauri secure_save_credential failed, falling back to local encryption:', err);
+    }
+  }
+  // Browser/Web fallback
+  const enc = await encryptSecret(secret);
+  localStorage.setItem(`__sec_${key}`, enc);
+}
+
+/**
+ * Get credential from OS Native Keyring / Restricted File Vault
+ */
+export async function secureGetCredential(key) {
+  if (!key) return '';
+  if (window.__TAURI__?.core?.invoke) {
+    try {
+      const res = await window.__TAURI__.core.invoke('secure_get_credential', { key });
+      if (res !== null && res !== undefined) {
+        return res;
+      }
+    } catch (err) {
+      console.error('Tauri secure_get_credential failed, trying local fallback:', err);
+    }
+  }
+  // Browser/Web fallback
+  const stored = localStorage.getItem(`__sec_${key}`);
+  if (stored) {
+    return await decryptSecret(stored);
+  }
+  return '';
+}
+
+/**
+ * Delete credential from OS Native Keyring / Restricted File Vault
+ */
+export async function secureDeleteCredential(key) {
+  if (!key) return;
+  if (window.__TAURI__?.core?.invoke) {
+    try {
+      await window.__TAURI__.core.invoke('secure_delete_credential', { key });
+    } catch (err) {
+      console.error('Tauri secure_delete_credential failed:', err);
+    }
+  }
+  localStorage.removeItem(`__sec_${key}`);
+}
+
+/**
+ * Detect active secure store backend
+ */
+export async function secureStoreBackend() {
+  if (window.__TAURI__?.core?.invoke) {
+    try {
+      return await window.__TAURI__.core.invoke('secure_store_backend');
+    } catch (err) {
+      console.error('Tauri secure_store_backend probe failed:', err);
+    }
+  }
+  return 'Web AES-GCM (瀏覽器沙盒)';
+}
