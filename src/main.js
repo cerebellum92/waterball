@@ -16,6 +16,10 @@ const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 const updateChecker = new UpdateChecker();
+const isMac = typeof navigator !== 'undefined' && (
+  navigator.platform?.toUpperCase().includes('MAC') ||
+  navigator.userAgent?.toUpperCase().includes('MAC')
+);
 
 // DOM elements
 const tabBar = document.getElementById('tab-bar');
@@ -422,8 +426,14 @@ window.addEventListener('paste', (e) => {
   const text = (e.clipboardData || window.clipboardData)?.getData('text');
   if (text) {
     let clean = text.replace(/\r\n/g, '\r').replace(/\n/g, '\r');
-    clean = clean.replace(/\x1b\[/g, '\x15[');
-    clean = clean.replace(/\*\[([0-9;]*m)/g, '\x15[$1');
+    const activeTab = tabManager.getActiveTab();
+    const isPtt = (activeTab?.address || '').toLowerCase().includes('ptt');
+    // Only convert standard ESC[ to \x15[ (Ctrl+U) on PTT, which uses \x15 as color leader.
+    // On MapleBBS or other telnet sites, \x15 is erase-line, so keep \x1b[ intact.
+    if (isPtt) {
+      clean = clean.replace(/\x1b\[/g, '\x15[');
+      clean = clean.replace(/\*\[([0-9;]*m)/g, '\x15[$1');
+    }
     sendData(clean);
   }
 });
@@ -1356,15 +1366,15 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
-  // Quick Board Switcher (Cmd+K)
-  if (e.metaKey && e.code === 'KeyK' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+  // Quick Board Switcher (Cmd+K on macOS / Ctrl+Shift+K on Windows & Linux)
+  if (((isMac && e.metaKey) || (!isMac && e.ctrlKey && e.shiftKey)) && e.code === 'KeyK' && !e.altKey) {
     e.preventDefault();
     boardSwitcherWidget.open();
     return;
   }
 
-  // HD Screenshot & Export Modal (Cmd+Shift+S)
-  if (e.metaKey && e.shiftKey && e.code === 'KeyS' && !e.ctrlKey && !e.altKey) {
+  // HD Screenshot & Export Modal (Cmd+Shift+S on macOS / Ctrl+Shift+S on Windows & Linux)
+  if (((isMac && e.metaKey) || (!isMac && e.ctrlKey)) && e.shiftKey && e.code === 'KeyS' && !e.altKey) {
     e.preventDefault();
     const activeTab = tabManager.getActiveTab();
     if (activeTab) {
@@ -1373,22 +1383,22 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
-  // Toggle ANSI Palette & Symbols (Cmd+P)
-  if (e.metaKey && e.code === 'KeyP' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+  // Toggle ANSI Palette & Symbols (Cmd+P on macOS / Ctrl+Shift+P on Windows & Linux)
+  if (((isMac && e.metaKey && !e.shiftKey) || (!isMac && e.ctrlKey && e.shiftKey)) && e.code === 'KeyP' && !e.ctrlKey && !e.altKey) {
     e.preventDefault();
     paletteWidget.toggle();
     return;
   }
 
-  // Find in Terminal (Cmd+F / Ctrl+F)
-  if (e.metaKey && e.code === 'KeyF' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+  // Find in Terminal (Cmd+F on macOS / Ctrl+Shift+F on Windows & Linux)
+  if (((isMac && e.metaKey && !e.shiftKey) || (!isMac && e.ctrlKey && e.shiftKey)) && e.code === 'KeyF' && !e.altKey) {
     e.preventDefault();
     searchWidget.open();
     return;
   }
 
   // Find Next/Prev (Cmd+G / Cmd+Shift+G)
-  if (e.metaKey && e.code === 'KeyG' && !e.ctrlKey && !e.altKey) {
+  if (((isMac && e.metaKey) || (!isMac && e.ctrlKey)) && e.code === 'KeyG' && !e.altKey) {
     e.preventDefault();
     if (e.shiftKey) {
       searchWidget.prevMatch();
@@ -1398,8 +1408,8 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
-  // Open Article Reader Mode (Cmd+D / Cmd+R)
-  if (e.metaKey && (e.code === 'KeyD' || e.code === 'KeyR') && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+  // Open Article Reader Mode (Cmd+D / Cmd+R on macOS)
+  if (isMac && e.metaKey && (e.code === 'KeyD' || e.code === 'KeyR') && !e.ctrlKey && !e.altKey && !e.shiftKey) {
     e.preventDefault();
     const activeTab = tabManager.getActiveTab();
     if (activeTab) {
@@ -1408,8 +1418,8 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
-  // Cmd+T: New Tab
-  if (e.metaKey && e.code === 'KeyT' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+  // New Tab: Cmd+T (macOS) / Ctrl+Shift+T (Windows & Linux)
+  if (((isMac && e.metaKey) || (!isMac && e.ctrlKey && e.shiftKey)) && e.code === 'KeyT' && !e.altKey) {
     e.preventDefault();
     const newTab = tabManager.createTab({
       title: `連線 ${tabManager.tabs.length + 1}`,
@@ -1420,8 +1430,8 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
-  // Cmd+W: Close Current Tab
-  if (e.metaKey && e.code === 'KeyW' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+  // Close Current Tab: Cmd+W (macOS) / Ctrl+Shift+W (Windows & Linux)
+  if (((isMac && e.metaKey) || (!isMac && e.ctrlKey && e.shiftKey)) && e.code === 'KeyW' && !e.altKey) {
     e.preventDefault();
     const activeTab = tabManager.getActiveTab();
     if (activeTab) {
@@ -1441,8 +1451,8 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
-  // Cmd+1 ~ Cmd+9: Direct switch to tab N
-  if (e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && e.code.startsWith('Digit')) {
+  // Switch directly to tab 1 ~ 9 (Cmd+1~9 on macOS / Alt+1~9 on Windows & Linux)
+  if (((isMac && e.metaKey) || (!isMac && e.altKey)) && !e.shiftKey && e.code.startsWith('Digit')) {
     const digit = parseInt(e.code.charAt(5), 10);
     if (digit >= 1 && digit <= 9) {
       e.preventDefault();
@@ -1451,9 +1461,21 @@ window.addEventListener('keydown', (e) => {
     }
   }
 
+  // Guard: If an interactive input element is focused (search input, settings modal, etc.), do NOT intercept with BBS keymap
+  const activeEl = document.activeElement;
+  if (
+    activeEl &&
+    (activeEl === addressInput ||
+      activeEl.tagName === 'INPUT' ||
+      activeEl.tagName === 'SELECT' ||
+      (activeEl.tagName === 'TEXTAREA' && activeEl !== imeInput) ||
+      activeEl.isContentEditable)
+  ) {
+    return;
+  }
+
   const activeTab = tabManager.getActiveTab();
   if (!activeTab || !activeTab.isConnected) return;
-  if (document.activeElement === addressInput) return;
 
   // Make sure terminal textarea has focus
   focusTerminal();
@@ -1469,12 +1491,14 @@ window.addEventListener('keydown', (e) => {
   }
 
   let seq = '';
-  const isCtrl = settingsManager.settings.mapCommandToCtrl ? (e.ctrlKey || e.metaKey) : e.ctrlKey;
+  // On macOS, Cmd is dedicated to app shortcuts; BBS control characters require Ctrl.
+  // On Windows/Linux, pure Ctrl (without Shift) routes to BBS control characters.
+  const isCtrl = isMac ? e.ctrlKey : (e.ctrlKey && !e.shiftKey);
   const view = activeTab.view;
   const buf = activeTab.buf;
 
-  // 1. Copy Shortcut: Cmd+C (Plain text) / Cmd+Shift+C (With ANSI Colors)
-  if (isCtrl && e.code === 'KeyC' && view && view.selection) {
+  // 1. Copy Shortcut: Cmd+C (macOS) or Ctrl+C (Windows/Linux) when text selection exists
+  if ((isMac ? (e.metaKey || e.ctrlKey) : e.ctrlKey) && e.code === 'KeyC' && view && view.selection) {
     e.preventDefault();
     const isAnsi = !!e.shiftKey;
     const text = isAnsi ? view.getSelectionAnsi() : view.getSelectionText();

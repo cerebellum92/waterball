@@ -528,7 +528,7 @@ export class TermBuf {
         for (let row = 0; row < rows; row++) {
           const line = lines[row];
           for (let col = 0; col < cols; col++) {
-            line[col].copyFrom(this.newChar);
+            this.clearCellAt(line, col);
           }
         }
         this.cur_x = 0;

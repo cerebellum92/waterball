@@ -35,7 +35,7 @@ export class AnsiParser {
           break;
 
         case AnsiParser.STATE_CSI:
-          if ((ch >= '`' && ch <= 'z') || (ch >= '@' && ch <= 'Z')) {
+          if (ch >= '@' && ch <= '~') {
             const rawParams = this.esc ? this.esc.split(';') : [];
             let firstChar = '';
             if (rawParams[0]) {
