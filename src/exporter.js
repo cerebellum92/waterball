@@ -37,11 +37,10 @@ export class BbsExporter {
         const cell = buf.lines[r][c];
         if (!cell || cell.isTrailByte) continue;
 
-        const attr = cell.attr || {};
-        const fg = attr.fg ?? 7;
-        const bg = attr.bg ?? 0;
-        const bold = !!attr.bold;
-        const blink = !!attr.blink;
+        const fg = cell.fg ?? 7;
+        const bg = cell.bg ?? 0;
+        const bold = !!cell.bright;
+        const blink = !!cell.blink;
 
         // If attribute changed, emit SGR escape sequence
         if (fg !== lastFg || bg !== lastBg || bold !== lastBold || blink !== lastBlink) {
@@ -77,11 +76,10 @@ export class BbsExporter {
         const cell = buf.lines[r][c];
         if (!cell || cell.isTrailByte) continue;
 
-        const attr = cell.attr || {};
-        const fg = attr.fg ?? 7;
-        const bg = attr.bg ?? 0;
-        const bold = !!attr.bold;
-        const blink = !!attr.blink;
+        const fg = cell.fg ?? 7;
+        const bg = cell.bg ?? 0;
+        const bold = !!cell.bright;
+        const blink = !!cell.blink;
 
         const colorHex = this.getPaletteColor(fg, bold, false);
         const bgHex = bg > 0 ? this.getPaletteColor(bg, false, true) : null;

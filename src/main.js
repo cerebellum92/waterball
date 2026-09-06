@@ -534,10 +534,6 @@ function updateToolbarConnectionState(state) {
     connectBtn.style.display = 'none';
     disconnectBtn.style.display = 'inline-block';
     addressInput.disabled = true;
-    settingsManager.startKeepAlive(sendData, () => {
-      const tab = tabManager.getActiveTab();
-      return tab ? tab.isConnected : false;
-    });
     focusTerminal();
   } else if (state === 'connecting') {
     statusDot.classList.add('connecting');
@@ -546,7 +542,6 @@ function updateToolbarConnectionState(state) {
     disconnectBtn.style.display = 'none';
     addressInput.disabled = true;
   } else {
-    settingsManager.stopKeepAlive();
     statusText.textContent = '未連線';
     connectBtn.style.display = 'inline-block';
     connectBtn.disabled = false;

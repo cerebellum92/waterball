@@ -199,31 +199,6 @@ class SettingsManager {
   recordActivity() {
     this.lastActivityTime = Date.now();
   }
-
-  startKeepAlive(sendDataFn, isConnectedFn) {
-    this.stopKeepAlive();
-    this.recordActivity();
-
-    this.keepAliveTimer = setInterval(() => {
-      if (!this.settings.antiIdleEnabled) return;
-      if (!isConnectedFn || !isConnectedFn()) return;
-
-      const idleSeconds = (Date.now() - this.lastActivityTime) / 1000;
-      if (idleSeconds >= this.settings.antiIdleInterval) {
-        // Send a harmless NUL / ping control signal to maintain connection without modifying screen
-        console.log(`[Keep-Alive] Idle for ${Math.round(idleSeconds)}s, sending heartbeat...`);
-        sendDataFn('\x00');
-        this.recordActivity();
-      }
-    }, 15000); // Check idle status every 15s
-  }
-
-  stopKeepAlive() {
-    if (this.keepAliveTimer) {
-      clearInterval(this.keepAliveTimer);
-      this.keepAliveTimer = null;
-    }
-  }
 }
 
 export const settingsManager = new SettingsManager();

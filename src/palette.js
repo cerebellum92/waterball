@@ -74,7 +74,6 @@ export class PaletteWidget {
             <button class="palette-act-btn" data-code="5" title="閃爍文字 (*[5m)">✨ 閃爍</button>
             <button class="palette-act-btn" data-code="4" title="底線 (*[4m)"><u>U</u> 底線</button>
             <button class="palette-act-btn" data-code="7" title="反白 (*[7m)">⬛ 反白</button>
-            <button class="palette-act-btn" id="palette-btn-ctrl-c" title="插入純 Ctrl+C 控制字元">插入 Ctrl+C</button>
           </div>
 
           <div class="palette-hint-box">
@@ -179,13 +178,6 @@ export class PaletteWidget {
           }
         }
       });
-    });
-
-    // Insert Raw Ctrl+C button
-    widget.querySelector('#palette-btn-ctrl-c')?.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      this.sendData?.('\x03');
     });
 
     // Symbol & Kaomoji buttons click
