@@ -111,9 +111,6 @@ class SettingsManager {
     if (changed) {
       this.saveBookmarks(this.bookmarks);
     }
-    if (hadLegacyPasswords) {
-      removeLegacyCryptoSeed();
-    }
   }
 
   loadSettings() {
@@ -254,6 +251,13 @@ class SettingsManager {
         bookmark.password = '__SECURE_VAULT__';
         bookmark.hasPassword = true;
         this.saveBookmarks(this.bookmarks);
+      }
+    } else if (bookmark.id) {
+      // Fallback: check if credential exists in secure store for this bookmark ID
+      password = (await secureGetCredential(bookmark.id)) || '';
+      if (password) {
+        bookmark.password = '__SECURE_VAULT__';
+        bookmark.hasPassword = true;
       }
     }
     return {

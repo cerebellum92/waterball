@@ -212,17 +212,20 @@ async function processSendQueue() {
   isSending = false;
 }
 
-function sendData(data) {
-  const activeTab = tabManager.getActiveTab();
-  if (!activeTab || !activeTab.isConnected || !data) return;
-
-  // Sanitize non-breaking spaces (\u00A0) and invisible Unicode spaces into standard ASCII spaces
+function sendDataToTab(tabId, data) {
+  if (!tabId || !data) return;
   const cleanData = data
     .replace(/\u00a0/g, ' ')
     .replace(/[\u2000-\u200b\u202f\u205f\ufeff]/g, ' ');
 
-  sendQueue.push({ tabId: activeTab.id, data: cleanData });
+  sendQueue.push({ tabId, data: cleanData });
   processSendQueue();
+}
+
+function sendData(data) {
+  const activeTab = tabManager.getActiveTab();
+  if (!activeTab || !activeTab.isConnected || !data) return;
+  sendDataToTab(activeTab.id, data);
 }
 
 function focusTerminal(force = false) {
@@ -462,7 +465,7 @@ function parseAddress(input) {
   return { host, port, userPrefix };
 }
 
-async function doConnect() {
+async function doConnect(targetBm = null) {
   const activeTab = tabManager.getActiveTab();
   if (!activeTab) return;
 
@@ -480,25 +483,56 @@ async function doConnect() {
   activeTab.parser.feed(`\x1b[1;33m正在連線到 ${targetAddress}:${port} (${charset.toUpperCase()}) ...\r\n\x1b[0m`);
   tabManager.updateTabStatus(activeTab.id, 'connecting');
 
-  // Pre-initialize auto-login session before socket connection to catch the first incoming packet
-  const matchedBm = settingsManager.bookmarks.find(
-    (b) => b.address === targetAddress || b.address === raw || targetAddress.includes(b.address) || (host && b.address.includes(host))
-  );
-  if (matchedBm && matchedBm.username && (matchedBm.password || matchedBm.hasPassword)) {
-    settingsManager.getDecryptedCredentials(matchedBm).then((creds) => {
+  // 1. Resolve matching bookmark with clear priority
+  let matchedBm = targetBm;
+  if (!matchedBm) {
+    matchedBm = settingsManager.bookmarks.find((b) => b.address === raw);
+  }
+  if (!matchedBm) {
+    matchedBm = settingsManager.bookmarks.find((b) => b.address === targetAddress);
+  }
+  if (!matchedBm) {
+    matchedBm = settingsManager.bookmarks.find((b) => {
+      const hasCreds = Boolean(b.username && (b.password || b.hasPassword));
+      if (!hasCreds) return false;
+      const bInfo = parseAddress(b.address);
+      return bInfo.host === host && (!port || port === 23 || bInfo.port === port);
+    });
+  }
+  if (!matchedBm) {
+    matchedBm = settingsManager.bookmarks.find((b) => {
+      const bInfo = parseAddress(b.address);
+      return bInfo.host === host;
+    });
+  }
+
+  // 2. Pre-initialize auto-login session BEFORE socket connection
+  // CRITICAL: Await credentials so autoLoginManager is ready when initial packet arrives!
+  if (matchedBm && matchedBm.username) {
+    try {
+      const creds = await settingsManager.getDecryptedCredentials(matchedBm);
       if (creds && creds.username && creds.password) {
         autoLoginManager.startSession(
           activeTab.id,
           creds,
-          sendData
+          (data) => sendDataToTab(activeTab.id, data),
+          activeTab.buf ? activeTab.buf.getText(0, 0, activeTab.buf.cols - 1, activeTab.buf.rows - 1) : ''
         );
       }
-    });
+    } catch (err) {
+      console.warn('Failed to retrieve auto-login credentials:', err);
+    }
   }
 
   try {
     await invoke('connect', { tabId: activeTab.id, address: targetAddress, port, charset });
+    tabManager.updateTabStatus(activeTab.id, 'connected');
     focusTerminal(true);
+
+    if (activeTab.buf) {
+      const screen = activeTab.buf.getText(0, 0, activeTab.buf.cols - 1, activeTab.buf.rows - 1);
+      autoLoginManager.checkScreenBuffer(activeTab.id, screen);
+    }
   } catch (err) {
     autoLoginManager.stopSession(activeTab.id);
     activeTab.parser.feed(`\x1b[1;31m連線失敗: ${err}\r\n\x1b[0m`);
@@ -600,9 +634,9 @@ if (bookmarksSelect) {
       focusTerminal(true);
       const activeTab = tabManager.getActiveTab();
       if (activeTab?.isConnected) {
-        doDisconnect().then(doConnect);
+        doDisconnect().then(() => doConnect(bm));
       } else {
-        doConnect();
+        doConnect(bm);
       }
     }
   });
@@ -860,9 +894,9 @@ function renderBookmarkList() {
       closeSettingsModal();
       const activeTab = tabManager.getActiveTab();
       if (activeTab?.isConnected) {
-        doDisconnect().then(doConnect);
+        doDisconnect().then(() => doConnect(bm));
       } else {
-        doConnect();
+        doConnect(bm);
       }
     };
 
