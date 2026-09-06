@@ -1,7 +1,7 @@
 // Complete BBS Terminal Buffer & Grid State Machine
 
-export const TERM_COLORS = [
-  // Normal (0-7)
+// Standard 16 ANSI colors
+const BASE_16_COLORS = [
   '#000000', // 0: black
   '#bb0000', // 1: red
   '#00bb00', // 2: green
@@ -18,8 +18,23 @@ export const TERM_COLORS = [
   '#5555ff', // 12: bright blue
   '#ff55ff', // 13: bright magenta
   '#55ffff', // 14: bright cyan
-  '#ffffff'  // 15: bright white
+  '#ffffff', // 15: bright white
 ];
+
+// Generate full standard Xterm 256-color palette
+export const TERM_COLORS = [...BASE_16_COLORS];
+const CUBE_STEPS = [0, 95, 135, 175, 215, 255];
+for (let r = 0; r < 6; r++) {
+  for (let g = 0; g < 6; g++) {
+    for (let b = 0; b < 6; b++) {
+      TERM_COLORS.push(`rgb(${CUBE_STEPS[r]}, ${CUBE_STEPS[g]}, ${CUBE_STEPS[b]})`);
+    }
+  }
+}
+for (let i = 0; i < 24; i++) {
+  const v = 8 + i * 10;
+  TERM_COLORS.push(`rgb(${v}, ${v}, ${v})`);
+}
 
 export class TermChar {
   constructor(ch = ' ') {
@@ -69,9 +84,11 @@ export class TermChar {
 
   getFg() {
     if (this.invert) {
-      return this.bright ? this.bg + 8 : this.bg;
+      if (typeof this.bg === 'string') return this.bg;
+      return (this.bright && typeof this.bg === 'number' && this.bg < 8) ? this.bg + 8 : this.bg;
     }
-    return this.bright ? this.fg + 8 : this.fg;
+    if (typeof this.fg === 'string') return this.fg;
+    return (this.bright && typeof this.fg === 'number' && this.fg < 8) ? this.fg + 8 : this.fg;
   }
 
   getBg() {
@@ -575,12 +592,48 @@ export class TermBuf {
         default:
           if (v >= 30 && v <= 37) {
             this.curAttr.fg = v - 30;
+          } else if (v === 38) {
+            // Extended foreground: 38;5;n (256 colors) or 38;2;r;g;b (TrueColor)
+            if (i + 2 < params.length && params[i + 1] === 5) {
+              const colorIdx = params[i + 2];
+              if (colorIdx >= 0 && colorIdx < 256) {
+                this.curAttr.fg = colorIdx;
+              }
+              i += 2;
+            } else if (i + 4 < params.length && params[i + 1] === 2) {
+              const r = Math.max(0, Math.min(255, params[i + 2] || 0));
+              const g = Math.max(0, Math.min(255, params[i + 3] || 0));
+              const b = Math.max(0, Math.min(255, params[i + 4] || 0));
+              this.curAttr.fg = `rgb(${r},${g},${b})`;
+              i += 4;
+            }
           } else if (v === 39) {
             this.curAttr.fg = 7;
           } else if (v >= 40 && v <= 47) {
             this.curAttr.bg = v - 40;
+          } else if (v === 48) {
+            // Extended background: 48;5;n (256 colors) or 48;2;r;g;b (TrueColor)
+            if (i + 2 < params.length && params[i + 1] === 5) {
+              const colorIdx = params[i + 2];
+              if (colorIdx >= 0 && colorIdx < 256) {
+                this.curAttr.bg = colorIdx;
+              }
+              i += 2;
+            } else if (i + 4 < params.length && params[i + 1] === 2) {
+              const r = Math.max(0, Math.min(255, params[i + 2] || 0));
+              const g = Math.max(0, Math.min(255, params[i + 3] || 0));
+              const b = Math.max(0, Math.min(255, params[i + 4] || 0));
+              this.curAttr.bg = `rgb(${r},${g},${b})`;
+              i += 4;
+            }
           } else if (v === 49) {
             this.curAttr.bg = 0;
+          } else if (v >= 90 && v <= 97) {
+            // Bright/high-intensity foreground (xterm 90-97)
+            this.curAttr.fg = (v - 90) + 8;
+          } else if (v >= 100 && v <= 107) {
+            // Bright/high-intensity background (xterm 100-107)
+            this.curAttr.bg = (v - 100) + 8;
           }
           break;
       }

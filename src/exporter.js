@@ -1,12 +1,19 @@
 // HD Screenshot & ANSI / HTML Export Controller for bbsterm
 
+import { TERM_COLORS } from './term_buf.js';
+
 export class BbsExporter {
   static getPaletteColor(code, isBright = false, isBg = false) {
+    if (typeof code === 'string') return code;
+    if (typeof code === 'number' && code >= 16) {
+      return TERM_COLORS[code] || (isBg ? '#101216' : '#ffffff');
+    }
+
     const fgNormal = ['#16181d', '#b62324', '#238636', '#9e6a03', '#1f6feb', '#8957e5', '#1b7c83', '#b1bac4'];
     const fgBright = ['#7d8590', '#f85149', '#3fb950', '#e3b341', '#58a6ff', '#bc8cff', '#39c5bb', '#ffffff'];
     const bgNormal = ['#101216', '#b62324', '#238636', '#9e6a03', '#1f6feb', '#8957e5', '#1b7c83', '#b1bac4'];
 
-    const idx = code % 8;
+    const idx = (typeof code === 'number' ? code : 7) % 8;
     if (isBg) return bgNormal[idx] || '#101216';
     return isBright ? (fgBright[idx] || '#ffffff') : (fgNormal[idx] || '#b1bac4');
   }
@@ -48,8 +55,39 @@ export class BbsExporter {
           if (!bold && lastBold) codes.push('0'); // reset if bold turned off
           if (bold) codes.push('1');
           if (blink) codes.push('5');
-          if (fg >= 0 && fg <= 7) codes.push(String(30 + fg));
-          if (bg > 0 && bg <= 7) codes.push(String(40 + bg));
+
+          // Foreground formatting
+          if (typeof fg === 'number') {
+            if (fg >= 0 && fg <= 7) {
+              codes.push(String(30 + fg));
+            } else if (fg >= 8 && fg <= 15) {
+              codes.push(String(90 + (fg - 8)));
+            } else if (fg >= 16 && fg <= 255) {
+              codes.push(`38;5;${fg}`);
+            }
+          } else if (typeof fg === 'string' && fg.startsWith('rgb(')) {
+            const rgb = fg.replace(/[^\d,]/g, '').split(',');
+            if (rgb.length === 3) {
+              codes.push(`38;2;${rgb[0]};${rgb[1]};${rgb[2]}`);
+            }
+          }
+
+          // Background formatting
+          if (typeof bg === 'number') {
+            if (bg > 0 && bg <= 7) {
+              codes.push(String(40 + bg));
+            } else if (bg >= 8 && bg <= 15) {
+              codes.push(String(100 + (bg - 8)));
+            } else if (bg >= 16 && bg <= 255) {
+              codes.push(`48;5;${bg}`);
+            }
+          } else if (typeof bg === 'string' && bg.startsWith('rgb(')) {
+            const rgb = bg.replace(/[^\d,]/g, '').split(',');
+            if (rgb.length === 3) {
+              codes.push(`48;2;${rgb[0]};${rgb[1]};${rgb[2]}`);
+            }
+          }
+
           if (codes.length === 0) codes.push('m');
 
           result += `\x1b[${codes.join(';')}m`;
@@ -110,7 +148,9 @@ export class ExportModal {
     this.modalEl = null;
     this.isOpen = false;
     this.currentTab = null;
-    this.createDom();
+    if (typeof document !== 'undefined') {
+      this.createDom();
+    }
   }
 
   createDom() {

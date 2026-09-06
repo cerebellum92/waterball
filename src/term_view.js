@@ -45,6 +45,7 @@ export class TermView {
 
     this.renderRequested = false;
     this.measureCache = new Map();
+    this.rowMetadataCache = new Map();
 
     this.blinkState = true;
     this.blinkTimer = setInterval(() => {
@@ -239,34 +240,50 @@ export class TermView {
     return word;
   }
 
-  getRowAuthor(r) {
+  getRowMetadata(r) {
+    if (!this.rowMetadataCache) {
+      this.rowMetadataCache = new Map();
+    }
+    // If not dirty and cached, return cached metadata immediately
+    if (!this.buf.dirtyRows[r] && this.rowMetadataCache.has(r)) {
+      return this.rowMetadataCache.get(r);
+    }
+
     const line = this.buf.lines[r];
-    if (!line) return null;
+    if (!line) return { author: null, isBlacklisted: false };
+
     let lineStr = '';
     for (let c = 0; c < this.buf.cols; c++) {
       const cell = line[c];
       if (!cell || cell.isTrailByte) continue;
       lineStr += cell.ch || ' ';
     }
+
+    let author = null;
     // Match PTT article row pattern: e.g. " 1234 + 9/02 username □ [標題]" or " 1234 爆 9/02 username □"
     const match = lineStr.match(/^\s*\d+\s+([+爆M~!\d\s]+)?\s*\d{1,2}\/\d{1,2}\s+([a-zA-Z0-9_-]+)/);
     if (match && match[2]) {
-      return match[2];
+      author = match[2];
+    } else {
+      // Also match PTT Push row pattern: "推 username: " or "噓 username: " or "→ username: "
+      const pushMatch = lineStr.match(/^([推噓→])\s+([a-zA-Z0-9_-]+)\s*[:：]/);
+      if (pushMatch && pushMatch[2]) {
+        author = pushMatch[2];
+      }
     }
-    // Also match PTT Push row pattern: "推 username: " or "噓 username: " or "→ username: "
-    const pushMatch = lineStr.match(/^([推噓→])\s+([a-zA-Z0-9_-]+)\s*[:：]/);
-    if (pushMatch && pushMatch[2]) {
-      return pushMatch[2];
-    }
-    return null;
+
+    const isBlacklisted = author ? blacklistManager.isBlacklisted(author) : false;
+    const meta = { author, isBlacklisted };
+    this.rowMetadataCache.set(r, meta);
+    return meta;
+  }
+
+  getRowAuthor(r) {
+    return this.getRowMetadata(r).author;
   }
 
   isRowBlacklisted(r) {
-    const author = this.getRowAuthor(r);
-    if (author) {
-      return blacklistManager.isBlacklisted(author);
-    }
-    return false;
+    return this.getRowMetadata(r).isBlacklisted;
   }
 
   getGridPos(evt) {
@@ -599,7 +616,7 @@ export class TermView {
           if (curBg !== 0) {
             const x1 = Math.round(bgStartCol * cellW);
             const x2 = Math.round(c * cellW);
-            ctx.fillStyle = TERM_COLORS[curBg];
+            ctx.fillStyle = typeof curBg === 'string' ? curBg : (TERM_COLORS[curBg] || '#000000');
             ctx.fillRect(x1, y1, x2 - x1, cellHeight + 0.6);
           }
           bgStartCol = c;
@@ -620,7 +637,8 @@ export class TermView {
         const x2 = Math.round((c + (isLead ? 2 : 1)) * cellW);
         const cellWidth = x2 - x1;
 
-        const fgCol = TERM_COLORS[cell.getFg()];
+        const fgVal = cell.getFg();
+        const fgCol = typeof fgVal === 'string' ? fgVal : (TERM_COLORS[fgVal] || '#ffffff');
 
         // Draw character
         if (cell.ch && cell.ch !== ' ') {

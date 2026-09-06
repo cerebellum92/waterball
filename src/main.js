@@ -11,15 +11,12 @@ import { BoardSwitcherWidget } from './board_switcher.js';
 import { UpdateChecker } from './updater.js';
 import { PushHelper } from './push_helper.js';
 import { blacklistManager } from './blacklist.js';
+import { isMac, isInteractiveInputElement, translateBbsKey } from './keymap.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 const updateChecker = new UpdateChecker();
-const isMac = typeof navigator !== 'undefined' && (
-  navigator.platform?.toUpperCase().includes('MAC') ||
-  navigator.userAgent?.toUpperCase().includes('MAC')
-);
 
 // DOM elements
 const tabBar = document.getElementById('tab-bar');
@@ -1479,15 +1476,7 @@ window.addEventListener('keydown', (e) => {
   }
 
   // Guard: If an interactive input element is focused (search input, settings modal, etc.), do NOT intercept with BBS keymap
-  const activeEl = document.activeElement;
-  if (
-    activeEl &&
-    (activeEl === addressInput ||
-      activeEl.tagName === 'INPUT' ||
-      activeEl.tagName === 'SELECT' ||
-      (activeEl.tagName === 'TEXTAREA' && activeEl !== imeInput) ||
-      activeEl.isContentEditable)
-  ) {
+  if (isInteractiveInputElement(document.activeElement, imeInput)) {
     return;
   }
 
@@ -1497,20 +1486,11 @@ window.addEventListener('keydown', (e) => {
   // Make sure terminal textarea has focus
   focusTerminal();
 
-  // Let macOS and OS handle CapsLock input method switching
-  if (e.code === 'CapsLock') {
-    return;
-  }
-
   // If user is actively in IME composition or candidate selection popup
   if (isComposing || e.isComposing || e.key === 'Process' || e.keyCode === 229) {
     return;
   }
 
-  let seq = '';
-  // On macOS, Cmd is dedicated to app shortcuts; BBS control characters require Ctrl.
-  // On Windows/Linux, pure Ctrl (without Shift) routes to BBS control characters.
-  const isCtrl = isMac ? e.ctrlKey : (e.ctrlKey && !e.shiftKey);
   const view = activeTab.view;
   const buf = activeTab.buf;
 
@@ -1529,103 +1509,23 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
-  // 2. Control / Command key combinations (Ctrl+A ~ Ctrl+Z, Ctrl+X, Ctrl+Y, Ctrl+U, etc.)
-  if (isCtrl && !e.altKey) {
-    if (e.code.startsWith('Key')) {
-      const letter = e.code.charAt(3).toUpperCase();
-      const code = letter.charCodeAt(0) - 64; // 'A' (65) -> 1, 'X' (88) -> 24
-      if (code >= 1 && code <= 26) {
-        // Handle Ctrl+V / Cmd+V (let browser paste event handle paste, do not send raw \x16)
-        if (letter === 'V') {
-          return; // Let paste handler execute
-        }
-        seq = String.fromCharCode(code);
-      }
-    } else if (e.code === 'BracketLeft') {
-      seq = '\x1b'; // Ctrl+[ (ESC)
-    } else if (e.code === 'BracketRight') {
-      seq = '\x1d'; // Ctrl+]
-    } else if (e.code === 'Backslash') {
-      seq = '\x1c'; // Ctrl+\
-    } else if (e.code === 'Slash' || e.code === 'Minus') {
-      seq = '\x1f'; // Ctrl+/ or Ctrl+_
-    } else if (e.code === 'Digit2') {
-      seq = '\x00'; // Ctrl+@ (NUL)
-    } else if (e.key === 'ArrowLeft') {
-      seq = e.metaKey ? '\x1b[1~' : '\x1b[1;5D'; // Cmd+Left -> Home, Ctrl+Left -> Word Left
-    } else if (e.key === 'ArrowRight') {
-      seq = e.metaKey ? '\x1b[4~' : '\x1b[1;5C'; // Cmd+Right -> End, Ctrl+Right -> Word Right
-    } else if (e.key === 'ArrowUp') {
-      seq = e.metaKey ? '\x1b[1~' : '\x1b[1;5A'; // Cmd+Up -> Home
-    } else if (e.key === 'ArrowDown') {
-      seq = e.metaKey ? '\x1b[4~' : '\x1b[1;5B'; // Cmd+Down -> End
-    } else if (e.key === 'Letter' || (e.key.length === 1 && e.key.toLowerCase() >= 'a' && e.key.toLowerCase() <= 'z')) {
-      const code = e.key.toLowerCase().charCodeAt(0) - 96;
-      seq = String.fromCharCode(code);
-    }
-  } else if (e.altKey && !isCtrl) {
-    // 3. Alt / Option Key Combinations (ESC prefix)
-    if (e.key.length === 1) {
-      seq = '\x1b' + e.key;
-    }
-  } else if (!isCtrl && !e.altKey) {
-    // 4. Shift Key Modifiers for Navigation
-    if (e.shiftKey) {
-      switch (e.key) {
-        case 'Tab': seq = '\x1b[Z'; break; // Shift+Tab
-        case 'ArrowUp': seq = '\x1b[5~'; break; // Shift+Up -> PageUp
-        case 'ArrowDown': seq = '\x1b[6~'; break; // Shift+Down -> PageDown
-        case 'ArrowLeft': seq = '\x1b[1~'; break; // Shift+Left -> Home
-        case 'ArrowRight': seq = '\x1b[4~'; break; // Shift+Right -> End
-      }
-    }
+  // 2. Translate BBS Key (Control characters, navigation, editing keys, DBCS)
+  const { seq, handled, isPaste } = translateBbsKey(e, {
+    smartDbcsBackspace: settingsManager.settings.smartDbcsBackspace,
+    isPrevCharDBCS: buf ? buf.isPrevCharDBCS() : false,
+    isCurCharDBCSLead: buf ? buf.isCurCharDBCSLead() : false,
+  });
 
-    // 5. Navigation, BBS Function, and Editing keys
-    if (!seq) {
-      switch (e.key) {
-        case 'ArrowUp': seq = '\x1b[A'; break;
-        case 'ArrowDown': seq = '\x1b[B'; break;
-        case 'ArrowRight': seq = '\x1b[C'; break;
-        case 'ArrowLeft': seq = '\x1b[D'; break;
-        case 'Enter': seq = '\r'; break;
-        case 'Backspace':
-          // Smart DBCS Backspace: if left cell is DBCS trail byte, send 2 Backspaces (\x08\x08)
-          seq = (settingsManager.settings.smartDbcsBackspace && buf && buf.isPrevCharDBCS()) ? '\x08\x08' : '\x08';
-          break;
-        case 'Escape': seq = '\x1b'; break;
-        case 'Tab': seq = '\t'; break;
-        case 'PageUp': seq = '\x1b[5~'; break;
-        case 'PageDown': seq = '\x1b[6~'; break;
-        case 'Home': seq = '\x1b[1~'; break;
-        case 'End': seq = '\x1b[4~'; break;
-        case 'Insert': seq = '\x1b[2~'; break;
-        case 'Delete':
-          // Smart DBCS Delete: if current cell is DBCS lead byte, send 2 Deletes
-          seq = (settingsManager.settings.smartDbcsBackspace && buf && buf.isCurCharDBCSLead()) ? '\x1b[3~\x1b[3~' : '\x1b[3~';
-          break;
-        case 'F1': seq = '\x1bOP'; break;
-        case 'F2': seq = '\x1bOQ'; break;
-        case 'F3': seq = '\x1bOR'; break;
-        case 'F4': seq = '\x1bOS'; break;
-        case 'F5': seq = '\x1b[15~'; break;
-        case 'F6': seq = '\x1b[17~'; break;
-        case 'F7': seq = '\x1b[18~'; break;
-        case 'F8': seq = '\x1b[19~'; break;
-        case 'F9': seq = '\x1b[20~'; break;
-        case 'F10': seq = '\x1b[21~'; break;
-        case 'F11': seq = '\x1b[23~'; break;
-        case 'F12': seq = '\x1b[24~'; break;
-        default:
-          // Printable characters (Chinese IME like Boshiamy/Cangjie/Zhuyin, English, symbols) flow naturally into imeInput
-          break;
-      }
-    }
+  if (isPaste) {
+    return; // Let browser paste event handle
   }
 
-  if (seq) {
+  if (handled && seq) {
     e.preventDefault();
     imeInput.value = '';
     sendData(seq);
+  } else if (handled) {
+    e.preventDefault();
   }
 });
 
@@ -1651,8 +1551,10 @@ function scheduleNotificationScrape(tabId) {
   notificationScrapeTimer = setTimeout(() => {
     const tab = tabManager.getTabById(tabId);
     if (tab && tab.buf) {
+      // Waterball messages and mail alerts in BBS protocol exclusively appear at the bottom 1-2 status lines
       const lines = [];
-      for (let r = 0; r < tab.buf.rows; r++) {
+      const startRow = Math.max(0, tab.buf.rows - 2);
+      for (let r = startRow; r < tab.buf.rows; r++) {
         let lineStr = '';
         for (let c = 0; c < tab.buf.cols; c++) {
           const cell = tab.buf.lines[r][c];
