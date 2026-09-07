@@ -61,9 +61,14 @@ jobs:
         id: get_tag
         shell: bash
         run: |
-          git fetch --tags
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.1.1")
-          echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          if [ -n "${GITHUB_REF_NAME}" ] && [[ "${GITHUB_REF_NAME}" == v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            git fetch --tags --force 2>/dev/null || true
+            TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.1.2")
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Release tag resolved to: $TAG"
 
       - name: Fix macOS Ad-hoc Codesign & Repackage DMG
         if: matrix.platform == 'macos-latest'
