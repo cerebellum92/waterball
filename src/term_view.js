@@ -31,6 +31,8 @@ export class TermView {
 
     if (this.imeInput) {
       this.wrapper.appendChild(this.imeInput);
+      this.imeInput.addEventListener('focus', () => this.scheduleRedraw());
+      this.imeInput.addEventListener('blur', () => this.scheduleRedraw());
     }
 
     this.container.replaceChildren(this.wrapper);
@@ -46,6 +48,7 @@ export class TermView {
     this.renderRequested = false;
     this.measureCache = new Map();
     this.rowMetadataCache = new Map();
+    this.rowUrlCache = new Map();
 
     this.blinkState = true;
     this.blinkTimer = setInterval(() => {
@@ -284,6 +287,15 @@ export class TermView {
 
   isRowBlacklisted(r) {
     return this.getRowMetadata(r).isBlacklisted;
+  }
+
+  getCachedRowUrls(r) {
+    if (!this.buf.dirtyRows[r] && this.rowUrlCache.has(r)) {
+      return this.rowUrlCache.get(r);
+    }
+    const urls = this.buf.getUrlsInRow(r);
+    this.rowUrlCache.set(r, urls);
+    return urls;
   }
 
   getGridPos(evt) {
@@ -730,7 +742,7 @@ export class TermView {
       }
 
       // 3. Highlight and Underline clickable URLs in this row
-      const urls = buf.getUrlsInRow(r);
+      const urls = this.getCachedRowUrls(r);
       for (const u of urls) {
         const x1 = Math.round(u.startCol * cellW);
         const x2 = Math.round((u.endCol + 1) * cellW);
@@ -814,37 +826,42 @@ export class TermView {
 
     // 1. Check if the screen is in Article / Mail Editor mode (via precise row 23 editor signatures)
     let isEditorScreen = false;
-    const bottomLine = buf.lines[buf.rows - 1];
-    if (bottomLine) {
-      let bStr = '';
+    const footerStart = Math.max(0, buf.rows - 3);
+    let footerText = '';
+    for (let r = footerStart; r < buf.rows; r++) {
+      const line = buf.lines[r];
+      if (!line) continue;
       for (let c = 0; c < buf.cols; c++) {
-        bStr += bottomLine[c]?.ch || '';
+        footerText += line[c]?.ch || '';
       }
+    }
+    if (footerText) {
       if (
-        bStr.includes('每行最多可容納') ||
-        bStr.includes('(Ctrl+X)') ||
-        bStr.includes('^X 發表') ||
-        bStr.includes('^X 寄出') ||
-        bStr.includes('^X 存檔') ||
-        bStr.includes('^X發表') ||
-        bStr.includes('^X寄出') ||
-        bStr.includes('^X存檔') ||
-        bStr.includes('檔案處理') ||
-        bStr.includes('(Ctrl+W)') ||
-        bStr.includes('請輸入推文') ||
-        bStr.includes('【推文】') ||
-        bStr.includes('請輸入標題') ||
-        bStr.includes('請輸入：') ||
-        bStr.includes('請輸入密碼')
+        footerText.includes('每行最多可容納') ||
+        footerText.includes('(Ctrl+X)') ||
+        footerText.includes('^X 發表') ||
+        footerText.includes('^X 寄出') ||
+        footerText.includes('^X 存檔') ||
+        footerText.includes('^X發表') ||
+        footerText.includes('^X寄出') ||
+        footerText.includes('^X存檔') ||
+        footerText.includes('檔案處理') ||
+        footerText.includes('(Ctrl+W)') ||
+        footerText.includes('請輸入推文') ||
+        footerText.includes('【推文】') ||
+        /推文\s*[:：]|噓文\s*[:：]/.test(footerText) ||
+        /→\s*[A-Za-z0-9_-]{1,16}\s*[:：]/.test(footerText) ||
+        footerText.includes('請輸入標題') ||
+        footerText.includes('請輸入：') ||
+        footerText.includes('請輸入密碼')
       ) {
         isEditorScreen = true;
       }
     }
 
-    // 2. Draw cursor (Smart mode: auto-hide on menu indicator ● / (F)avorite in list screens; always show in editor)
+    // 2. Draw cursor.
     let shouldDrawCursor = false;
-    const isComposing = this.imeInput?.dataset.composing === 'true';
-    if (this.cursorStyle !== 'none' && !isComposing) {
+    if (this.cursorStyle !== 'none') {
       if (this.cursorStyle !== 'smart' || isEditorScreen) {
         // In editor mode or non-smart modes, ALWAYS display the cursor!
         shouldDrawCursor = true;
@@ -881,8 +898,8 @@ export class TermView {
       const height = Math.round(cellH);
       const style = (this.cursorStyle === 'smart') ? 'underline' : (this.cursorStyle || 'underline');
 
-      ctx.fillStyle = '#a0a0a0';
-      ctx.strokeStyle = '#a0a0a0';
+      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = '#ffffff';
 
       if (style === 'underline') {
         // Crisp bottom underline (never obscures text)

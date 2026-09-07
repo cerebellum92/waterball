@@ -60,7 +60,9 @@
 | Non-extractable Web Crypto key | 高 | 低 | 中 | 第一階段採用 |
 | 方案 D + 方案 C | 中 | 低 | 中高 | 長期建議 |
 
-### 第一階段：方案 D（先實作）
+### 第一階段：方案 D（目前延後）
+
+目前不採用方案 D。專案暫時保留可跨重啟、相容性較高的 `localStorage seed + enc:v1` 流程。原因是單獨使用不可匯出的程序內 key 無法在 WebView 重啟後解開 wrapped seed；若要正式採用，必須先完成方案 C 或其他持久化 key 來源。
 
 使用 Web Crypto 產生不可匯出的 AES-GCM key：
 
@@ -200,7 +202,7 @@ const shortcuts = {
 1. 修正 exporter 欄位。
 2. 移除或保護 Ctrl+C 調色盤按鈕。
 3. 保留 Rust keep-alive，移除 JavaScript 重複 keep-alive。
-4. 重構 crypto.js API 與 v2 資料格式；先完成舊版 migration、錯誤處理與測試。
+4. 暫緩 crypto.js v2 migration；目前保留 `enc:v1`，避免在沒有持久化 key 來源時造成跨重啟失效。
 5. 更新 README 的安全說明，避免誇大方案 D 的保護能力。
 
 ### Phase 1：修平台與輸入
@@ -212,7 +214,7 @@ const shortcuts = {
 
 ### Phase 2：導入方案 C
 
-1. 建立 Rust secure-store abstraction。
+1. 建立 Rust secure-store abstraction（目前暫緩，待明確決定 Linux fallback 與資料遷移策略）。
 2. macOS/Windows 先接 OS secure store。
 3. Linux 接 Secret Service，失敗時提供受限檔案或主密碼選項。
 4. JavaScript 對所有平台只呼叫抽象 API。

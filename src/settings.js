@@ -49,7 +49,6 @@ export const DEFAULT_SETTINGS = {
   notifySound: true,
 
   // Keyboard & Mouse
-  mapCommandToCtrl: true,
   smartDbcsBackspace: true,
   wheelScrollPage: true,
   autoCopySelection: false,
@@ -64,14 +63,7 @@ export const DEFAULT_SETTINGS = {
   customFont: '', // Custom font name
 };
 
-import {
-  decryptSecret,
-  secureSaveCredential,
-  secureGetCredential,
-  secureDeleteCredential,
-  secureStoreBackend,
-  removeLegacyCryptoSeed,
-} from './crypto.js';
+import { encryptSecret, decryptSecret } from './crypto.js';
 
 class SettingsManager {
   constructor() {
@@ -82,30 +74,16 @@ class SettingsManager {
     this.onSettingsChange = null;
     this.onBookmarkSelect = null;
 
-    // Auto-migrate legacy passwords (plaintext or local AES in localStorage) to OS Keyring / Native Vault
-    this.migratePasswordsToNativeVault();
+    // Auto-migrate legacy plaintext passwords to AES-256-GCM
+    this.migratePasswordsToEncrypted();
   }
 
-  async migratePasswordsToNativeVault() {
+  async migratePasswordsToEncrypted() {
     let changed = false;
-    let hadLegacyPasswords = false;
     for (const bm of this.bookmarks) {
-      if (bm.password && bm.password !== '__SECURE_VAULT__') {
-        hadLegacyPasswords = true;
-        let plainPass = bm.password;
-        if (plainPass.startsWith('enc:v1:')) {
-          plainPass = await decryptSecret(plainPass);
-        }
-        if (plainPass) {
-          await secureSaveCredential(bm.id, plainPass);
-          bm.hasPassword = true;
-        } else {
-          bm.hasPassword = false;
-        }
-        bm.password = bm.hasPassword ? '__SECURE_VAULT__' : '';
+      if (bm.password && !bm.password.startsWith('enc:v1:')) {
+        bm.password = await encryptSecret(bm.password);
         changed = true;
-      } else if (bm.password === '__SECURE_VAULT__') {
-        bm.hasPassword = true;
       }
     }
     if (changed) {
@@ -141,10 +119,7 @@ class SettingsManager {
       if (stored) {
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map((bm) => ({
-            ...bm,
-            hasPassword: Boolean(bm.hasPassword || (bm.password && bm.password !== '')),
-          }));
+          return parsed;
         }
       }
     } catch (e) {
@@ -154,18 +129,7 @@ class SettingsManager {
   }
 
   saveBookmarks(bookmarks) {
-    // Only metadata and sanitized placeholder are kept in localStorage
-    // Passwords NEVER stay in localStorage!
-    const sanitized = bookmarks.map((bm) => {
-      const copy = { ...bm };
-      if (copy.password && copy.password !== '__SECURE_VAULT__') {
-        copy.hasPassword = true;
-      }
-      copy.password = copy.hasPassword ? '__SECURE_VAULT__' : '';
-      return copy;
-    });
-
-    this.bookmarks = sanitized;
+    this.bookmarks = bookmarks;
     try {
       localStorage.setItem('bbsterm_bookmarks', JSON.stringify(this.bookmarks));
     } catch (e) {
@@ -174,18 +138,13 @@ class SettingsManager {
   }
 
   async addBookmark(bookmark) {
-    const id = 'bm-' + Date.now();
-    const { password, ...rest } = bookmark;
-    const hasPassword = Boolean(password && password.trim());
-    if (hasPassword) {
-      await secureSaveCredential(id, password.trim());
-    }
     const newBm = {
-      id,
-      ...rest,
-      hasPassword,
-      password: hasPassword ? '__SECURE_VAULT__' : '',
+      id: 'bm-' + Date.now(),
+      ...bookmark,
     };
+    if (newBm.password) {
+      newBm.password = await encryptSecret(newBm.password);
+    }
     this.bookmarks.push(newBm);
     this.saveBookmarks(this.bookmarks);
     return newBm;
@@ -194,33 +153,15 @@ class SettingsManager {
   async updateBookmark(id, updated) {
     const idx = this.bookmarks.findIndex((b) => b.id === id);
     if (idx !== -1) {
-      const current = this.bookmarks[idx];
-      let hasPassword = Boolean(current.hasPassword);
-
-      if ('password' in updated) {
-        const pass = updated.password ? updated.password.trim() : '';
-        if (pass && pass !== '__SECURE_VAULT__') {
-          await secureSaveCredential(id, pass);
-          hasPassword = true;
-        } else if (pass === '') {
-          await secureDeleteCredential(id);
-          hasPassword = false;
-        }
+      if ('password' in updated && updated.password && !updated.password.startsWith('enc:v1:')) {
+        updated.password = await encryptSecret(updated.password);
       }
-
-      const { password, ...rest } = updated;
-      this.bookmarks[idx] = {
-        ...current,
-        ...rest,
-        hasPassword,
-        password: hasPassword ? '__SECURE_VAULT__' : '',
-      };
+      this.bookmarks[idx] = { ...this.bookmarks[idx], ...updated };
       this.saveBookmarks(this.bookmarks);
     }
   }
 
-  async deleteBookmark(id) {
-    await secureDeleteCredential(id);
+  deleteBookmark(id) {
     this.bookmarks = this.bookmarks.filter((b) => b.id !== id);
     this.saveBookmarks(this.bookmarks);
   }
@@ -232,42 +173,14 @@ class SettingsManager {
   }
 
   /**
-   * Securely retrieve credentials on demand from OS Keyring / Native Vault for auto-login
+   * Securely decrypt bookmark credentials on demand for auto-login
    */
   async getDecryptedCredentials(bookmark) {
     if (!bookmark) return null;
-    let password = '';
-    if (bookmark.password === '__SECURE_VAULT__' || bookmark.hasPassword) {
-      password = await secureGetCredential(bookmark.id);
-    } else if (bookmark.password) {
-      // Legacy unmigrated
-      if (bookmark.password.startsWith('enc:v1:')) {
-        password = await decryptSecret(bookmark.password);
-      } else {
-        password = bookmark.password;
-      }
-      if (password) {
-        await secureSaveCredential(bookmark.id, password);
-        bookmark.password = '__SECURE_VAULT__';
-        bookmark.hasPassword = true;
-        this.saveBookmarks(this.bookmarks);
-      }
-    } else if (bookmark.id) {
-      // Fallback: check if credential exists in secure store for this bookmark ID
-      password = (await secureGetCredential(bookmark.id)) || '';
-      if (password) {
-        bookmark.password = '__SECURE_VAULT__';
-        bookmark.hasPassword = true;
-      }
-    }
     return {
       username: bookmark.username || '',
-      password: password || '',
+      password: bookmark.password ? await decryptSecret(bookmark.password) : '',
     };
-  }
-
-  async getSecureStorageStatus() {
-    return await secureStoreBackend();
   }
 
   recordActivity() {

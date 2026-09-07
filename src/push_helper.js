@@ -1,5 +1,7 @@
 // Smart Auto-Split Multi-Push Assistant (長推文智慧自動分段發送小幫手)
 
+import { writeClipboardText } from './platform.js';
+
 const DEFAULT_TEMPLATES = {
   "┬─┬ノ( º _ ºノ) 淡定與翻桌": "( ′_>`) ┬─┬  淡定放好\n(╯°Д°)╯ ︵ ┴─┴ 再次翻桌！",
   "◢▆▅▄▃ 崩潰大星光 ▃▄▅▆◣": "◢▆▅▄▃ 崩╰(〒皿〒)╯潰 ▃▄▅▆◣",
@@ -445,7 +447,7 @@ export class PushHelper {
       btnCopy.textContent = '📋 複製';
       btnCopy.onclick = (e) => {
         e.stopPropagation();
-        navigator.clipboard.writeText(this.currentSegments[idx]);
+        writeClipboardText(this.currentSegments[idx]).catch(() => {});
         btnCopy.textContent = '✓ 已複製';
         setTimeout(() => { btnCopy.textContent = '📋 複製'; }, 1000);
       };

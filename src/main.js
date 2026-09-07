@@ -11,6 +11,7 @@ import { BoardSwitcherWidget } from './board_switcher.js';
 import { UpdateChecker } from './updater.js';
 import { PushHelper } from './push_helper.js';
 import { blacklistManager } from './blacklist.js';
+import { writeClipboardText } from './platform.js';
 import { isMac, isInteractiveInputElement, translateBbsKey } from './keymap.js';
 
 const { invoke } = window.__TAURI__.core;
@@ -65,7 +66,6 @@ const settingAntiIdle = document.getElementById('setting-anti-idle');
 const settingAntiIdleInterval = document.getElementById('setting-anti-idle-interval');
 const settingNotifyEnabled = document.getElementById('setting-notify-enabled');
 const settingNotifySound = document.getElementById('setting-notify-sound');
-const settingCmdCtrl = document.getElementById('setting-cmd-ctrl');
 const settingSmartDbcs = document.getElementById('setting-smart-dbcs');
 const settingWheelScroll = document.getElementById('setting-wheel-scroll');
 const settingAutoCopy = document.getElementById('setting-auto-copy');
@@ -163,7 +163,7 @@ tabManager.onSelectionChange = (selection, tab) => {
   if (settingsManager.settings.autoCopySelection && selection && tab?.view) {
     const text = tab.view.getSelectionText();
     if (text) {
-      navigator.clipboard.writeText(text).catch(() => {});
+      writeClipboardText(text).catch(() => {});
     }
   }
 };
@@ -527,7 +527,8 @@ async function doConnect(targetBm = null) {
         );
       }
     } catch (err) {
-      console.warn('Failed to retrieve auto-login credentials:', err);
+      console.warn("Failed to retrieve auto-login credentials:", err);
+
     }
   }
 
@@ -699,16 +700,6 @@ function openSettingsModal() {
   renderBlacklistUI();
   settingsModal.classList.remove('hidden');
 
-  // Update secure vault backend status badge
-  const vaultStatusEl = document.getElementById('secure-vault-backend-name');
-  if (vaultStatusEl) {
-    settingsManager.getSecureStorageStatus().then((backend) => {
-      vaultStatusEl.textContent = backend;
-    }).catch(() => {
-      vaultStatusEl.textContent = '系統原生鑰匙圈';
-    });
-  }
-
   // Clear the update badge dot when settings are opened
   const badgeDot = settingsBtn?.querySelector('.tb-btn-badge-dot');
   if (badgeDot) {
@@ -727,7 +718,6 @@ function loadSettingsToUI() {
   if (settingAntiIdleInterval) settingAntiIdleInterval.value = String(s.antiIdleInterval);
   if (settingNotifyEnabled) settingNotifyEnabled.checked = s.notifyEnabled !== false;
   if (settingNotifySound) settingNotifySound.checked = s.notifySound !== false;
-  if (settingCmdCtrl) settingCmdCtrl.checked = s.mapCommandToCtrl;
   if (settingSmartDbcs) settingSmartDbcs.checked = s.smartDbcsBackspace;
   if (settingWheelScroll) settingWheelScroll.checked = s.wheelScrollPage;
   if (settingAutoCopy) settingAutoCopy.checked = s.autoCopySelection;
@@ -846,7 +836,6 @@ function saveSettingsFromModal() {
     antiIdleInterval,
     notifyEnabled: isNotify,
     notifySound: isSound,
-    mapCommandToCtrl: settingCmdCtrl.checked,
     smartDbcsBackspace: settingSmartDbcs.checked,
     wheelScrollPage: settingWheelScroll.checked,
     autoCopySelection: settingAutoCopy.checked,
@@ -881,7 +870,7 @@ function renderBookmarkList() {
 
     const info = document.createElement('div');
     info.className = 'bm-info';
-    const autoLoginBadge = (bm.username && (bm.password || bm.hasPassword))
+    const autoLoginBadge = (bm.username && bm.password)
       ? `<span style="font-size: 11px; background: rgba(63, 185, 80, 0.18); color: var(--green); border: 1px solid rgba(63, 185, 80, 0.4); padding: 1px 6px; border-radius: 4px; margin-left: 6px;">🔐 自動登入 (${bm.username})</span>`
       : '';
     info.innerHTML = `
@@ -936,7 +925,7 @@ function renderBookmarkList() {
 
 async function renderInlineBookmarkEdit(item, bm) {
   let existingPass = '';
-  if (bm.hasPassword || bm.password) {
+  if (bm.password) {
     const creds = await settingsManager.getDecryptedCredentials(bm);
     existingPass = creds?.password || '';
   }
@@ -1264,12 +1253,12 @@ tabManager.onContextMenu = (info, tab) => {
 // Context Menu Item Click Handlers
 ctxCopy?.addEventListener('click', () => {
   if (activeContextMenuTarget) {
-    navigator.clipboard.writeText(activeContextMenuTarget);
+    writeClipboardText(activeContextMenuTarget).catch(() => {});
     showToast('已複製文字至剪貼簿');
   } else if (activeContextTab?.view) {
     const sel = activeContextTab.view.getSelectionText();
     if (sel) {
-      navigator.clipboard.writeText(sel);
+      writeClipboardText(sel).catch(() => {});
       showToast('已複製文字至剪貼簿');
     }
   }
@@ -1280,7 +1269,7 @@ ctxCopyAnsi?.addEventListener('click', () => {
   if (activeContextTab?.view) {
     const ansi = activeContextTab.view.getSelectionAnsi();
     if (ansi) {
-      navigator.clipboard.writeText(ansi);
+      writeClipboardText(ansi).catch(() => {});
       showToast('已複製含色彩 ANSI 代碼');
     }
   }
@@ -1414,6 +1403,10 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
+  if (isInteractiveInputElement(document.activeElement, imeInput)) {
+    return;
+  }
+
   // Smart Multi-Push Assistant (Cmd+Shift+X / Ctrl+Shift+X / Alt+X)
   if (((e.metaKey || e.ctrlKey) && e.shiftKey && (e.code === 'KeyX' || e.key === 'X')) || (e.altKey && (e.code === 'KeyX' || e.key === 'x'))) {
     e.preventDefault();
@@ -1516,11 +1509,6 @@ window.addEventListener('keydown', (e) => {
     }
   }
 
-  // Guard: If an interactive input element is focused (search input, settings modal, etc.), do NOT intercept with BBS keymap
-  if (isInteractiveInputElement(document.activeElement, imeInput)) {
-    return;
-  }
-
   const activeTab = tabManager.getActiveTab();
   if (!activeTab || !activeTab.isConnected) return;
 
@@ -1541,7 +1529,7 @@ window.addEventListener('keydown', (e) => {
     const isAnsi = !!e.shiftKey;
     const text = isAnsi ? view.getSelectionAnsi() : view.getSelectionText();
     if (text) {
-      navigator.clipboard.writeText(text).then(() => {
+      writeClipboardText(text).then(() => {
         showGlobalToast(isAnsi ? '🎨 已複製含色彩 ANSI 代碼至剪貼簿！' : '📋 已複製純文字至剪貼簿！');
       }).catch((err) => {
         console.error('Clipboard copy error:', err);

@@ -1,6 +1,7 @@
 // Waterball (水球) & New Mail Notification Engine for bbsterm
 
 import { settingsManager } from './settings.js';
+import { requestNotificationPermission, sendNativeNotification } from './platform.js';
 
 export class NotificationManager {
   constructor() {
@@ -18,13 +19,7 @@ export class NotificationManager {
   }
 
   async requestPermission() {
-    if ('Notification' in window && Notification.permission !== 'granted') {
-      try {
-        await Notification.requestPermission();
-      } catch (e) {
-        console.warn('Notification permission error:', e);
-      }
-    }
+    await requestNotificationPermission();
   }
 
   playChime() {
@@ -107,7 +102,7 @@ export class NotificationManager {
     }
   }
 
-  triggerWaterballNotification(tabId, sender, message, tabTitle) {
+  async triggerWaterballNotification(tabId, sender, message, tabTitle) {
     const hash = `wb:${tabId}:${sender}:${message}`;
     const now = Date.now();
     if (this.recentCache.has(hash) && now - this.recentCache.get(hash) < 6000) {
@@ -119,20 +114,13 @@ export class NotificationManager {
     this.playChime();
     this.onTabBadgeTrigger?.(tabId);
 
-    if ('Notification' in window && Notification.permission === 'granted') {
-      const notif = new Notification(`💬 [${tabTitle} 水球] 來自 ${sender}`, {
-        body: message,
-        silent: true, // we handle sound with audioCtx
-      });
-
-      notif.onclick = () => {
+    await sendNativeNotification(`💬 [${tabTitle} 水球] 來自 ${sender}`, message, () => {
         window.focus();
         this.onFocusTab?.(tabId);
-      };
-    }
+    });
   }
 
-  triggerMailNotification(tabId, tabTitle) {
+  async triggerMailNotification(tabId, tabTitle) {
     const hash = `mail:${tabId}`;
     const now = Date.now();
     if (this.recentCache.has(hash) && now - this.recentCache.get(hash) < 20000) {
@@ -144,17 +132,10 @@ export class NotificationManager {
     this.playChime();
     this.onTabBadgeTrigger?.(tabId);
 
-    if ('Notification' in window && Notification.permission === 'granted') {
-      const notif = new Notification(`✉️ [${tabTitle} 站內信]`, {
-        body: '您收到了新的站內信件！',
-        silent: true,
-      });
-
-      notif.onclick = () => {
+    await sendNativeNotification(`✉️ [${tabTitle} 站內信]`, '您收到了新的站內信件！', () => {
         window.focus();
         this.onFocusTab?.(tabId);
-      };
-    }
+    });
   }
 
   cleanCache() {

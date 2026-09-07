@@ -173,46 +173,74 @@ export class AnsiParser {
           break;
 
         case AnsiParser.STATE_C1:
-          let C1_End = true;
-          const C1_Char = [' ', '#', '%', '(', ')', '*', '+', '-', '.', '/'];
-          if (this.esc) {
-            for (let j = 0; j < C1_Char.length; ++j) {
-              if (this.esc === C1_Char[j]) C1_End = false;
+          // Two sub-states: collecting ESC introducer (esc empty) vs reading intro parameter bytes
+          // (esc non-empty, e.g. ESC ( B where "(" is the introducer and "B" designates G0 charset).
+          if (this.esc === '') {
+            // First byte after ESC. Known C1 controls fire immediately.
+            switch (ch) {
+              case '7':
+                // DECSC: save cursor
+                term.cur_x_sav = term.cur_x;
+                term.cur_y_sav = term.cur_y;
+                this.state = AnsiParser.STATE_TEXT;
+                break;
+              case '8':
+                // DECRC: restore cursor
+                if (term.cur_x_sav >= 0 && term.cur_y_sav >= 0) {
+                  term.cur_x = term.cur_x_sav;
+                  term.cur_y = term.cur_y_sav;
+                }
+                this.state = AnsiParser.STATE_TEXT;
+                break;
+              case 'D':
+                // IND: index (down one line, scroll if at bottom)
+                term.lineFeed();
+                this.state = AnsiParser.STATE_TEXT;
+                break;
+              case 'E':
+                // NEL: next line (down + carriage return)
+                term.lineFeed();
+                term.carriageReturn();
+                this.state = AnsiParser.STATE_TEXT;
+                break;
+              case 'M':
+                // RI: reverse index (up one line, reverse scroll if at top of scroll region)
+                if (term.cur_y > term.scrollTop) {
+                  term.cur_y--;
+                } else {
+                  term.scroll(true, 1);
+                }
+                this.state = AnsiParser.STATE_TEXT;
+                break;
+              case '[':
+                // Should not happen (handled in STATE_ESC), but be defensive
+                this.state = AnsiParser.STATE_CSI;
+                break;
+              case '(':
+              case ')':
+              case '*':
+              case '+':
+              case '-':
+              case '.':
+              case '/':
+              case ' ':
+              case '#':
+              case '%':
+                // Charset designation introducers: read exactly one parameter byte next.
+                this.esc = ch;
+                // Stay in STATE_C1 to collect the next byte.
+                break;
+              default:
+                // Unknown single-byte ESC sequence: silently consume.
+                this.state = AnsiParser.STATE_TEXT;
+                break;
             }
-            if (C1_End) --i;
-            else this.esc += ch;
+          } else {
+            // Second byte of a charset designation sequence (e.g. ESC ( B).
+            // The actual character set is implementation-specific; we just consume it.
             this.esc = '';
             this.state = AnsiParser.STATE_TEXT;
-            break;
           }
-          switch (ch) {
-            case '7':
-              term.cur_x_sav = term.cur_x;
-              term.cur_y_sav = term.cur_y;
-              break;
-            case '8':
-              if (term.cur_x_sav >= 0 && term.cur_y_sav >= 0) {
-                term.cur_x = term.cur_x_sav;
-                term.cur_y = term.cur_y_sav;
-              }
-              break;
-            case 'D':
-              term.scroll(false, 1);
-              break;
-            case 'E':
-              term.lineFeed();
-              term.carriageReturn();
-              break;
-            case 'M':
-              term.scroll(true, 1);
-              break;
-            default:
-              this.esc += ch;
-              C1_End = false;
-          }
-          if (!C1_End) break;
-          this.esc = '';
-          this.state = AnsiParser.STATE_TEXT;
           break;
 
         case AnsiParser.STATE_ESC:

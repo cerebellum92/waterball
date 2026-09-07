@@ -1,6 +1,7 @@
 // HD Screenshot & ANSI / HTML Export Controller for bbsterm
 
 import { TERM_COLORS } from './term_buf.js';
+import { writeClipboardImage, writeClipboardText } from './platform.js';
 
 export class BbsExporter {
   static getPaletteColor(code, isBright = false, isBg = false) {
@@ -234,9 +235,7 @@ export class ExportModal {
       canvas.toBlob(async (blob) => {
         if (!blob) return;
         try {
-          await navigator.clipboard.write([
-            new ClipboardItem({ 'image/png': blob }),
-          ]);
+          await writeClipboardImage(blob);
           this.showToast('✅ 高畫質 PNG 圖片已成功複製至剪貼簿！');
         } catch (err) {
           console.error('Clipboard copy image failed:', err);
@@ -265,21 +264,21 @@ export class ExportModal {
   async copyAnsi() {
     if (!this.currentTab?.buf) return;
     const ansiText = BbsExporter.toAnsiText(this.currentTab.buf);
-    await navigator.clipboard.writeText(ansiText);
+    await writeClipboardText(ansiText);
     this.showToast('✅ ANSI 彩色代碼已複製到剪貼簿！');
   }
 
   async copyHtml() {
     if (!this.currentTab?.buf) return;
     const htmlText = BbsExporter.toHtmlText(this.currentTab.buf);
-    await navigator.clipboard.writeText(htmlText);
+    await writeClipboardText(htmlText);
     this.showToast('✅ 彩色 HTML 程式碼已複製到剪貼簿！');
   }
 
   async copyPlainText() {
     if (!this.currentTab?.buf) return;
     const text = BbsExporter.toPlainText(this.currentTab.buf);
-    await navigator.clipboard.writeText(text);
+    await writeClipboardText(text);
     this.showToast('✅ 乾淨純文字已複製到剪貼簿！');
   }
 

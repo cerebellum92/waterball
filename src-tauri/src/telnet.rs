@@ -221,12 +221,34 @@ impl BbsConnection {
         struct SshChannelWriter(Arc<std::sync::Mutex<ssh2::Channel>>);
         impl Write for SshChannelWriter {
             fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                let mut ch = self.0.lock().map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "Lock error"))?;
-                ch.write(buf)
+                let mut attempts = 0;
+                loop {
+                    let mut ch = self.0.lock().map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "Lock error"))?;
+                    match ch.write(buf) {
+                        Ok(n) => return Ok(n),
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && attempts < 30 => {
+                            attempts += 1;
+                            drop(ch);
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
             }
             fn flush(&mut self) -> std::io::Result<()> {
-                let mut ch = self.0.lock().map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "Lock error"))?;
-                ch.flush()
+                let mut attempts = 0;
+                loop {
+                    let mut ch = self.0.lock().map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "Lock error"))?;
+                    match ch.flush() {
+                        Ok(()) => return Ok(()),
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && attempts < 30 => {
+                            attempts += 1;
+                            drop(ch);
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
             }
         }
 

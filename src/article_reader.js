@@ -1,5 +1,6 @@
 import { isImageUrl, normalizeImageUrl } from './image_preview.js';
 import { blacklistManager } from './blacklist.js';
+import { writeClipboardText } from './platform.js';
 
 export class ArticleParser {
   static parseFromBuf(buf) {
@@ -264,7 +265,7 @@ export class ArticleReaderModal {
     const author = document.getElementById('reader-author')?.textContent || '';
     const content = document.getElementById('reader-article-content')?.innerText || '';
     const textToCopy = `【${title}】\n作者: ${author}\n\n${content}`;
-    navigator.clipboard.writeText(textToCopy).then(() => {
+    writeClipboardText(textToCopy).then(() => {
       const btn = document.getElementById('reader-copy-btn');
       if (btn) {
         const orig = btn.textContent;
