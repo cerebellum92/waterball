@@ -599,10 +599,11 @@ export class TermView {
     ctx.font = `${fontSize}px ${this.getFontFamilyString()}`;
     ctx.textBaseline = 'middle';
 
-    // Differential Row Rendering Loop: only process rows with actual modifications
-    for (let r = 0; r < rows; r++) {
-      if (!buf.dirtyRows[r]) continue;
+    // 0. Clear entire canvas background to completely eliminate ghost cursors and screen residuals
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, cellW * cols, cellH * rows);
 
+    for (let r = 0; r < rows; r++) {
       const isBlacklisted = this.isRowBlacklisted(r);
       if (isBlacklisted) {
         ctx.globalAlpha = 0.22;
@@ -613,10 +614,6 @@ export class TermView {
       const y2 = Math.round((r + 1) * cellH);
       const cellHeight = y2 - y1;
       const centerY = y1 + Math.round(cellHeight * 0.52);
-
-      // 0. Clear specific row background rectangle
-      ctx.fillStyle = '#000000';
-      ctx.fillRect(0, y1, cellW * cols, cellHeight + 0.6);
 
       // 1. Draw continuous background spans (100% eliminates fractional DPI grid lines)
       let bgStartCol = 0;
@@ -703,7 +700,17 @@ export class TermView {
             } else if (isLead) {
               // Full-width character (CJK / special symbols): ensure exact fit into 2-cell width
               const charW = this.getCharWidth(cell.ch, fontSize, ctx);
-              if (charW > 0 && Math.abs(charW - cellWidth) > 1.5) {
+              // Only scale if the character is genuinely a wide glyph (at least 75% of 2-cell width)
+              // to prevent horizontally distorting/squashing narrow characters.
+              if (charW >= cellWidth * 0.75 && Math.abs(charW - cellWidth) > 1.0) {
+                const scaleX = cellWidth / charW;
+                ctx.save();
+                ctx.translate(x1, centerY);
+                ctx.scale(scaleX, 1);
+                ctx.fillText(cell.ch, 0, 0);
+                ctx.restore();
+              } else if (charW > cellWidth + 0.5) {
+                // If it overflows 2 cells, scale down to fit
                 const scaleX = cellWidth / charW;
                 ctx.save();
                 ctx.translate(x1, centerY);
@@ -711,7 +718,9 @@ export class TermView {
                 ctx.fillText(cell.ch, 0, 0);
                 ctx.restore();
               } else {
-                ctx.fillText(cell.ch, x1, centerY);
+                // Narrower character: center inside the 2-cell width without stretching
+                const offsetX = Math.max(0, (cellWidth - charW) * 0.5);
+                ctx.fillText(cell.ch, x1 + offsetX, centerY);
               }
             } else {
               // Single-width character (ASCII): center inside cellWidth

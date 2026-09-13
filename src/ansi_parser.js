@@ -17,24 +17,119 @@ export class AnsiParser {
     if (!term) return;
     let s = '';
     const n = data.length;
+
     for (let i = 0; i < n; ++i) {
       const ch = data[i];
+
+      // ESC (0x1B) cancels any in-progress escape sequence and starts a new one immediately
+      if (ch === '\x1b') {
+        if (s) {
+          term.puts(s);
+          s = '';
+        }
+        this.state = AnsiParser.STATE_ESC;
+        this.esc = '';
+        continue;
+      }
+
       switch (this.state) {
         case AnsiParser.STATE_TEXT:
-          switch (ch) {
-            case '\x1b':
-              if (s) {
-                term.puts(s);
-                s = '';
-              }
-              this.state = AnsiParser.STATE_ESC;
-              break;
-            default:
-              s += ch;
+          s += ch;
+          break;
+
+        case AnsiParser.STATE_ESC:
+          if (ch === '[') {
+            this.state = AnsiParser.STATE_CSI;
+            this.esc = '';
+          } else {
+            // Process C1 / single-byte ESC commands immediately
+            this.state = AnsiParser.STATE_TEXT;
+            this.esc = '';
+            switch (ch) {
+              case '7':
+                // DECSC: save cursor pos & attr
+                term.cur_x_sav = term.cur_x;
+                term.cur_y_sav = term.cur_y;
+                term.cur_attr_sav = { ...term.curAttr };
+                break;
+              case '8':
+                // DECRC: restore cursor pos & attr
+                if (term.cur_x_sav >= 0 && term.cur_y_sav >= 0) {
+                  term.gotoPos(term.cur_x_sav, term.cur_y_sav);
+                }
+                if (term.cur_attr_sav) {
+                  term.curAttr.copyFrom(term.cur_attr_sav);
+                }
+                break;
+              case 'D':
+                // IND: index (down one line, scroll if at bottom)
+                term.lineFeed();
+                break;
+              case 'E':
+                // NEL: next line (down + carriage return)
+                term.lineFeed();
+                term.carriageReturn();
+                break;
+              case 'M':
+                // RI: reverse index (up one line, reverse scroll if at top)
+                if (term.cur_y > term.scrollTop) {
+                  term.cur_y--;
+                  term.markRowDirty(term.cur_y);
+                  term.queueUpdate();
+                } else {
+                  term.scroll(true, 1);
+                }
+                break;
+              case '(':
+              case ')':
+              case '*':
+              case '+':
+              case '-':
+              case '.':
+              case '/':
+              case ' ':
+              case '#':
+              case '%':
+                // 2-byte charset designation: expect 1 more byte in STATE_C1
+                this.state = AnsiParser.STATE_C1;
+                this.esc = ch;
+                break;
+              default:
+                break;
+            }
           }
           break;
 
+        case AnsiParser.STATE_C1:
+          // Second byte of 2-byte charset sequence (e.g. ESC ( B)
+          this.state = AnsiParser.STATE_TEXT;
+          this.esc = '';
+          break;
+
         case AnsiParser.STATE_CSI:
+          // C0 control characters inside CSI have high priority: execute immediately
+          if (ch < ' ') {
+            switch (ch) {
+              case '\r':
+                term.carriageReturn();
+                break;
+              case '\n':
+              case '\f':
+              case '\v':
+                term.lineFeed();
+                break;
+              case '\b':
+                term.back();
+                break;
+              case '\t':
+                term.tab();
+                break;
+              default:
+                break;
+            }
+            continue;
+          }
+
           if (ch >= '@' && ch <= '~') {
             const rawParams = this.esc ? this.esc.split(';') : [];
             let firstChar = '';
@@ -44,11 +139,13 @@ export class AnsiParser {
                 rawParams[0] = rawParams[0].slice(1);
               }
             }
+
             if (firstChar && ch !== 'h' && ch !== 'l') {
               this.state = AnsiParser.STATE_TEXT;
               this.esc = '';
               break;
             }
+
             const params = [];
             if (rawParams.length === 0) {
               params.push(0);
@@ -114,11 +211,14 @@ export class AnsiParser {
               case 's':
                 term.cur_x_sav = term.cur_x;
                 term.cur_y_sav = term.cur_y;
+                term.cur_attr_sav = { ...term.curAttr };
                 break;
               case 'u':
                 if (term.cur_x_sav >= 0 && term.cur_y_sav >= 0) {
-                  term.cur_x = term.cur_x_sav;
-                  term.cur_y = term.cur_y_sav;
+                  term.gotoPos(term.cur_x_sav, term.cur_y_sav);
+                }
+                if (term.cur_attr_sav) {
+                  term.curAttr.copyFrom(term.cur_attr_sav);
                 }
                 break;
               case 'L':
@@ -171,88 +271,9 @@ export class AnsiParser {
             this.esc += ch;
           }
           break;
-
-        case AnsiParser.STATE_C1:
-          // Two sub-states: collecting ESC introducer (esc empty) vs reading intro parameter bytes
-          // (esc non-empty, e.g. ESC ( B where "(" is the introducer and "B" designates G0 charset).
-          if (this.esc === '') {
-            // First byte after ESC. Known C1 controls fire immediately.
-            switch (ch) {
-              case '7':
-                // DECSC: save cursor
-                term.cur_x_sav = term.cur_x;
-                term.cur_y_sav = term.cur_y;
-                this.state = AnsiParser.STATE_TEXT;
-                break;
-              case '8':
-                // DECRC: restore cursor
-                if (term.cur_x_sav >= 0 && term.cur_y_sav >= 0) {
-                  term.cur_x = term.cur_x_sav;
-                  term.cur_y = term.cur_y_sav;
-                }
-                this.state = AnsiParser.STATE_TEXT;
-                break;
-              case 'D':
-                // IND: index (down one line, scroll if at bottom)
-                term.lineFeed();
-                this.state = AnsiParser.STATE_TEXT;
-                break;
-              case 'E':
-                // NEL: next line (down + carriage return)
-                term.lineFeed();
-                term.carriageReturn();
-                this.state = AnsiParser.STATE_TEXT;
-                break;
-              case 'M':
-                // RI: reverse index (up one line, reverse scroll if at top of scroll region)
-                if (term.cur_y > term.scrollTop) {
-                  term.cur_y--;
-                } else {
-                  term.scroll(true, 1);
-                }
-                this.state = AnsiParser.STATE_TEXT;
-                break;
-              case '[':
-                // Should not happen (handled in STATE_ESC), but be defensive
-                this.state = AnsiParser.STATE_CSI;
-                break;
-              case '(':
-              case ')':
-              case '*':
-              case '+':
-              case '-':
-              case '.':
-              case '/':
-              case ' ':
-              case '#':
-              case '%':
-                // Charset designation introducers: read exactly one parameter byte next.
-                this.esc = ch;
-                // Stay in STATE_C1 to collect the next byte.
-                break;
-              default:
-                // Unknown single-byte ESC sequence: silently consume.
-                this.state = AnsiParser.STATE_TEXT;
-                break;
-            }
-          } else {
-            // Second byte of a charset designation sequence (e.g. ESC ( B).
-            // The actual character set is implementation-specific; we just consume it.
-            this.esc = '';
-            this.state = AnsiParser.STATE_TEXT;
-          }
-          break;
-
-        case AnsiParser.STATE_ESC:
-          if (ch === '[') {
-            this.state = AnsiParser.STATE_CSI;
-          } else {
-            this.state = AnsiParser.STATE_C1;
-            --i;
-          }
-          break;
       }
     }
+
     if (s) {
       term.puts(s);
       s = '';

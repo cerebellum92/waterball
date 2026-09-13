@@ -107,6 +107,7 @@ export class TermBuf {
     this.cur_y = 0;
     this.cur_x_sav = -1;
     this.cur_y_sav = -1;
+    this.cur_attr_sav = null;
 
     this.scrollTop = 0;
     this.scrollBottom = rows - 1;
@@ -167,11 +168,17 @@ export class TermBuf {
   isFullWidth(ch) {
     if (!ch) return false;
     const code = ch.codePointAt(0);
+
     // ASCII (0x00..0x7F) is single-width (1 cell)
     if (code <= 0x7F) return false;
+
     // Halfwidth Katakana / Halfwidth Hangul / Halfwidth punctuation (0xFF61..0xFFDF) are 1 cell
     if (code >= 0xFF61 && code <= 0xFFDF) return false;
-    // All other characters (CJK, Big5 double-byte symbols such as 'ˇ', '…', '—', '·', '※', '°', '±', '×', '÷', fullwidth forms, etc.) are 2 cells
+
+    // Halfwidth forms (0xFFE8..0xFFEE) are 1 cell
+    if (code >= 0xFFE8 && code <= 0xFFEE) return false;
+
+    // All other characters (CJK, Big5 double-byte symbols, UAO accented characters, etc.) are 2 cells in BBS terminal grid
     return true;
   }
 
@@ -200,7 +207,13 @@ export class TermBuf {
     const lines = this.lines;
 
     for (let i = 0; i < str.length; i++) {
-      const ch = str.charAt(i);
+      const code = str.codePointAt(i);
+      let ch = str.charAt(i);
+      if (code > 0xFFFF) {
+        ch = str.slice(i, i + 2);
+        i++;
+      }
+
       switch (ch) {
         case '\x07': // Bell
           continue;
@@ -220,6 +233,23 @@ export class TermBuf {
         case '\t':
           this.tab();
           continue;
+      }
+
+      // Combining Diacritical Marks: attach to preceding character without advancing cursor
+      const isCombining = (code >= 0x0300 && code <= 0x036F) ||
+                          (code >= 0x1AB0 && code <= 0x1AFF) ||
+                          (code >= 0x1DC0 && code <= 0x1DFF) ||
+                          (code >= 0x20D0 && code <= 0x20FF) ||
+                          (code >= 0xFE20 && code <= 0xFE2F);
+      if (isCombining) {
+        if (this.cur_x > 0 && this.cur_y < rows) {
+          const line = lines[this.cur_y];
+          const prevX = this.cur_x - 1;
+          const targetX = (line[prevX].isTrailByte && prevX > 0) ? prevX - 1 : prevX;
+          line[targetX].ch += ch;
+          this.markRowDirty(this.cur_y);
+        }
+        continue;
       }
 
       if (this.cur_x >= cols) {
@@ -316,18 +346,18 @@ export class TermBuf {
 
   tab(param = 1) {
     this.markRowDirty(this.cur_y);
-    const mod = this.cur_x % 8;
-    this.cur_x += 8 - mod;
-    if (param > 1) this.cur_x += 8 * (param - 1);
+    const mod = this.cur_x % 4;
+    this.cur_x += 4 - mod;
+    if (param > 1) this.cur_x += 4 * (param - 1);
     if (this.cur_x >= this.cols) this.cur_x = this.cols - 1;
     this.queueUpdate();
   }
 
   backTab(param = 1) {
     this.markRowDirty(this.cur_y);
-    const mod = this.cur_x % 8;
-    this.cur_x -= mod > 0 ? mod : 8;
-    if (param > 1) this.cur_x -= 8 * (param - 1);
+    const mod = this.cur_x % 4;
+    this.cur_x -= mod > 0 ? mod : 4;
+    if (param > 1) this.cur_x -= 4 * (param - 1);
     if (this.cur_x < 0) this.cur_x = 0;
     this.queueUpdate();
   }
@@ -420,25 +450,25 @@ export class TermBuf {
 
   deleteLine(param = 1) {
     const scrollStart = this.scrollTop;
-    if (this.cur_y < this.scrollBottom) {
-      this.scrollTop = this.cur_y;
-      this.scroll(false, param);
-    }
+    this.scrollTop = this.cur_y;
+    this.scroll(false, param);
     this.scrollTop = scrollStart;
     this.markRowsDirty(this.cur_y, this.scrollBottom);
     this.queueUpdate();
   }
 
   insertChar(param = 1) {
+    if (this.cur_y < 0 || this.cur_y >= this.rows) return;
     const line = this.lines[this.cur_y];
     const cols = this.cols;
     let cur_x = this.cur_x;
+    if (cur_x > 0 && line[cur_x - 1].isLeadByte) cur_x++;
     if (cur_x >= cols) return;
 
     this.markRowDirty(this.cur_y);
     if (cur_x + param >= cols) {
       for (let col = cur_x; col < cols; col++) {
-        line[col].copyFrom(this.newChar);
+        this.clearCellAt(line, col);
       }
     } else {
       while (--param >= 0) {
@@ -446,20 +476,25 @@ export class TermBuf {
         line.splice(cur_x, 0, ch);
         ch.copyFrom(this.newChar);
       }
+      for (let col = cur_x; col < cols; col++) {
+        this.clearCellAt(line, col);
+      }
     }
     this.queueUpdate();
   }
 
   del(param = 1) {
+    if (this.cur_y < 0 || this.cur_y >= this.rows) return;
     const line = this.lines[this.cur_y];
     const cols = this.cols;
     let cur_x = this.cur_x;
+    if (cur_x > 0 && line[cur_x - 1].isLeadByte) cur_x++;
     if (cur_x >= cols) return;
 
     this.markRowDirty(this.cur_y);
     if (cur_x + param >= cols) {
       for (let col = cur_x; col < cols; col++) {
-        line[col].copyFrom(this.newChar);
+        this.clearCellAt(line, col);
       }
     } else {
       let n = cols - cur_x - param;
@@ -467,15 +502,21 @@ export class TermBuf {
       for (let col = cols - param; col < cols; col++) {
         line[col].copyFrom(this.newChar);
       }
+      for (let col = cur_x; col < cols; col++) {
+        this.clearCellAt(line, col);
+      }
     }
     this.queueUpdate();
   }
 
   eraseChar(param = 1) {
+    if (this.cur_y < 0 || this.cur_y >= this.rows) return;
     const line = this.lines[this.cur_y];
     const cols = this.cols;
     let cur_x = this.cur_x;
-    const n = cur_x + param > cols ? cols : cur_x + param;
+    if (cur_x > 0 && line[cur_x - 1].isLeadByte) cur_x++;
+    if (cur_x >= cols) return;
+    const n = Math.min(cols, cur_x + param);
     for (let col = cur_x; col < n; col++) {
       this.clearCellAt(line, col);
     }
@@ -484,6 +525,7 @@ export class TermBuf {
   }
 
   eraseLine(param = 0) {
+    if (this.cur_y < 0 || this.cur_y >= this.rows) return;
     const line = this.lines[this.cur_y];
     const cols = this.cols;
     switch (param) {
@@ -514,31 +556,35 @@ export class TermBuf {
 
     switch (param) {
       case 0: { // From cursor to end of screen
-        let line = lines[this.cur_y];
-        for (let col = this.cur_x; col < cols; col++) {
-          this.clearCellAt(line, col);
-        }
-        for (let row = this.cur_y + 1; row < rows; row++) {
-          line = lines[row];
-          for (let col = 0; col < cols; col++) {
+        if (this.cur_y >= 0 && this.cur_y < rows) {
+          let line = lines[this.cur_y];
+          for (let col = this.cur_x; col < cols; col++) {
             this.clearCellAt(line, col);
           }
         }
-        this.markRowsDirty(this.cur_y, rows - 1);
-        break;
-      }
-      case 1: { // From start of screen to cursor
-        for (let row = 0; row < this.cur_y; row++) {
+        for (let row = this.cur_y; row < rows; row++) {
           const line = lines[row];
           for (let col = 0; col < cols; col++) {
             this.clearCellAt(line, col);
           }
         }
-        const line = lines[this.cur_y];
-        for (let col = 0; col <= this.cur_x && col < cols; col++) {
-          this.clearCellAt(line, col);
+        this.markRowsDirty(Math.max(0, this.cur_y), rows - 1);
+        break;
+      }
+      case 1: { // From start of screen to cursor
+        for (let row = 0; row < this.cur_y && row < rows; row++) {
+          const line = lines[row];
+          for (let col = 0; col < cols; col++) {
+            this.clearCellAt(line, col);
+          }
         }
-        this.markRowsDirty(0, this.cur_y);
+        if (this.cur_y >= 0 && this.cur_y < rows) {
+          const line = lines[this.cur_y];
+          for (let col = 0; col <= this.cur_x && col < cols; col++) {
+            this.clearCellAt(line, col);
+          }
+        }
+        this.markRowsDirty(0, Math.min(rows - 1, this.cur_y));
         break;
       }
       case 2: { // Entire screen
@@ -548,12 +594,11 @@ export class TermBuf {
             this.clearCellAt(line, col);
           }
         }
-        this.cur_x = 0;
-        this.cur_y = 0;
         this.markAllDirty();
         break;
       }
     }
+    this.gotoPos(0, 0);
     this.queueUpdate();
   }
 
