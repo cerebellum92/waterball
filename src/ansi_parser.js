@@ -124,6 +124,11 @@ export class AnsiParser {
               case '\t':
                 term.tab();
                 break;
+              case '\x18': // CAN (Cancel)
+              case '\x1a': // SUB (Substitute)
+                this.state = AnsiParser.STATE_TEXT;
+                this.esc = '';
+                break;
               default:
                 break;
             }
@@ -267,8 +272,14 @@ export class AnsiParser {
             }
             this.state = AnsiParser.STATE_TEXT;
             this.esc = '';
-          } else {
+          } else if (ch >= ' ' && ch <= '?') {
             this.esc += ch;
+          } else {
+            // Invalid byte in CSI (e.g. DEL or non-ASCII / Chinese char >= 0x80)
+            // Immediately abort CSI to prevent swallowing text or desyncing
+            this.state = AnsiParser.STATE_TEXT;
+            this.esc = '';
+            s += ch;
           }
           break;
       }

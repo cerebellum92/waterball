@@ -186,16 +186,10 @@ export class TermBuf {
     if (col < 0 || col >= this.cols) return;
     const cell = line[col];
     if (cell.isTrailByte && col > 0) {
-      const prev = line[col - 1];
-      prev.isLeadByte = false;
-      prev.isTrailByte = false;
-      prev.ch = ' ';
+      line[col - 1].copyFrom(this.newChar);
     }
     if (cell.isLeadByte && col + 1 < this.cols) {
-      const next = line[col + 1];
-      next.isLeadByte = false;
-      next.isTrailByte = false;
-      next.ch = ' ';
+      line[col + 1].copyFrom(this.newChar);
     }
     cell.copyFrom(this.newChar);
   }
@@ -346,18 +340,18 @@ export class TermBuf {
 
   tab(param = 1) {
     this.markRowDirty(this.cur_y);
-    const mod = this.cur_x % 4;
-    this.cur_x += 4 - mod;
-    if (param > 1) this.cur_x += 4 * (param - 1);
+    const mod = this.cur_x % 8;
+    this.cur_x += 8 - mod;
+    if (param > 1) this.cur_x += 8 * (param - 1);
     if (this.cur_x >= this.cols) this.cur_x = this.cols - 1;
     this.queueUpdate();
   }
 
   backTab(param = 1) {
     this.markRowDirty(this.cur_y);
-    const mod = this.cur_x % 4;
-    this.cur_x -= mod > 0 ? mod : 4;
-    if (param > 1) this.cur_x -= 4 * (param - 1);
+    const mod = this.cur_x % 8;
+    this.cur_x -= mod > 0 ? mod : 8;
+    if (param > 1) this.cur_x -= 8 * (param - 1);
     if (this.cur_x < 0) this.cur_x = 0;
     this.queueUpdate();
   }
@@ -461,8 +455,7 @@ export class TermBuf {
     if (this.cur_y < 0 || this.cur_y >= this.rows) return;
     const line = this.lines[this.cur_y];
     const cols = this.cols;
-    let cur_x = this.cur_x;
-    if (cur_x > 0 && line[cur_x - 1].isLeadByte) cur_x++;
+    const cur_x = this.cur_x;
     if (cur_x >= cols) return;
 
     this.markRowDirty(this.cur_y);
@@ -476,9 +469,6 @@ export class TermBuf {
         line.splice(cur_x, 0, ch);
         ch.copyFrom(this.newChar);
       }
-      for (let col = cur_x; col < cols; col++) {
-        this.clearCellAt(line, col);
-      }
     }
     this.queueUpdate();
   }
@@ -487,8 +477,7 @@ export class TermBuf {
     if (this.cur_y < 0 || this.cur_y >= this.rows) return;
     const line = this.lines[this.cur_y];
     const cols = this.cols;
-    let cur_x = this.cur_x;
-    if (cur_x > 0 && line[cur_x - 1].isLeadByte) cur_x++;
+    const cur_x = this.cur_x;
     if (cur_x >= cols) return;
 
     this.markRowDirty(this.cur_y);
@@ -502,9 +491,6 @@ export class TermBuf {
       for (let col = cols - param; col < cols; col++) {
         line[col].copyFrom(this.newChar);
       }
-      for (let col = cur_x; col < cols; col++) {
-        this.clearCellAt(line, col);
-      }
     }
     this.queueUpdate();
   }
@@ -513,8 +499,7 @@ export class TermBuf {
     if (this.cur_y < 0 || this.cur_y >= this.rows) return;
     const line = this.lines[this.cur_y];
     const cols = this.cols;
-    let cur_x = this.cur_x;
-    if (cur_x > 0 && line[cur_x - 1].isLeadByte) cur_x++;
+    const cur_x = this.cur_x;
     if (cur_x >= cols) return;
     const n = Math.min(cols, cur_x + param);
     for (let col = cur_x; col < n; col++) {
@@ -557,12 +542,12 @@ export class TermBuf {
     switch (param) {
       case 0: { // From cursor to end of screen
         if (this.cur_y >= 0 && this.cur_y < rows) {
-          let line = lines[this.cur_y];
+          const line = lines[this.cur_y];
           for (let col = this.cur_x; col < cols; col++) {
             this.clearCellAt(line, col);
           }
         }
-        for (let row = this.cur_y; row < rows; row++) {
+        for (let row = this.cur_y + 1; row < rows; row++) {
           const line = lines[row];
           for (let col = 0; col < cols; col++) {
             this.clearCellAt(line, col);
@@ -598,7 +583,6 @@ export class TermBuf {
         break;
       }
     }
-    this.gotoPos(0, 0);
     this.queueUpdate();
   }
 

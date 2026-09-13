@@ -600,8 +600,10 @@ export class TermView {
     ctx.textBaseline = 'middle';
 
     // 0. Clear entire canvas background to completely eliminate ghost cursors and screen residuals
+    const dpr = window.devicePixelRatio || 1;
+    ctx.clearRect(0, 0, this.canvas.width / dpr, this.canvas.height / dpr);
     ctx.fillStyle = '#000000';
-    ctx.fillRect(0, 0, cellW * cols, cellH * rows);
+    ctx.fillRect(0, 0, this.canvas.width / dpr, this.canvas.height / dpr);
 
     for (let r = 0; r < rows; r++) {
       const isBlacklisted = this.isRowBlacklisted(r);
@@ -698,19 +700,10 @@ export class TermView {
               ctx.closePath();
               ctx.fill();
             } else if (isLead) {
-              // Full-width character (CJK / special symbols): ensure exact fit into 2-cell width
+              // Full-width character (CJK / special symbols): preserve natural aspect ratio without horizontal stretching
               const charW = this.getCharWidth(cell.ch, fontSize, ctx);
-              // Only scale if the character is genuinely a wide glyph (at least 75% of 2-cell width)
-              // to prevent horizontally distorting/squashing narrow characters.
-              if (charW >= cellWidth * 0.75 && Math.abs(charW - cellWidth) > 1.0) {
-                const scaleX = cellWidth / charW;
-                ctx.save();
-                ctx.translate(x1, centerY);
-                ctx.scale(scaleX, 1);
-                ctx.fillText(cell.ch, 0, 0);
-                ctx.restore();
-              } else if (charW > cellWidth + 0.5) {
-                // If it overflows 2 cells, scale down to fit
+              if (charW > cellWidth + 0.5) {
+                // If it overflows 2 cells, scale down horizontally to fit
                 const scaleX = cellWidth / charW;
                 ctx.save();
                 ctx.translate(x1, centerY);
@@ -718,7 +711,7 @@ export class TermView {
                 ctx.fillText(cell.ch, 0, 0);
                 ctx.restore();
               } else {
-                // Narrower character: center inside the 2-cell width without stretching
+                // Natural aspect ratio: center inside the 2-cell width without stretching
                 const offsetX = Math.max(0, (cellWidth - charW) * 0.5);
                 ctx.fillText(cell.ch, x1 + offsetX, centerY);
               }
