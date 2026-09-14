@@ -114,6 +114,7 @@ export class TermBuf {
 
     this.curAttr = new TermChar(' ');
     this.newChar = new TermChar(' ');
+    this.pointerRows = new Set();
 
     this.lines = [];
     for (let r = 0; r < rows; r++) {
@@ -194,6 +195,21 @@ export class TermBuf {
     cell.copyFrom(this.newChar);
   }
 
+  normalizeDbcsRow(line) {
+    for (let col = 0; col < this.cols; col++) {
+      const cell = line[col];
+      if (cell.isLeadByte) {
+        if (col + 1 >= this.cols || !line[col + 1].isTrailByte) {
+          cell.copyFrom(this.newChar);
+        }
+      } else if (cell.isTrailByte) {
+        if (col === 0 || !line[col - 1].isLeadByte) {
+          cell.copyFrom(this.newChar);
+        }
+      }
+    }
+  }
+
   puts(str) {
     if (!str) return;
     const cols = this.cols;
@@ -263,6 +279,22 @@ export class TermBuf {
 
       const line = lines[this.cur_y];
       const curX = this.cur_x;
+
+      // PTT list screens draw the active row marker as a full-width ● at column 0.
+      // If a high-rate update drops the server's erase sequence, retire any marker
+      // previously observed in another row so stale pointers cannot accumulate.
+      if (ch === '●' && curX === 0) {
+        for (const rowIndex of this.pointerRows) {
+          if (rowIndex === this.cur_y) continue;
+          const row = lines[rowIndex];
+          if (row && row[0]?.ch === '●' && row[0].isLeadByte) {
+            this.clearCellAt(row, 0);
+            this.markRowDirty(rowIndex);
+          }
+        }
+        this.pointerRows.clear();
+        this.pointerRows.add(this.cur_y);
+      }
 
       // Sever any existing DBCS pair at curX before overwriting
       if (line[curX].isTrailByte && curX > 0) {
@@ -470,6 +502,7 @@ export class TermBuf {
         ch.copyFrom(this.newChar);
       }
     }
+    this.normalizeDbcsRow(line);
     this.queueUpdate();
   }
 
@@ -492,6 +525,7 @@ export class TermBuf {
         line[col].copyFrom(this.newChar);
       }
     }
+    this.normalizeDbcsRow(line);
     this.queueUpdate();
   }
 
@@ -505,6 +539,7 @@ export class TermBuf {
     for (let col = cur_x; col < n; col++) {
       this.clearCellAt(line, col);
     }
+    this.normalizeDbcsRow(line);
     this.markRowDirty(this.cur_y);
     this.queueUpdate();
   }
@@ -530,6 +565,7 @@ export class TermBuf {
         }
         break;
     }
+    this.normalizeDbcsRow(line);
     this.markRowDirty(this.cur_y);
     this.queueUpdate();
   }
@@ -580,8 +616,12 @@ export class TermBuf {
           }
         }
         this.markAllDirty();
+        this.pointerRows.clear();
         break;
       }
+    }
+    for (let row = 0; row < rows; row++) {
+      this.normalizeDbcsRow(lines[row]);
     }
     this.queueUpdate();
   }
