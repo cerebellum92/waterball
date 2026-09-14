@@ -114,7 +114,7 @@ export class TermBuf {
 
     this.curAttr = new TermChar(' ');
     this.newChar = new TermChar(' ');
-    this.pointerRows = new Set();
+    this.pointerCells = new Set();
 
     this.lines = [];
     for (let r = 0; r < rows; r++) {
@@ -280,20 +280,23 @@ export class TermBuf {
       const line = lines[this.cur_y];
       const curX = this.cur_x;
 
-      // PTT list screens draw the active row marker as a full-width ● at column 0.
-      // If a high-rate update drops the server's erase sequence, retire any marker
-      // previously observed in another row so stale pointers cannot accumulate.
-      if (ch === '●' && curX === 0) {
-        for (const rowIndex of this.pointerRows) {
-          if (rowIndex === this.cur_y) continue;
+      // PTT menu/list screens draw the active row marker as a full-width ●.
+      // If a high-rate update drops the server's erase sequence, retire markers
+      // previously observed at any column so stale pointers cannot accumulate.
+      if (ch === '●') {
+        for (const key of this.pointerCells) {
+          const separator = key.indexOf(':');
+          const rowIndex = Number(key.slice(0, separator));
+          const colIndex = Number(key.slice(separator + 1));
+          if (rowIndex === this.cur_y && colIndex === curX) continue;
           const row = lines[rowIndex];
-          if (row && row[0]?.ch === '●' && row[0].isLeadByte) {
-            this.clearCellAt(row, 0);
+          if (row && row[colIndex]?.ch === '●' && row[colIndex].isLeadByte) {
+            this.clearCellAt(row, colIndex);
             this.markRowDirty(rowIndex);
           }
         }
-        this.pointerRows.clear();
-        this.pointerRows.add(this.cur_y);
+        this.pointerCells.clear();
+        this.pointerCells.add(`${this.cur_y}:${curX}`);
       }
 
       // Sever any existing DBCS pair at curX before overwriting
@@ -616,7 +619,7 @@ export class TermBuf {
           }
         }
         this.markAllDirty();
-        this.pointerRows.clear();
+        this.pointerCells.clear();
         break;
       }
     }
