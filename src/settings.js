@@ -61,6 +61,7 @@ export const DEFAULT_SETTINGS = {
   toolbarScale: 'medium', // 'standard' | 'medium' | 'large'
   fontFamily: 'auto', // 'auto' | 'mingliu' | 'jhenghei' | 'monospace'
   customFont: '', // Custom font name
+  rememberWindowState: true, // Auto-restore window size & position
 };
 
 import { encryptSecret, decryptSecret } from './crypto.js';

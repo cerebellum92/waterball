@@ -255,6 +255,7 @@ export class SettingsUI {
       settingCursorStyle,
       settingBlinkRate,
       settingImagePreview,
+      settingRememberWindow,
       settingToolbarScale,
       settingFontFamily,
       settingCustomFont,
@@ -274,6 +275,7 @@ export class SettingsUI {
     if (settingCursorStyle) settingCursorStyle.value = s.cursorStyle || 'smart';
     if (settingBlinkRate) settingBlinkRate.value = String(s.cursorBlinkRate ?? 500);
     if (settingImagePreview) settingImagePreview.checked = s.imagePreviewEnabled !== false;
+    if (settingRememberWindow) settingRememberWindow.checked = s.rememberWindowState !== false;
     if (settingToolbarScale) settingToolbarScale.value = s.toolbarScale || 'medium';
 
     if (settingFontFamily) {
@@ -414,6 +416,7 @@ export class SettingsUI {
       cursorStyle,
       cursorBlinkRate: settingBlinkRate ? parseInt(settingBlinkRate.value, 10) : 500,
       imagePreviewEnabled: isImgPrev,
+      rememberWindowState: settingRememberWindow ? settingRememberWindow.checked : true,
       toolbarScale,
       fontFamily,
       customFont,

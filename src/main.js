@@ -177,6 +177,7 @@ const settingsUI = new SettingsUI({
     settingCursorStyle: document.getElementById('setting-cursor-style'),
     settingBlinkRate: document.getElementById('setting-blink-rate'),
     settingImagePreview: document.getElementById('setting-image-preview'),
+    settingRememberWindow: document.getElementById('setting-remember-window'),
     settingToolbarScale: document.getElementById('setting-toolbar-scale'),
     btnCheckUpdate: document.getElementById('btn-check-update'),
     updateStatusMsg: document.getElementById('update-status-msg'),
@@ -274,15 +275,59 @@ tabManager.init();
 bookmarksUI.renderBookmarksSelect();
 settingsUI.applyToolbarScale(settingsManager.settings.toolbarScale || 'medium');
 
-// Window resize handling
+// Window resize handling & Window state persistence
+let windowStateSaveTimer = null;
+function persistWindowState() {
+  if (settingsManager.settings.rememberWindowState === false) return;
+  clearTimeout(windowStateSaveTimer);
+  windowStateSaveTimer = setTimeout(() => {
+    try {
+      const width = window.outerWidth;
+      const height = window.outerHeight;
+      const x = window.screenX;
+      const y = window.screenY;
+      const isMaximized = (
+        window.innerWidth >= window.screen.availWidth &&
+        window.innerHeight >= window.screen.availHeight
+      );
+
+      if (width >= 400 && height >= 300) {
+        localStorage.setItem('bbsterm_window_state', JSON.stringify({
+          width,
+          height,
+          x: (typeof x === 'number' && !isNaN(x)) ? x : null,
+          y: (typeof y === 'number' && !isNaN(y)) ? y : null,
+          isMaximized,
+        }));
+
+        invoke('save_window_state', {
+          width,
+          height,
+          x: (typeof x === 'number' && !isNaN(x)) ? x : null,
+          y: (typeof y === 'number' && !isNaN(y)) ? y : null,
+          isMaximized,
+        }).catch(() => {});
+      }
+    } catch (e) {
+      console.warn('Failed to persist window state:', e);
+    }
+  }, 300);
+}
+
 const resizeObserver = new ResizeObserver(() => {
   const activeTab = tabManager.getActiveTab();
   if (activeTab?.view) activeTab.view.resize();
 });
 resizeObserver.observe(terminalContainer);
+
 window.addEventListener('resize', () => {
   const activeTab = tabManager.getActiveTab();
   if (activeTab?.view) activeTab.view.resize();
+  persistWindowState();
+});
+
+window.addEventListener('beforeunload', () => {
+  persistWindowState();
 });
 
 // Auto-Login status callbacks

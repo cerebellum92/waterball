@@ -3,8 +3,54 @@ pub mod uao;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use telnet::{BbsCharset, BbsConnection, ConnectionStatusPayload};
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WindowState {
+    pub width: f64,
+    pub height: f64,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub is_maximized: bool,
+}
+
+impl WindowState {
+    fn load(app: &AppHandle) -> Option<Self> {
+        let path = app.path().app_config_dir().ok()?.join("window_state.json");
+        let content = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str(&content).ok()
+    }
+
+    fn save(&self, app: &AppHandle) {
+        if let Ok(config_dir) = app.path().app_config_dir() {
+            let _ = std::fs::create_dir_all(&config_dir);
+            let path = config_dir.join("window_state.json");
+            if let Ok(json) = serde_json::to_string_pretty(self) {
+                let _ = std::fs::write(path, json);
+            }
+        }
+    }
+
+    fn apply_to(&self, window: &tauri::WebviewWindow) {
+        use tauri::{LogicalPosition, LogicalSize, Position, Size};
+        if self.is_maximized {
+            let _ = window.maximize();
+            return;
+        }
+        if self.width >= 400.0 && self.height >= 300.0 {
+            let _ = window.set_size(Size::Logical(LogicalSize {
+                width: self.width,
+                height: self.height,
+            }));
+        }
+        if let (Some(x), Some(y)) = (self.x, self.y) {
+            if x >= 0.0 && y >= 0.0 && x < 10000.0 && y < 10000.0 {
+                let _ = window.set_position(Position::Logical(LogicalPosition { x, y }));
+            }
+        }
+    }
+}
 
 pub struct AntiIdleSettings {
     pub enabled: bool,
@@ -185,6 +231,31 @@ async fn open_browser_url(app: AppHandle, url: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn save_window_state(
+    app: AppHandle,
+    width: f64,
+    height: f64,
+    x: Option<f64>,
+    y: Option<f64>,
+    is_maximized: bool,
+) -> Result<(), String> {
+    let state = WindowState {
+        width,
+        height,
+        x,
+        y,
+        is_maximized,
+    };
+    state.save(&app);
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_saved_window_state(app: AppHandle) -> Result<Option<WindowState>, String> {
+    Ok(WindowState::load(&app))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let connections = Arc::new(Mutex::new(HashMap::<String, BbsConnection>::new()));
@@ -229,6 +300,14 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
         .manage(app_state)
+        .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                if let Some(state) = WindowState::load(app.handle()) {
+                    state.apply_to(&window);
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             connect,
             set_charset,
@@ -238,6 +317,8 @@ pub fn run() {
             set_anti_idle,
             disconnect,
             open_browser_url,
+            save_window_state,
+            get_saved_window_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
