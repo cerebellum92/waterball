@@ -50,6 +50,7 @@ export class ConnectionController {
 
     this.sendQueue = [];
     this.isSending = false;
+    this.lastPageNavigationAt = new Map();
     this.notificationScrapeTimer = null;
 
     this.initEventListeners();
@@ -168,15 +169,19 @@ export class ConnectionController {
       const item = this.sendQueue.shift();
       if (!item) continue;
 
-      let combinedData = item.data;
       const currentTabId = item.tabId;
-      while (this.sendQueue.length > 0 && this.sendQueue[0].tabId === currentTabId) {
-        combinedData += this.sendQueue.shift().data;
-      }
 
-      if (combinedData) {
+      if (item.data) {
         try {
-          await invoke('send_input', { tabId: currentTabId, data: combinedData });
+          if (item.data === '\x1b[5~' || item.data === '\x1b[6~') {
+            const lastSentAt = this.lastPageNavigationAt.get(currentTabId) || 0;
+            const waitMs = 120 - (Date.now() - lastSentAt);
+            if (waitMs > 0) {
+              await new Promise((resolve) => setTimeout(resolve, waitMs));
+            }
+            this.lastPageNavigationAt.set(currentTabId, Date.now());
+          }
+          await invoke('send_input', { tabId: currentTabId, data: item.data });
         } catch (err) {
           console.error('Send error:', err);
         }
@@ -191,6 +196,11 @@ export class ConnectionController {
     const cleanData = data
       .replace(/\u00a0/g, ' ')
       .replace(/[\u2000-\u200b\u202f\u205f\ufeff]/g, ' ');
+
+    const isPageNavigation = cleanData === '\x1b[5~' || cleanData === '\x1b[6~';
+    if (isPageNavigation && this.sendQueue.some((item) => item.tabId === tabId && item.data === cleanData)) {
+      return;
+    }
 
     this.sendQueue.push({ tabId, data: cleanData });
     this.processSendQueue();

@@ -32,6 +32,16 @@ export class AnsiParser {
         continue;
       }
 
+      if (ch === '\x9b') {
+        if (s) {
+          term.puts(s);
+          s = '';
+        }
+        this.state = AnsiParser.STATE_CSI;
+        this.esc = '';
+        continue;
+      }
+
       switch (this.state) {
         case AnsiParser.STATE_TEXT:
           s += ch;

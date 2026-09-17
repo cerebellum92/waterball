@@ -83,8 +83,8 @@ export function translateBbsKey(e, { smartDbcsBackspace = true, isPrevCharDBCS =
     // Standard Navigation, BBS Function, and Editing keys
     if (!seq) {
       switch (e.key) {
-        case 'ArrowUp': seq = '\x1b[A'; break;
-        case 'ArrowDown': seq = '\x1b[B'; break;
+        case 'ArrowUp': seq = '\x1bOA'; break;
+        case 'ArrowDown': seq = '\x1bOB'; break;
         case 'ArrowRight': seq = '\x1b[C'; break;
         case 'ArrowLeft': seq = '\x1b[D'; break;
         case 'Enter': seq = '\r'; break;

@@ -6,6 +6,14 @@
   box-sizing: border-box;
 }
 
+@font-face {
+  font-family: "WaterballUAOFallback";
+  src: url("/fonts/waterball-uao-fallback.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
 :root {
   color-scheme: dark;
   --bg-primary: #0d1117;
@@ -2589,7 +2597,7 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
 
 
 #ime-input.composing {
-  caret-color: #a0a0a0;
+  caret-color: transparent !important;
 }
 
 /* ═══════════════════════════════════════════════════════════

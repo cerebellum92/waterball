@@ -342,15 +342,14 @@ export class TermView {
 
   updateImePosition() {
     if (!this.canvas || !this.imeInput) return;
-    
+
     const canvasRect = this.canvas.getBoundingClientRect();
     const wrapperRect = this.wrapper.getBoundingClientRect();
 
-    // Set exact cell dimensions and font metrics for OS native floating IME anchor
     const width = `${Math.max(10, Math.round(this.cellW))}px`;
     const height = `${Math.max(10, Math.round(this.cellH))}px`;
     const fontSize = `${Math.floor(this.cellH * 0.85)}px`;
-    const fontFamily = this.getFontFamilyString();
+    const fontFamily = this.getRenderFontFamilyString();
 
     if (this.imeInput.style.width !== width) this.imeInput.style.width = width;
     if (this.imeInput.style.height !== height) this.imeInput.style.height = height;
@@ -358,53 +357,13 @@ export class TermView {
     if (this.imeInput.style.lineHeight !== height) this.imeInput.style.lineHeight = height;
     if (this.imeInput.style.fontFamily !== fontFamily) this.imeInput.style.fontFamily = fontFamily;
 
-    // ADAPTIVE POSITIONING (Left, Top)
-    const targetX = this.buf.cur_x;
-    const targetY = this.buf.cur_y;
+    const left = Math.max(0, (canvasRect.left - wrapperRect.left) + this.buf.cur_x * this.cellW);
+    const top = Math.max(0, (canvasRect.top - wrapperRect.top) + this.buf.cur_y * this.cellH);
+    const newLeft = `${left}px`;
+    const newTop = `${top}px`;
 
-    const currentLeftPx = parseFloat(this.imeInput.style.left) || 0;
-    const currentTopPx = parseFloat(this.imeInput.style.top) || 0;
-    
-    const currentX = Math.round((currentLeftPx - Math.max(0, canvasRect.left - wrapperRect.left)) / this.cellW);
-    const currentY = Math.round((currentTopPx - Math.max(0, canvasRect.top - wrapperRect.top)) / this.cellH);
-    
-    const rowDiff = targetY - currentY;
-    const colDiff = targetX - currentX;
-    
-    // Natural movements: advancing a few chars, backspacing, or wrapping to the next line
-    const isSameLineAdvance = (rowDiff === 0 && colDiff >= -3 && colDiff <= 10);
-    const isNewLineWrap = (rowDiff === 1 && targetX <= 15);
-    const isNaturalMovement = isSameLineAdvance || isNewLineWrap;
-
-    // Detect bottom status line updates on PTT
-    const isBottomStatusLine = (targetY >= 22 && targetX >= 45);
-
-    const applyPosition = () => {
-      if (!this.canvas || !this.imeInput) return;
-      const newLeft = `${Math.max(0, (canvasRect.left - wrapperRect.left) + this.buf.cur_x * this.cellW)}px`;
-      const newTop = `${Math.max(0, (canvasRect.top - wrapperRect.top) + this.buf.cur_y * this.cellH)}px`;
-      
-      if (this.imeInput.style.left !== newLeft) this.imeInput.style.left = newLeft;
-      if (this.imeInput.style.top !== newTop) this.imeInput.style.top = newTop;
-    };
-
-    if (this.imePositionTimeout) {
-      clearTimeout(this.imePositionTimeout);
-      this.imePositionTimeout = null;
-    }
-
-    if (isNaturalMovement) {
-      applyPosition();
-    } else if (this.imeInput.dataset.composing === 'true') {
-      applyPosition();
-      return;
-    } else if (isBottomStatusLine) {
-      return;
-    } else {
-      this.imePositionTimeout = setTimeout(() => {
-        applyPosition();
-      }, 30);
-    }
+    if (this.imeInput.style.left !== newLeft) this.imeInput.style.left = newLeft;
+    if (this.imeInput.style.top !== newTop) this.imeInput.style.top = newTop;
   }
 
   getFontFamilyString() {
@@ -475,6 +434,10 @@ export class TermView {
       default:
         return '"Noto Sans Mono CJK TC", "PingFang TC", "Microsoft JhengHei", "Microsoft YaHei", "SimSun", "MingLiU", "WenQuanYi Micro Hei Mono", sans-serif, monospace';
     }
+  }
+
+  getRenderFontFamilyString() {
+    return `${this.getFontFamilyString()}, "WaterballUAOFallback"`;
   }
 
   scheduleRedraw() {
@@ -596,7 +559,7 @@ export class TermView {
     }
 
     const fontSize = Math.floor(cellH * 0.82);
-    ctx.font = `${fontSize}px ${this.getFontFamilyString()}`;
+    ctx.font = `${fontSize}px ${this.getRenderFontFamilyString()}`;
     ctx.textBaseline = 'middle';
 
     // 0. Clear entire canvas background to completely eliminate ghost cursors and screen residuals
@@ -863,7 +826,7 @@ export class TermView {
 
     // 2. Draw cursor.
     let shouldDrawCursor = false;
-    if (this.cursorStyle !== 'none') {
+    if (buf.cursorVisible && this.cursorStyle !== 'none') {
       if (this.cursorStyle !== 'smart' || isEditorScreen) {
         // In editor mode or non-smart modes, ALWAYS display the cursor!
         shouldDrawCursor = true;

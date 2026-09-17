@@ -276,6 +276,7 @@ impl BbsConnection {
         let mut buf = [0u8; 4096];
         let mut pending_iac = Vec::new();
         let mut pending_charset = Vec::new();
+        let mut pending_ansi = Vec::new();
 
         while alive.load(Ordering::Relaxed) {
             match reader.read(&mut buf) {
@@ -308,7 +309,10 @@ impl BbsConnection {
                     // 2. Charset & ANSI Decoding
                     if !clean.is_empty() {
                         let cs = charset.read().map(|g| *g).unwrap_or(BbsCharset::Big5);
-                        let decoded = Self::decode_ansi_stream(&clean, cs, &mut pending_charset);
+                        Self::trace_ansi_chunk(&clean, &pending_ansi);
+                        let decoded = Self::decode_terminal_stream(
+                            &clean, cs, &mut pending_charset, &mut pending_ansi,
+                        );
                         if !decoded.is_empty() {
                             let _ = app.emit("terminal-data", TerminalDataPayload {
                                 tab_id: tab_id.clone(),
@@ -343,6 +347,7 @@ impl BbsConnection {
     ) {
         let mut buf = [0u8; 4096];
         let mut pending_charset = Vec::new();
+        let mut pending_ansi = Vec::new();
 
         while alive.load(Ordering::Relaxed) {
             let read_res = {
@@ -380,7 +385,10 @@ impl BbsConnection {
                 }
                 Ok(n) => {
                     let cs = charset.read().map(|g| *g).unwrap_or(BbsCharset::Big5);
-                    let decoded = Self::decode_ansi_stream(&buf[..n], cs, &mut pending_charset);
+                    Self::trace_ansi_chunk(&buf[..n], &pending_ansi);
+                    let decoded = Self::decode_terminal_stream(
+                        &buf[..n], cs, &mut pending_charset, &mut pending_ansi,
+                    );
                     if !decoded.is_empty() {
                         let _ = app.emit("terminal-data", TerminalDataPayload {
                             tab_id: tab_id.clone(),
@@ -405,12 +413,108 @@ impl BbsConnection {
         }
     }
 
-    /// Dispatch stream decoding based on current charset
-    fn decode_ansi_stream(
+    fn decode_terminal_stream(
         raw: &[u8],
         charset: BbsCharset,
         pending_bytes: &mut Vec<u8>,
+        pending_ansi: &mut Vec<u8>,
     ) -> String {
+        let mut bytes = Vec::with_capacity(pending_ansi.len() + raw.len());
+        bytes.extend_from_slice(pending_ansi);
+        bytes.extend_from_slice(raw);
+        pending_ansi.clear();
+
+        let mut output = String::with_capacity(bytes.len());
+        let mut text = Vec::new();
+        let mut control = Vec::new();
+        let mut state = 0u8;
+
+        for (index, byte) in bytes.iter().copied().enumerate() {
+            if state != 0 && byte == 0x1B {
+                control.clear();
+                control.push(byte);
+                state = 1;
+                continue;
+            }
+
+            if state == 0 {
+                if byte == 0x1B {
+                    if !text.is_empty() {
+                        output.push_str(&Self::decode_text(&text, charset, pending_bytes));
+                        text.clear();
+                    }
+                    control.clear();
+                    if !pending_bytes.is_empty() {
+                        output.push_str(&Self::decode_text(&[byte], charset, pending_bytes));
+                    } else {
+                        control.push(byte);
+                    }
+                    state = 1;
+                } else if byte == 0x9B
+                    && bytes.get(index + 1).is_some_and(|next| (0x20..=0x3F).contains(next))
+                {
+                    if !text.is_empty() {
+                        output.push_str(&Self::decode_text(&text, charset, pending_bytes));
+                        text.clear();
+                    }
+                    control.clear();
+                    control.extend_from_slice(b"\x1B[");
+                    state = 2;
+                } else {
+                    text.push(byte);
+                }
+                continue;
+            }
+
+            if state == 1 {
+                control.push(byte);
+                state = if byte == b'[' { 2 } else { 0 };
+                if state == 0 {
+                    output.push_str(&String::from_utf8_lossy(&control));
+                    control.clear();
+                }
+            } else if byte >= b'@' && byte <= b'~' {
+                control.push(byte);
+                output.push_str(&String::from_utf8_lossy(&control));
+                control.clear();
+                state = 0;
+            } else if byte >= 0x80 {
+                output.push_str(&String::from_utf8_lossy(&control));
+                control.clear();
+                state = 0;
+                text.push(byte);
+            } else {
+                control.push(byte);
+            }
+        }
+
+        if state != 0 {
+            pending_ansi.extend_from_slice(&control);
+        }
+        if !text.is_empty() {
+            output.push_str(&Self::decode_text(&text, charset, pending_bytes));
+        }
+        output
+    }
+
+    fn trace_ansi_chunk(raw: &[u8], pending_ansi: &[u8]) {
+        if std::env::var_os("BBSTERM_TRACE_ANSI").is_none() {
+            return;
+        }
+        if !raw.contains(&0x1B) && !raw.contains(&0x9B) && pending_ansi.is_empty() {
+            return;
+        }
+        let hex: String = raw.iter().take(512).map(|byte| format!("{byte:02X} ")).collect();
+        eprintln!(
+            "[ANSI raw len={} pending={:?}] {}{}",
+            raw.len(),
+            pending_ansi,
+            hex,
+            if raw.len() > 512 { "..." } else { "" }
+        );
+    }
+
+    fn decode_text(raw: &[u8], charset: BbsCharset, pending_bytes: &mut Vec<u8>) -> String {
         match charset {
             BbsCharset::Big5 => Self::decode_ansi_big5(raw, pending_bytes),
             BbsCharset::Gbk => Self::decode_ansi_gbk(raw, pending_bytes),
@@ -422,7 +526,7 @@ impl BbsConnection {
     /// - Full Big5-UAO 2.50 Unicode-At-On table lookup (19,782 mappings including Taiwanese romanization, Japanese Kana, Cyrillic, Greek, symbols)
     /// - Multi-byte UTF-8 passthrough fallback for pasted Unicode text
     /// - High bytes at the very end of raw stream held in pending_bytes for the next chunk
-    /// - Standalone Big5 lead bytes right before ESC turned to single space, preserving exact 80-column alignment
+    /// - Invalid Big5 trails are emitted as one replacement space without consuming the following control byte
     fn decode_ansi_big5(raw: &[u8], pending_bytes: &mut Vec<u8>) -> String {
         let mut buffer = Vec::with_capacity(pending_bytes.len() + raw.len());
         buffer.extend_from_slice(pending_bytes);
@@ -471,13 +575,19 @@ impl BbsConnection {
 
             // 3. Big5 / Big5-UAO 2.50 2-Byte Decoding
             if i + 1 < buffer.len() {
-                if buffer[i + 1] == 0x1B {
-                    // Standalone lead byte right before ESC => emit single space to maintain 1-cell width
+                let hi = b;
+                let lo = buffer[i + 1];
+                let is_big5_trail = (0x40..=0x7E).contains(&lo) || (0xA1..=0xFE).contains(&lo);
+                if hi == 0x9B && (0x20..=0x3F).contains(&lo) && !is_big5_trail {
+                    out.push('\x1B');
+                    out.push('[');
+                    i += 1;
+                    continue;
+                }
+                if !is_big5_trail {
                     out.push(' ');
                     i += 1;
                 } else {
-                    let hi = b;
-                    let lo = buffer[i + 1];
                     if let Some(ch) = crate::uao::decode_uao_char(hi, lo) {
                         out.push(ch);
                         i += 2;
@@ -522,7 +632,9 @@ impl BbsConnection {
             }
 
             if i + 1 < buffer.len() {
-                if buffer[i + 1] == 0x1B {
+                let lo = buffer[i + 1];
+                let is_gbk_trail = (0x40..=0x7E).contains(&lo) || (0x80..=0xFE).contains(&lo);
+                if !is_gbk_trail {
                     out.push(' ');
                     i += 1;
                 } else {
@@ -761,5 +873,109 @@ mod tests {
         assert_eq!(decoded, "😀");
         assert!(pending.is_empty());
     }
-}
 
+    #[test]
+    fn test_big5_lead_does_not_consume_ansi_bytes() {
+        let mut pending = Vec::new();
+        let bytes = [0xA4, 0x1B, b'[', b'1', b';', b'3', b'2', b'm'];
+        let decoded = BbsConnection::decode_ansi_big5(&bytes, &mut pending);
+        assert_eq!(decoded, " \x1B[1;32m");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn test_big5_lead_does_not_consume_ansi_after_packet_boundary() {
+        let mut pending = vec![0xA4];
+        let decoded = BbsConnection::decode_ansi_big5(b"\x1B[2J", &mut pending);
+        assert_eq!(decoded, " \x1B[2J");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn test_c1_csi_is_preserved_when_not_a_big5_pair() {
+        let mut pending = Vec::new();
+        let decoded = BbsConnection::decode_ansi_big5(&[0x9B, b';', b'3', b'7', b'm'], &mut pending);
+        assert_eq!(decoded, "\x1B[;37m");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn test_ansi_sequence_survives_packet_boundary() {
+        let mut pending_bytes = Vec::new();
+        let mut pending_ansi = Vec::new();
+        let first = BbsConnection::decode_terminal_stream(
+            b"\x1B[1;3", BbsCharset::Big5, &mut pending_bytes, &mut pending_ansi,
+        );
+        let second = BbsConnection::decode_terminal_stream(
+            b"2mA", BbsCharset::Big5, &mut pending_bytes, &mut pending_ansi,
+        );
+        assert_eq!(first, "");
+        assert_eq!(second, "\x1B[1;32mA");
+        assert!(pending_ansi.is_empty());
+    }
+
+    #[test]
+    fn test_ansi_does_not_consume_adjacent_big5_text() {
+        let mut pending_bytes = Vec::new();
+        let mut pending_ansi = Vec::new();
+        let decoded = BbsConnection::decode_terminal_stream(
+            b"\x1B[2J\xA4\xE5", BbsCharset::Big5, &mut pending_bytes, &mut pending_ansi,
+        );
+        assert_eq!(decoded, "\x1B[2J文");
+        assert!(pending_ansi.is_empty());
+        assert!(pending_bytes.is_empty());
+    }
+
+    #[test]
+    fn test_new_escape_restarts_incomplete_sequence() {
+        let mut pending_bytes = Vec::new();
+        let mut pending_ansi = Vec::new();
+        let decoded = BbsConnection::decode_terminal_stream(
+            b"\x1B[12\x1B[2J", BbsCharset::Big5, &mut pending_bytes, &mut pending_ansi,
+        );
+        assert_eq!(decoded, "\x1B[2J");
+        assert!(pending_ansi.is_empty());
+    }
+
+    #[test]
+    fn test_pending_big5_lead_is_resolved_before_escape() {
+        let mut pending_bytes = Vec::new();
+        let mut pending_ansi = Vec::new();
+
+        let first = BbsConnection::decode_terminal_stream(
+            &[0xA4],
+            BbsCharset::Big5,
+            &mut pending_bytes,
+            &mut pending_ansi,
+        );
+        let second = BbsConnection::decode_terminal_stream(
+            b"\x1B[H",
+            BbsCharset::Big5,
+            &mut pending_bytes,
+            &mut pending_ansi,
+        );
+
+        assert_eq!(first, "");
+        assert_eq!(second, " \x1B[H");
+        assert!(pending_bytes.is_empty());
+        assert!(pending_ansi.is_empty());
+    }
+
+    #[test]
+    fn test_non_ascii_byte_aborts_incomplete_csi() {
+        let mut pending_bytes = Vec::new();
+        let mut pending_ansi = Vec::new();
+        let decoded = BbsConnection::decode_terminal_stream(
+            b"\x1B[1\xA4\xE5H",
+            BbsCharset::Big5,
+            &mut pending_bytes,
+            &mut pending_ansi,
+        );
+
+        assert!(decoded.starts_with("\x1B[1"));
+        assert!(decoded.ends_with('H'));
+        assert!(pending_ansi.is_empty());
+        assert!(pending_bytes.is_empty());
+    }
+
+}

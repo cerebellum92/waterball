@@ -58,22 +58,22 @@ export class ImeController {
     });
 
     // IME Composition Events (注音 / 倉頡 / 拼音 中文輸入法)
-    this.imeInput.addEventListener('compositionstart', (e) => {
+    this.imeInput.addEventListener('compositionstart', (event) => {
       this.isComposing = true;
       this.imeInput.dataset.composing = 'true';
       this.imeInput.classList.add('composing');
-      this.updateImeBubble(e.data || this.imeInput.value || '');
+      this.updateImeBubble(event.data || this.imeInput.value || '');
       const activeTab = this.tabManager.getActiveTab();
       if (activeTab && activeTab.view) {
         activeTab.view.updateImePosition();
       }
     });
 
-    this.imeInput.addEventListener('compositionupdate', (e) => {
+    this.imeInput.addEventListener('compositionupdate', (event) => {
       this.isComposing = true;
       this.imeInput.dataset.composing = 'true';
       this.imeInput.classList.add('composing');
-      this.updateImeBubble(e.data || this.imeInput.value || '');
+      this.updateImeBubble(event.data || this.imeInput.value || '');
     });
 
     this.imeInput.addEventListener('compositionend', () => {

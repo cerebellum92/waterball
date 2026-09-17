@@ -128,6 +128,7 @@ export class TermBuf {
     this.cursorVisible = true;
     this.onUpdate = null;
     this.timerUpdate = null;
+    this.delayedUpdate = false;
 
     // Dirty Rows tracking for high-efficiency differential rendering
     this.dirtyRows = new Uint8Array(rows);
@@ -159,11 +160,20 @@ export class TermBuf {
   }
 
   queueUpdate() {
-    if (this.timerUpdate) return;
+    if (this.timerUpdate) {
+      if (this.delayedUpdate) {
+        clearTimeout(this.timerUpdate);
+        this.timerUpdate = null;
+      } else {
+        return;
+      }
+    }
+    const delay = this.delayedUpdate ? 80 : 16;
     this.timerUpdate = setTimeout(() => {
       this.timerUpdate = null;
+      this.delayedUpdate = false;
       if (this.onUpdate) this.onUpdate();
-    }, 16);
+    }, delay);
   }
 
   isFullWidth(ch) {
@@ -280,9 +290,6 @@ export class TermBuf {
       const line = lines[this.cur_y];
       const curX = this.cur_x;
 
-      // PTT menu/list screens draw the active row marker as a full-width ●.
-      // If a high-rate update drops the server's erase sequence, retire markers
-      // previously observed at any column so stale pointers cannot accumulate.
       if (ch === '●') {
         for (const key of this.pointerCells) {
           const separator = key.indexOf(':');
@@ -397,6 +404,7 @@ export class TermBuf {
       this.cur_y++;
       this.markRowDirty(this.cur_y);
     } else {
+      this.delayedUpdate = true;
       this.scroll(false, 1);
     }
     this.queueUpdate();
@@ -426,7 +434,6 @@ export class TermBuf {
     this.scrollTop = Math.max(0, Math.min(this.rows - 1, top));
     this.scrollBottom = Math.max(this.scrollTop, Math.min(this.rows - 1, bottom));
     this.markAllDirty();
-    this.gotoPos(0, 0);
   }
 
   scroll(up, n = 1) {
@@ -434,8 +441,8 @@ export class TermBuf {
     const scrollEnd = this.scrollBottom;
     const lines = this.lines;
     const cols = this.cols;
-
     if (scrollStart >= scrollEnd) return;
+    this.delayedUpdate = true;
     this.markRowsDirty(scrollStart, scrollEnd);
 
     if (n >= scrollEnd - scrollStart + 1) {
@@ -612,6 +619,7 @@ export class TermBuf {
         break;
       }
       case 2: { // Entire screen
+        this.delayedUpdate = true;
         for (let row = 0; row < rows; row++) {
           const line = lines[row];
           for (let col = 0; col < cols; col++) {

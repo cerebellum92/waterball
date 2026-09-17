@@ -1,6 +1,6 @@
 // Update checker against GitHub Releases API (cerebellum92/waterball)
 
-export const CURRENT_VERSION = 'v0.1.3';
+export const CURRENT_VERSION = 'v0.1.4';
 export const REPO_OWNER = 'cerebellum92';
 export const REPO_NAME = 'waterball';
 export const GITHUB_REPO_URL = `https://github.com/${REPO_OWNER}/${REPO_NAME}`;
