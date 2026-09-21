@@ -22,6 +22,11 @@ import { ContextMenuController } from './context_menu.js';
 
 const { invoke } = window.__TAURI__.core;
 
+// Keep the native close handler in sync with the persisted preference.
+invoke('set_remember_window_state', {
+  enabled: settingsManager.settings.rememberWindowState !== false,
+}).catch(() => {});
+
 // Prevent body & window rubber-band scrolling
 document.body.addEventListener('scroll', () => {
   if (document.body.scrollLeft > 0) document.body.scrollLeft = 0;
@@ -43,13 +48,39 @@ const boardBtn = document.getElementById('board-btn');
 const exportBtn = document.getElementById('export-btn');
 const paletteBtn = document.getElementById('palette-btn');
 const articleReaderBtn = document.getElementById('article-reader-btn');
+const mouseBrowsingBtn = document.getElementById('mouse-browsing-btn');
 const pushHelperBtn = document.getElementById('push-helper-btn');
 const addBookmarkBtn = document.getElementById('add-bookmark-btn');
 const settingsBtn = document.getElementById('settings-btn');
+const toolbar = document.getElementById('toolbar');
+const toolbarActions = document.getElementById('toolbar-actions');
 const statusDot = document.getElementById('status-dot');
 const statusText = document.getElementById('status-text');
 const terminalContainer = document.getElementById('terminal-container');
 const imeInput = document.getElementById('ime-input');
+
+function updateMouseBrowsingButton(enabled) {
+  if (!mouseBrowsingBtn) return;
+  mouseBrowsingBtn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+  mouseBrowsingBtn.title = enabled ? '關閉滑鼠操作 BBS（保留文字選取）' : '開啟滑鼠操作 BBS';
+  mouseBrowsingBtn.classList.toggle('active', enabled);
+}
+
+function updateToolbarMode() {
+  if (!toolbar || !toolbarActions) return;
+
+  // Measure the full text version first. This lets the toolbar switch back
+  // to labels automatically when the window becomes wide enough again.
+  document.body.classList.remove('toolbar-icons-only');
+  void toolbar.offsetWidth;
+
+  const toolbarRect = toolbar.getBoundingClientRect();
+  const actionsRect = toolbarActions.getBoundingClientRect();
+  const overflows = actionsRect.right > toolbarRect.right + 1 || toolbar.scrollWidth > toolbar.clientWidth + 1;
+  document.body.classList.toggle('toolbar-icons-only', overflows);
+}
+
+window.addEventListener('toolbar-scale-changed', updateToolbarMode);
 
 terminalContainer.addEventListener('scroll', () => {
   if (terminalContainer.scrollLeft > 0) terminalContainer.scrollLeft = 0;
@@ -171,6 +202,7 @@ const settingsUI = new SettingsUI({
     settingNotifyEnabled: document.getElementById('setting-notify-enabled'),
     settingNotifySound: document.getElementById('setting-notify-sound'),
     settingSmartDbcs: document.getElementById('setting-smart-dbcs'),
+    settingMouseBrowsing: document.getElementById('setting-mouse-browsing'),
     settingWheelScroll: document.getElementById('setting-wheel-scroll'),
     settingAutoCopy: document.getElementById('setting-auto-copy'),
     settingTheme: document.getElementById('setting-theme'),
@@ -197,6 +229,15 @@ const settingsUI = new SettingsUI({
   onBookmarksRender: () => bookmarksUI.renderBookmarkList(),
   onFocusTerminal: () => imeCtrl.focusTerminal(),
   onShowToast: showGlobalToast,
+  onMouseBrowsingChange: updateMouseBrowsingButton,
+});
+
+updateMouseBrowsingButton(settingsManager.settings.mouseBrowsingEnabled !== false);
+mouseBrowsingBtn?.addEventListener('click', () => {
+  const enabled = settingsManager.settings.mouseBrowsingEnabled === false;
+  settingsManager.saveSettings({ mouseBrowsingEnabled: enabled });
+  tabManager.tabs.forEach((tab) => tab.view?.setMouseBrowsingEnabled(enabled));
+  updateMouseBrowsingButton(enabled);
 });
 
 // 7. Context Menu Controller
@@ -254,6 +295,40 @@ tabManager.onWheel = (direction, tab) => {
   connectionCtrl.sendData(direction === 'down' ? '\x1b[6~' : '\x1b[5~');
 };
 
+tabManager.onArticleClick = (row, tab) => {
+  imagePreview.hideImmediate();
+  settingsManager.recordActivity();
+  if (!tab || !tab.isConnected || !tab.view.isPttArticleListScreen()) return;
+
+  // Keep PCManX's conservative list behaviour: move from the terminal cursor
+  // to the clicked row, then submit the selected article.
+  const distance = row - tab.buf.cur_y;
+  const arrow = distance >= 0 ? '\x1bOB' : '\x1bOA';
+  const move = arrow.repeat(Math.abs(distance));
+  connectionCtrl.sendDataToTab(tab.id, `${move}\r`);
+};
+
+tabManager.onBoardClick = (row, tab) => {
+  imagePreview.hideImmediate();
+  settingsManager.recordActivity();
+  if (!tab || !tab.isConnected || tab.view.getBbsState() !== 'board-list') return;
+
+  const distance = row - tab.buf.cur_y;
+  const arrow = distance >= 0 ? '\x1bOB' : '\x1bOA';
+  const move = arrow.repeat(Math.abs(distance));
+  connectionCtrl.sendDataToTab(tab.id, `${move}\r`);
+};
+
+tabManager.onShortcutClick = (shortcut, tab) => {
+  imagePreview.hideImmediate();
+  settingsManager.recordActivity();
+  if (!tab || !tab.isConnected || !shortcut) return;
+  const command = shortcut.command || shortcut.key;
+  if (!command) return;
+  const data = tab.view.getBbsState() === 'main-menu' && shortcut.key ? `${command}\r` : command;
+  connectionCtrl.sendDataToTab(tab.id, data);
+};
+
 tabManager.onSelectionChange = (selection, tab) => {
   if (settingsManager.settings.autoCopySelection && selection && tab?.view) {
     const text = tab.view.getSelectionText();
@@ -274,13 +349,14 @@ notificationManager.onFocusTab = (tabId) => tabManager.switchTab(tabId);
 tabManager.init();
 bookmarksUI.renderBookmarksSelect();
 settingsUI.applyToolbarScale(settingsManager.settings.toolbarScale || 'medium');
+updateToolbarMode();
 
 // Window resize handling & Window state persistence
 let windowStateSaveTimer = null;
-function persistWindowState() {
+function persistWindowState(immediate = false) {
   if (settingsManager.settings.rememberWindowState === false) return;
   clearTimeout(windowStateSaveTimer);
-  windowStateSaveTimer = setTimeout(() => {
+  const save = () => {
     try {
       const width = window.outerWidth;
       const height = window.outerHeight;
@@ -311,7 +387,12 @@ function persistWindowState() {
     } catch (e) {
       console.warn('Failed to persist window state:', e);
     }
-  }, 300);
+  };
+  if (immediate) {
+    save();
+  } else {
+    windowStateSaveTimer = setTimeout(save, 300);
+  }
 }
 
 const resizeObserver = new ResizeObserver(() => {
@@ -321,13 +402,14 @@ const resizeObserver = new ResizeObserver(() => {
 resizeObserver.observe(terminalContainer);
 
 window.addEventListener('resize', () => {
+  updateToolbarMode();
   const activeTab = tabManager.getActiveTab();
   if (activeTab?.view) activeTab.view.resize();
   persistWindowState();
 });
 
 window.addEventListener('beforeunload', () => {
-  persistWindowState();
+  persistWindowState(true);
 });
 
 // Auto-Login status callbacks

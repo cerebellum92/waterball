@@ -14,6 +14,7 @@ export class SettingsUI {
     onBookmarksRender,
     onFocusTerminal,
     onShowToast,
+    onMouseBrowsingChange,
   }) {
     this.settingsManager = settingsManager;
     this.blacklistManager = blacklistManager;
@@ -25,6 +26,7 @@ export class SettingsUI {
     this.onBookmarksRender = onBookmarksRender || (() => {});
     this.onFocusTerminal = onFocusTerminal || (() => {});
     this.onShowToast = onShowToast || (() => {});
+    this.onMouseBrowsingChange = onMouseBrowsingChange || (() => {});
 
     this.initEventListeners();
   }
@@ -249,6 +251,7 @@ export class SettingsUI {
       settingNotifyEnabled,
       settingNotifySound,
       settingSmartDbcs,
+      settingMouseBrowsing,
       settingWheelScroll,
       settingAutoCopy,
       settingTheme,
@@ -269,6 +272,7 @@ export class SettingsUI {
     if (settingNotifyEnabled) settingNotifyEnabled.checked = s.notifyEnabled !== false;
     if (settingNotifySound) settingNotifySound.checked = s.notifySound !== false;
     if (settingSmartDbcs) settingSmartDbcs.checked = s.smartDbcsBackspace;
+    if (settingMouseBrowsing) settingMouseBrowsing.checked = s.mouseBrowsingEnabled !== false;
     if (settingWheelScroll) settingWheelScroll.checked = s.wheelScrollPage;
     if (settingAutoCopy) settingAutoCopy.checked = s.autoCopySelection;
     if (settingTheme) settingTheme.value = s.theme || 'pcman';
@@ -342,6 +346,7 @@ export class SettingsUI {
   applyToolbarScale(scale = 'medium') {
     document.body.classList.remove('toolbar-scale-standard', 'toolbar-scale-medium', 'toolbar-scale-large');
     document.body.classList.add(`toolbar-scale-${scale}`);
+    window.dispatchEvent(new Event('toolbar-scale-changed'));
     setTimeout(() => {
       this.tabManager.tabs.forEach((t) => t.view?.resize());
     }, 60);
@@ -354,12 +359,14 @@ export class SettingsUI {
       settingNotifyEnabled,
       settingNotifySound,
       settingSmartDbcs,
+      settingMouseBrowsing,
       settingWheelScroll,
       settingAutoCopy,
       settingTheme,
       settingCursorStyle,
       settingBlinkRate,
       settingImagePreview,
+      settingRememberWindow,
       settingToolbarScale,
       settingFontFamily,
       settingCustomFont,
@@ -387,6 +394,7 @@ export class SettingsUI {
     this.tabManager.tabs.forEach((t) => {
       t.view?.setFontStyle(fontFamily, customFont);
       t.view?.setCursorStyle(cursorStyle);
+      t.view?.setMouseBrowsingEnabled(settingMouseBrowsing ? settingMouseBrowsing.checked : true);
     });
 
     const antiIdleEnabled = settingAntiIdle ? settingAntiIdle.checked : true;
@@ -410,6 +418,7 @@ export class SettingsUI {
       notifyEnabled: isNotify,
       notifySound: isSound,
       smartDbcsBackspace: settingSmartDbcs ? settingSmartDbcs.checked : true,
+      mouseBrowsingEnabled: settingMouseBrowsing ? settingMouseBrowsing.checked : true,
       wheelScrollPage: settingWheelScroll ? settingWheelScroll.checked : true,
       autoCopySelection: settingAutoCopy ? settingAutoCopy.checked : false,
       theme: settingTheme ? settingTheme.value : 'pcman',
@@ -421,6 +430,10 @@ export class SettingsUI {
       fontFamily,
       customFont,
     });
+    invoke('set_remember_window_state', {
+      enabled: settingRememberWindow ? settingRememberWindow.checked : true,
+    }).catch(() => {});
+    this.onMouseBrowsingChange(settingMouseBrowsing ? settingMouseBrowsing.checked : true);
 
     this.close();
   }

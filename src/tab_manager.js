@@ -40,6 +40,8 @@ export class TabManager {
     this.onUrlLeave = null;
     this.onWheel = null;
     this.onSelectionChange = null;
+    this.onArticleClick = null;
+    this.onBoardClick = null;
   }
 
   init() {
@@ -57,6 +59,7 @@ export class TabManager {
     tab.view = new TermView(this.terminalContainerEl, tab.buf, this.imeInputEl);
     tab.view.setFontStyle(settingsManager.settings.fontFamily || 'auto', settingsManager.settings.customFont || '');
     tab.view.setCursorStyle(settingsManager.settings.cursorStyle || 'underline');
+    tab.view.setMouseBrowsingEnabled(settingsManager.settings.mouseBrowsingEnabled !== false);
 
     // Wire view callbacks to tab manager handlers
     tab.view.onUrlClick = (url) => this.onUrlClick?.(url, tab);
@@ -64,6 +67,9 @@ export class TabManager {
     tab.view.onUrlLeave = () => this.onUrlLeave?.(tab);
     tab.view.onWheel = (direction) => this.onWheel?.(direction, tab);
     tab.view.onSelectionChange = (sel) => this.onSelectionChange?.(sel, tab);
+    tab.view.onArticleClick = (row) => this.onArticleClick?.(row, tab);
+    tab.view.onBoardClick = (row) => this.onBoardClick?.(row, tab);
+    tab.view.onShortcutClick = (shortcut) => this.onShortcutClick?.(shortcut, tab);
     tab.view.onContextMenu = (info) => this.onContextMenu?.(info, tab);
 
     // Initial welcome banner for new tab

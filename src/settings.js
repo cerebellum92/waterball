@@ -50,6 +50,7 @@ export const DEFAULT_SETTINGS = {
 
   // Keyboard & Mouse
   smartDbcsBackspace: true,
+  mouseBrowsingEnabled: true,
   wheelScrollPage: true,
   autoCopySelection: false,
 

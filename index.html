@@ -39,6 +39,9 @@
         <button id="article-reader-btn" class="tb-btn" title="圖文好讀版 (Cmd+D)">
           <span class="tb-icon">📖</span><span class="tb-label">好讀版</span>
         </button>
+        <button id="mouse-browsing-btn" class="tb-btn" title="切換滑鼠操作 BBS">
+          <span class="tb-icon">🖱️</span><span class="tb-label">滑鼠操作</span>
+        </button>
         <button id="push-helper-btn" class="tb-btn" title="長推文自動分段發送 (Cmd+Shift+X / Alt+X)">
           <span class="tb-icon">💬</span><span class="tb-label">推文</span>
         </button>
@@ -166,6 +169,13 @@
                 <span>智慧全形中文字雙格刪除 (Smart DBCS Backspace / Delete)</span>
               </label>
               <p class="hint">刪除中文字時一次刪除兩格整顆中文字，避免產生半格問號亂碼。</p>
+            </div>
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="setting-mouse-browsing" />
+                <span>啟用滑鼠操作 BBS 選單與文章</span>
+              </label>
+              <p class="hint">關閉後仍可拖曳選取文字、點擊網址與使用右鍵選單，但滑鼠不會送出 BBS 快捷鍵。</p>
             </div>
             <div class="form-group">
               <label class="checkbox-label">
@@ -339,7 +349,7 @@
             <div class="about-hero">
               <div class="about-logo">💧</div>
               <div class="about-title">Waterball (水球)</div>
-              <div class="about-ver">版本 v0.1.3 Beta &bull; 開源授權 GPL-3.0</div>
+              <div class="about-ver">版本 v0.1.5 &bull; 開源授權 GPL-3.0</div>
               <div class="about-desc">
                 新世代跨平台 BBS 終端連線客戶端 (macOS / Windows / Linux / Chromebook)
                 <br>

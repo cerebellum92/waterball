@@ -3,7 +3,7 @@ pub mod uao;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State, Window, WindowEvent};
 use telnet::{BbsCharset, BbsConnection, ConnectionStatusPayload};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -32,6 +32,13 @@ impl WindowState {
         }
     }
 
+    fn clear(app: &AppHandle) {
+        if let Ok(config_dir) = app.path().app_config_dir() {
+            let path = config_dir.join("window_state.json");
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
     fn apply_to(&self, window: &tauri::WebviewWindow) {
         use tauri::{LogicalPosition, LogicalSize, Position, Size};
         if self.is_maximized {
@@ -52,6 +59,26 @@ impl WindowState {
     }
 }
 
+fn save_current_window_state(window: &Window) {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let size = match window.outer_size() {
+        Ok(size) => size,
+        Err(_) => return,
+    };
+    let position = window.outer_position().ok();
+    let is_maximized = window.is_maximized().unwrap_or(false);
+    let state = WindowState {
+        width: f64::from(size.width) / scale,
+        height: f64::from(size.height) / scale,
+        x: position.map(|pos| f64::from(pos.x) / scale),
+        y: position.map(|pos| f64::from(pos.y) / scale),
+        is_maximized,
+    };
+    if state.width >= 400.0 && state.height >= 300.0 {
+        state.save(&window.app_handle());
+    }
+}
+
 pub struct AntiIdleSettings {
     pub enabled: bool,
     pub interval_secs: u64,
@@ -60,6 +87,7 @@ pub struct AntiIdleSettings {
 pub struct AppState {
     pub connections: Arc<Mutex<HashMap<String, BbsConnection>>>,
     pub anti_idle: Arc<Mutex<AntiIdleSettings>>,
+    pub remember_window_state: Arc<Mutex<bool>>,
 }
 
 #[tauri::command]
@@ -256,6 +284,21 @@ async fn get_saved_window_state(app: AppHandle) -> Result<Option<WindowState>, S
     Ok(WindowState::load(&app))
 }
 
+#[tauri::command]
+async fn set_remember_window_state(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    if let Ok(mut remember) = state.remember_window_state.lock() {
+        *remember = enabled;
+    }
+    if !enabled {
+        WindowState::clear(&app);
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let connections = Arc::new(Mutex::new(HashMap::<String, BbsConnection>::new()));
@@ -263,6 +306,7 @@ pub fn run() {
         enabled: true,
         interval_secs: 45, // default 45 seconds heartbeat
     }));
+    let remember_window_state = Arc::new(Mutex::new(true));
 
     // Start dedicated native OS background thread for Keep-Alive
     // (100% immune to browser/webview background throttling!)
@@ -293,6 +337,7 @@ pub fn run() {
     let app_state = AppState {
         connections,
         anti_idle,
+        remember_window_state: remember_window_state.clone(),
     };
 
     tauri::Builder::default()
@@ -300,6 +345,15 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
         .manage(app_state)
+        .on_window_event(move |window, event| {
+            if window.label() == "main" && matches!(event, WindowEvent::CloseRequested { .. }) {
+                if let Ok(remember) = remember_window_state.lock() {
+                    if *remember {
+                        save_current_window_state(window);
+                    }
+                }
+            }
+        })
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
                 if let Some(state) = WindowState::load(app.handle()) {
@@ -319,6 +373,7 @@ pub fn run() {
             open_browser_url,
             save_window_state,
             get_saved_window_state,
+            set_remember_window_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -345,6 +345,12 @@ select option:disabled {
   transform: translateY(-1px);
 }
 
+.tb-btn.active {
+  background: var(--bg-primary);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .tb-btn-primary {
   height: 32px;
   padding: 0 12px;
@@ -422,6 +428,16 @@ select option:disabled {
   #bookmarks-select {
     max-width: 90px;
   }
+}
+
+/* If the complete toolbar cannot fit, keep every action visible as an icon. */
+.toolbar-icons-only .tb-btn .tb-label {
+  display: none;
+}
+
+.toolbar-icons-only .tb-btn {
+  padding-left: 7px;
+  padding-right: 7px;
 }
 
 /* ═══════════════════════════════════════════════════════════

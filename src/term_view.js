@@ -60,8 +60,12 @@ export class TermView {
 
     this.selection = null; // { startX, startY, endX, endY }
     this.isSelecting = false;
+    this.isDragging = false;
     this.mouseDownPos = null;
+    this.mouseDownPixel = null;
     this.hoverUrl = null;
+    this.hoverAction = null;
+    this.mouseBrowsingEnabled = true;
 
     // Differential rendering state cache
     this.lastCursorX = -1;
@@ -74,6 +78,9 @@ export class TermView {
     this.onUrlLeave = null;
     this.onWheel = null;
     this.onSelectionChange = null;
+    this.onArticleClick = null;
+    this.onBoardClick = null;
+    this.onShortcutClick = null;
 
     this.initMouseEvents();
 
@@ -112,7 +119,9 @@ export class TermView {
       if (e.button === 0) { // Left click
         const pos = this.getGridPos(e);
         this.isSelecting = true;
+        this.isDragging = false;
         this.mouseDownPos = pos;
+        this.mouseDownPixel = { x: e.clientX, y: e.clientY };
         this.selection = null;
         this.redraw();
       }
@@ -120,6 +129,10 @@ export class TermView {
 
     window.addEventListener('mousemove', (e) => {
       if (this.isSelecting && this.mouseDownPos) {
+        const dx = e.clientX - this.mouseDownPixel.x;
+        const dy = e.clientY - this.mouseDownPixel.y;
+        if (!this.isDragging && (dx * dx + dy * dy) < 16) return;
+        this.isDragging = true;
         const pos = this.getGridPos(e);
         this.selection = {
           startX: this.mouseDownPos.col,
@@ -142,13 +155,22 @@ export class TermView {
           const url = this.buf.findUrlAt(pos.col, pos.row);
           if (url) {
             this.canvas.style.cursor = 'pointer';
+            if (this.hoverAction) {
+              this.hoverAction = null;
+              this.redraw();
+            }
             if (!this.hoverUrl || this.hoverUrl.raw !== url.raw || this.hoverUrl.row !== url.row) {
               this.hoverUrl = url;
               this.redraw();
             }
             this.onUrlHover?.(url.url, e.clientX, e.clientY);
           } else {
-            this.canvas.style.cursor = 'text';
+            const action = this.getMouseActionAt(pos.col, pos.row);
+            this.canvas.style.cursor = action ? 'pointer' : 'text';
+            if (JSON.stringify(action) !== JSON.stringify(this.hoverAction)) {
+              this.hoverAction = action;
+              this.redraw();
+            }
             if (this.hoverUrl) {
               this.hoverUrl = null;
               this.redraw();
@@ -158,8 +180,13 @@ export class TermView {
         } else if (this.hoverUrl) {
           this.canvas.style.cursor = 'default';
           this.hoverUrl = null;
+          this.hoverAction = null;
           this.redraw();
           this.onUrlLeave?.();
+        } else if (this.hoverAction) {
+          this.canvas.style.cursor = 'default';
+          this.hoverAction = null;
+          this.redraw();
         }
       }
     });
@@ -167,25 +194,30 @@ export class TermView {
     window.addEventListener('mouseup', (e) => {
       if (this.isSelecting) {
         this.isSelecting = false;
-        if (this.selection && this.mouseDownPos) {
-          // If clicked and released without moving, check if clicked on URL
-          if (
-            this.selection.startX === this.selection.endX &&
-            this.selection.startY === this.selection.endY
-          ) {
-            const url = this.buf.findUrlAt(this.selection.startX, this.selection.startY);
-            this.selection = null;
-            this.redraw();
-            if (url) {
-              this.onUrlClick?.(url.url);
-            }
-          }
-        } else if (this.mouseDownPos) {
+        if (!this.isDragging && this.mouseDownPos) {
           const url = this.buf.findUrlAt(this.mouseDownPos.col, this.mouseDownPos.row);
           if (url) {
             this.onUrlClick?.(url.url);
+          } else {
+            const shortcut = this.mouseBrowsingEnabled
+              ? this.getShortcutAt(this.mouseDownPos.col, this.mouseDownPos.row)
+              : null;
+            if (shortcut) {
+              this.onShortcutClick?.(shortcut);
+            } else {
+              const action = this.getMouseActionAt(this.mouseDownPos.col, this.mouseDownPos.row);
+              if (action?.type === 'waiting') {
+                this.onShortcutClick?.(action);
+              } else if (this.mouseBrowsingEnabled && this.isPttArticleListScreen() && this.isArticleListRow(this.mouseDownPos.row)) {
+                this.onArticleClick?.(this.mouseDownPos.row);
+              } else if (this.mouseBrowsingEnabled && this.getBbsState() === 'board-list' && this.isBoardListRow(this.mouseDownPos.row)) {
+                this.onBoardClick?.(this.mouseDownPos.row);
+              }
+            }
           }
         }
+        this.isDragging = false;
+        this.mouseDownPixel = null;
       }
     });
 
@@ -198,7 +230,9 @@ export class TermView {
       lastWheelTime = now;
 
       if (e.deltaY !== 0) {
-        this.onWheel?.(e.deltaY > 0 ? 'down' : 'up');
+        if (this.mouseBrowsingEnabled) {
+          this.onWheel?.(e.deltaY > 0 ? 'down' : 'up');
+        }
       }
     }, { passive: false });
 
@@ -279,6 +313,247 @@ export class TermView {
     const meta = { author, isBlacklisted };
     this.rowMetadataCache.set(r, meta);
     return meta;
+  }
+
+  getRowText(r) {
+    const line = this.buf.lines[r];
+    if (!line) return '';
+    let text = '';
+    for (let c = 0; c < this.buf.cols; c++) {
+      const cell = line[c];
+      if (!cell || cell.isTrailByte) continue;
+      text += cell.ch || ' ';
+    }
+    return text;
+  }
+
+  isArticleListRow(r) {
+    const text = this.getRowText(r);
+    if (!text.trim()) return false;
+    if (/【精華文章】|【功能鍵】/.test(text)) return false;
+
+    // PTT's usual format: article number, score/status, date, author...
+    if (/^\s*\d+\s+([+爆M~!\d\s]+)?\s*\d{1,2}\/\d{1,2}\s+[a-zA-Z0-9_-]+/.test(text)) {
+      return true;
+    }
+
+    // Welly-style fallback: recognize common article title starters instead
+    // of requiring one particular BBS's date/author column layout.
+    const content = text.slice(2);
+    if (/^\s*(?:\d+|[●○◎☆★>])\s+/.test(text) && /^(?:[^\r\n]*(?:□|◆|◇|★|├|└)\s*[^\s])/.test(content)) {
+      return true;
+    }
+    return /^\s*(?:Re:|R:\s)/.test(text);
+  }
+
+  getBbsState() {
+    const rows = Array.from({ length: this.buf.rows }, (_, r) => this.getRowText(r));
+    const top = rows.slice(0, 3).join('\n');
+    const bottom = rows.slice(Math.max(0, this.buf.rows - 3)).join('\n');
+    const whole = rows.join('\n');
+    let articleRows = 0;
+    for (let r = 0; r < this.buf.rows; r++) {
+      if (this.isArticleListRow(r)) articleRows++;
+    }
+
+    if (/每行最多可容納|編輯文章|請輸入標題|請輸入密碼|\(Ctrl\+X\)|\^X\s*(?:發表|寄出|存檔)/.test(bottom)) {
+      return 'compose';
+    }
+    if (this.getWaitingPromptRow() >= 0) {
+      return 'waiting-enter';
+    }
+    if (
+      articleRows >= 2 &&
+      (/目前顯示\s*[:：]|【看板列表】|文章列表|版主|板主|看板/.test(top + bottom) ||
+        /目前顯示\s*[:：]|【看板列表】|文章列表/.test(whole))
+    ) {
+      return 'article-list';
+    }
+    if (/看板列表|討論區列表|个人定制区|板板列表/.test(top)) return 'board-list';
+    if (/好朋友列表|使用者列表|休閒聊天/.test(top)) return 'friend-list';
+    if (/處理信箋選單|電子郵件|邮件选单/.test(top)) return 'mail-list';
+    if (/閱讀文章|主題閱讀|同作者閱讀|下面還有喔|瀏覽\s+第/.test(bottom)) return 'reading';
+    if (/主功能表|聊天說話|個人設定|工具程式|網路遊樂場|目前\s*[:：]?/.test(top)) return 'main-menu';
+
+    let boardRows = 0;
+    for (let r = 0; r < this.buf.rows; r++) {
+      if (this.isBoardListRow(r)) boardRows++;
+    }
+    if (boardRows >= 2) return 'board-list';
+
+    return 'unknown';
+  }
+
+  getWaitingPromptRow() {
+    const promptPattern = /按任意鍵繼續|按回車鍵|按\s*\[RETURN\]\s*繼續|(?:請\s*)?按空白鍵(?:或是Enter)?繼續|按任何鍵繼續/;
+    for (let r = this.buf.rows - 1; r >= 0; r--) {
+      if (promptPattern.test(this.getRowText(r))) return r;
+    }
+    return -1;
+  }
+
+  getShortcutAt(col, row) {
+    const line = this.buf.lines[row];
+    if (!line || col < 0 || col >= this.buf.cols) return null;
+
+    const options = [];
+    const cells = [];
+    for (let c = 0; c < this.buf.cols; c++) {
+      if (!line[c]?.isTrailByte) cells.push({ col: c, ch: line[c]?.ch || ' ' });
+    }
+
+    for (let i = 0; i < cells.length; i++) {
+      const opener = cells[i].ch;
+      if (opener !== '(' && opener !== '[') continue;
+      const closer = opener === '(' ? ')' : ']';
+      for (let j = i + 1; j < Math.min(cells.length, i + 8); j++) {
+        if (cells[j].ch !== closer) continue;
+        const content = cells.slice(i + 1, j).map((cell) => cell.ch).join('').trim();
+        const arrowCommands = {
+          '←': '\x1b[D',
+          '→': '\x1b[C',
+          '↑': '\x1b[A',
+          '↓': '\x1b[B',
+        };
+        const namedCommands = {
+          enter: '\r',
+          return: '\r',
+          pgup: '\x1b[5~',
+          pgdn: '\x1b[6~',
+          pageup: '\x1b[5~',
+          pagedown: '\x1b[6~',
+        };
+        const contentCells = cells.slice(i + 1, j);
+        const addOption = (cellStart, cellEnd, key, command, wide = false) => {
+          if (command) options.push({ start: cellStart, end: cellEnd, key, command, wide });
+        };
+
+        if (arrowCommands[content]) {
+          addOption(cells[i].col, cells[j].col, content, arrowCommands[content], true);
+        } else if (namedCommands[content.toLowerCase()]) {
+          addOption(cells[i].col, cells[j].col, content, namedCommands[content.toLowerCase()], true);
+        } else if (
+          content.length > 1 &&
+          [...content].every((key) => arrowCommands[key])
+        ) {
+          contentCells.forEach((cell) => {
+            if (arrowCommands[cell.ch]) addOption(cell.col, cell.col, cell.ch, arrowCommands[cell.ch]);
+          });
+        } else if (/[←→↑↓]/.test(content) && /^[A-Za-z0-9/←→↑↓]+$/.test(content)) {
+          // Mixed groups such as "k↑j↓", "enter/→" and "q/←" contain
+          // several independent keys, with slash used only as a separator.
+          let tokenStart = 0;
+          while (tokenStart < contentCells.length) {
+            const cell = contentCells[tokenStart];
+            if (!cell || cell.ch === '/') {
+              tokenStart++;
+              continue;
+            }
+            if (arrowCommands[cell.ch]) {
+              addOption(cell.col, cell.col, cell.ch, arrowCommands[cell.ch]);
+              tokenStart++;
+              continue;
+            }
+            let tokenEnd = tokenStart;
+            while (
+              tokenEnd + 1 < contentCells.length &&
+              /^[A-Za-z0-9]$/.test(contentCells[tokenEnd + 1].ch)
+            ) {
+              tokenEnd++;
+            }
+            const token = contentCells.slice(tokenStart, tokenEnd + 1).map((item) => item.ch).join('');
+            const command = namedCommands[token.toLowerCase()];
+            if (command) {
+              addOption(contentCells[tokenStart].col, contentCells[tokenEnd].col, token, command);
+            } else if (token.length === 1) {
+              addOption(cell.col, cell.col, token, token);
+            }
+            tokenStart = tokenEnd + 1;
+          }
+        } else if (/^[A-Za-z0-9]$/.test(content)) {
+          addOption(cells[i].col, cells[j].col, content, content, true);
+        } else {
+          const keyMatch = content.match(/^([A-Za-z0-9])%$/);
+          if (keyMatch) {
+            addOption(cells[i].col, cells[j].col, keyMatch[1], keyMatch[1], true);
+          } else if (/^\^([A-Za-z])$/.test(content)) {
+            const key = content[1].toUpperCase();
+            addOption(cells[i].col, cells[j].col, content, String.fromCharCode(key.charCodeAt(0) - 64), true);
+          } else if (/^Ctrl-[A-Za-z]$/i.test(content)) {
+            const key = content.slice(-1).toUpperCase();
+            addOption(cells[i].col, cells[j].col, content, String.fromCharCode(key.charCodeAt(0) - 64), true);
+          } else if (
+            /[/?=<>\[\]]/.test(content) &&
+            /^[/?A-Za-z0-9=<>\[\]]+$/.test(content)
+          ) {
+            // Compact BBS hints such as "(/?a)" and "(=[]<>)" contain
+            // several independent keys. Give each visible key its own hitbox.
+            contentCells.forEach((cell) => {
+              if (!/\S/.test(cell.ch)) return;
+              // In forms such as "(v/V)", slash is a visual separator.
+              // In "(/?a)", it is the actual slash command.
+              if (cell.ch === '/' && /^[A-Za-z]\/[A-Za-z]$/.test(content)) return;
+              addOption(cell.col, cell.col, cell.ch, cell.ch);
+            });
+          }
+        }
+        break;
+      }
+    }
+
+    for (let i = 0; i < options.length; i++) {
+      const option = options[i];
+      if (option.wide) {
+        const nextStart = options[i + 1]?.start ?? this.buf.cols;
+        option.end = nextStart - 1;
+        if (!options[i + 1]) {
+          option.end = this.buf.cols - 1;
+          while (option.end > option.start && (!line[option.end]?.ch || line[option.end].ch === ' ')) {
+            option.end--;
+          }
+        }
+      }
+      if (col >= option.start && col <= option.end) {
+        return { key: option.key, command: option.command, startCol: option.start, endCol: option.end };
+      }
+    }
+    return null;
+  }
+
+  getMouseActionAt(col, row) {
+    if (!this.mouseBrowsingEnabled) return null;
+    const shortcut = this.getShortcutAt(col, row);
+    if (shortcut) {
+      return { type: 'shortcut', row, startCol: shortcut.startCol, endCol: shortcut.endCol };
+    }
+    if (this.isPttArticleListScreen() && this.isArticleListRow(row)) {
+      return { type: 'article', row, startCol: 0, endCol: this.buf.cols - 1 };
+    }
+    if (this.getBbsState() === 'board-list' && this.isBoardListRow(row)) {
+      return { type: 'board', row, startCol: 0, endCol: this.buf.cols - 1 };
+    }
+    if (this.getBbsState() === 'waiting-enter' && row === this.getWaitingPromptRow()) {
+      return { type: 'waiting', row, startCol: 0, endCol: this.buf.cols - 1, command: ' ' };
+    }
+    return null;
+  }
+
+  isBoardListRow(r) {
+    if (r <= 0 || r >= this.buf.rows - 1) return false;
+    return /^\s*(?:[●○◎☆★>]\s*)?\d+(?:\s|\)|ˇ)/.test(this.getRowText(r));
+  }
+
+  setMouseBrowsingEnabled(enabled) {
+    this.mouseBrowsingEnabled = enabled !== false;
+    if (!this.mouseBrowsingEnabled) {
+      this.hoverAction = null;
+      this.canvas.style.cursor = 'text';
+      this.redraw();
+    }
+  }
+
+  isPttArticleListScreen() {
+    return this.getBbsState() === 'article-list';
   }
 
   getRowAuthor(r) {
@@ -740,6 +1015,20 @@ export class TermView {
       if (isBlacklisted) {
         ctx.globalAlpha = 1.0;
       }
+    }
+
+    // Show the active mouse hotspot like a lightweight terminal cursor.
+    if (this.hoverAction) {
+      const a = this.hoverAction;
+      const x1 = Math.round(a.startCol * cellW) + 1;
+      const x2 = Math.round((a.endCol + 1) * cellW) - 1;
+      const y1 = Math.round(a.row * cellH) + 1;
+      const y2 = Math.round((a.row + 1) * cellH) - 1;
+      ctx.fillStyle = a.type === 'article' ? 'rgba(88, 166, 255, 0.18)' : 'rgba(255, 209, 102, 0.22)';
+      ctx.fillRect(x1, y1, Math.max(1, x2 - x1), Math.max(1, y2 - y1));
+      ctx.strokeStyle = a.type === 'article' ? '#58a6ff' : '#ffd166';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x1, y1, Math.max(1, x2 - x1), Math.max(1, y2 - y1));
     }
 
     // Draw in-screen Search Highlights
