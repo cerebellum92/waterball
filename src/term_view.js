@@ -1,5 +1,8 @@
 import { TERM_COLORS } from './term_buf.js';
 import { blacklistManager } from './blacklist.js';
+import { terminalDiagnostics } from './terminal_diagnostics.js';
+
+const isDevelopment = import.meta.env?.DEV ?? false;
 
 export class TermView {
   constructor(container, termBuf, imeInput = null) {
@@ -718,9 +721,18 @@ export class TermView {
   scheduleRedraw() {
     if (this.renderRequested) return;
     this.renderRequested = true;
+    const scheduledAt = isDevelopment && terminalDiagnostics.enabled ? performance.now() : null;
     requestAnimationFrame(() => {
       this.renderRequested = false;
+      const redrawStartedAt = scheduledAt !== null ? performance.now() : null;
       this.redraw();
+      if (scheduledAt !== null) {
+        const finishedAt = performance.now();
+        terminalDiagnostics.recordRender({
+          scheduledToFrameMs: redrawStartedAt - scheduledAt,
+          redrawMs: finishedAt - redrawStartedAt,
+        });
+      }
     });
   }
 
@@ -891,8 +903,23 @@ export class TermView {
 
         // Draw character
         if (cell.ch && cell.ch !== ' ') {
-          if (!cell.blink || this.blinkState) {
-            ctx.fillStyle = fgCol;
+          const trailCell = isLead ? line[c + 1] : null;
+          const splitGlyph = trailCell &&
+            (trailCell.getFg() !== fgVal || trailCell.blink !== cell.blink);
+          for (let half = 0; half < (splitGlyph ? 2 : 1); half++) {
+            const halfCell = half === 0 ? cell : trailCell;
+            if (halfCell.blink && !this.blinkState) continue;
+            if (splitGlyph) {
+              ctx.save();
+              ctx.beginPath();
+              const clipStart = Math.round((c + half) * cellW);
+              const clipEnd = Math.round((c + half + 1) * cellW);
+              ctx.rect(clipStart, y1, clipEnd - clipStart, cellHeight);
+              ctx.clip();
+            }
+            const halfFg = halfCell.getFg();
+            ctx.fillStyle = half === 0 ? fgCol
+              : typeof halfFg === 'string' ? halfFg : (TERM_COLORS[halfFg] || '#ffffff');
 
             // Direct pixel-perfect solid block drawing for BBS ANSI art (zero seams)
             if (cell.ch === '█') {
@@ -967,6 +994,7 @@ export class TermView {
                 ctx.fillText(cell.ch, x1 + (cellWidth - charW) * 0.5, centerY);
               }
             }
+            if (splitGlyph) ctx.restore();
           }
         }
 

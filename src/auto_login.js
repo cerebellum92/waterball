@@ -40,6 +40,11 @@ export class AutoLoginManager {
     }
   }
 
+  hasActiveSession(tabId) {
+    const session = this.sessions.get(tabId);
+    return Boolean(session && session.state !== 'DONE');
+  }
+
   feedData(tabId, data) {
     const session = this.sessions.get(tabId);
     if (!session || session.state === 'DONE') return;

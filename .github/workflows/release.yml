@@ -54,6 +54,9 @@ jobs:
       - name: Install Frontend Dependencies
         run: npm ci
 
+      - name: Run Frontend Tests
+        run: node --test
+
       - name: Build Tauri Application
         run: npx tauri build
 
@@ -94,6 +97,27 @@ jobs:
           cp src-tauri/target/release/waterball.exe portable/Waterball.exe 2>/dev/null || cp src-tauri/target/release/bbsterm.exe portable/Waterball.exe 2>/dev/null || true
           7z a Waterball_windows_x64_portable.zip ./portable/*
 
+      - name: Verify release artifacts
+        shell: bash
+        run: |
+          shopt -s nullglob
+          case "${{ runner.os }}" in
+            macOS)
+              dmg=(src-tauri/target/release/bundle/dmg/*.dmg)
+              test "${#dmg[@]}" -gt 0
+              ;;
+            Linux)
+              deb=(src-tauri/target/release/bundle/deb/*.deb)
+              appimage=(src-tauri/target/release/bundle/appimage/*.AppImage)
+              test "${#deb[@]}" -gt 0 && test "${#appimage[@]}" -gt 0
+              ;;
+            Windows)
+              msi=(src-tauri/target/release/bundle/msi/*.msi)
+              nsis=(src-tauri/target/release/bundle/nsis/*.exe)
+              test "${#msi[@]}" -gt 0 && test "${#nsis[@]}" -gt 0 && test -s Waterball_windows_x64_portable.zip
+              ;;
+          esac
+
       - name: Upload Artifacts to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -101,6 +125,16 @@ jobs:
           name: Waterball ${{ steps.get_tag.outputs.tag }}
           body: |
             💧 **Waterball (水球) 新世代跨平台 BBS 連線軟體正式發布！**
+
+            ---
+
+            ### ✨ v0.1.6 版本更新：
+
+            #### 🎨 一字雙色顯示
+            - 修正 Big5／UAO 字元左右半邊使用不同顏色時的顯示問題，保留 BBS 原有的彩色文字效果。
+
+            #### 🛠️ 畫面殘影與錯位
+            - 改善快速翻頁及切換畫面時，文字、選取符號與圖案殘留或寫到錯誤位置的問題。
 
             ---
 
@@ -135,4 +169,3 @@ jobs:
             Waterball_windows_x64_portable.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-

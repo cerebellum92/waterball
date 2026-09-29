@@ -19,6 +19,7 @@ import { ImeController } from './ime_controller.js';
 import { BookmarksUI } from './bookmarks_ui.js';
 import { SettingsUI } from './settings_ui.js';
 import { ContextMenuController } from './context_menu.js';
+import { terminalDiagnostics } from './terminal_diagnostics.js';
 
 const { invoke } = window.__TAURI__.core;
 
@@ -487,6 +488,22 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
+  if (import.meta.env.DEV && ((isMac && e.metaKey) || (!isMac && e.ctrlKey)) &&
+      e.altKey && e.shiftKey && e.code === 'KeyL') {
+    e.preventDefault();
+    if (e.repeat) return;
+    if (terminalDiagnostics.captureEnabled) {
+      terminalDiagnostics.captureSave()
+        .then((filename) => showGlobalToast(filename ? `已下載畫面紀錄：${filename}` : '沒有可下載的畫面紀錄'))
+        .catch((error) => showGlobalToast(`畫面紀錄失敗：${error}`));
+    } else {
+      terminalDiagnostics.captureStart({ autoFreeze: false })
+        .then(() => showGlobalToast('開始錄製最近 30 秒畫面資料；可能包含私人內容', 4000))
+        .catch((error) => showGlobalToast(`無法開始錄製：${error}`));
+    }
+    return;
+  }
+
   imagePreview.hideImmediate();
   settingsManager.recordActivity();
 
@@ -695,10 +712,18 @@ window.addEventListener('keydown', (e) => {
   if (handled && seq) {
     e.preventDefault();
     imeInput.value = '';
-    connectionCtrl.sendData(seq);
+    connectionCtrl.sendData(seq, { sourceKey: e.code, isRepeat: e.repeat });
   } else if (handled) {
     e.preventDefault();
   }
+});
+
+window.addEventListener('keyup', (e) => {
+  connectionCtrl.cancelQueuedRepeatedNavigation(e.code);
+});
+
+window.addEventListener('blur', () => {
+  connectionCtrl.clearHeldScreenNavigationKeys();
 });
 
 // Background Update Check on Startup (silently check after 2 seconds)

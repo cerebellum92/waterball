@@ -14,7 +14,7 @@
 請前往 **[Releases 最新發布頁面](../../releases)** 下載適合您作業系統的安裝檔案：
 
 ### 🍏 macOS (Apple Silicon / Intel)
-1. 下載 **`Waterball_0.1.0_macOS.dmg`** 並點兩下開啟掛載。
+1. 從 [Releases](../../releases) 下載最新的 macOS `.dmg` 檔案並點兩下開啟掛載。
 2. 將 `Waterball.app` 拖曳至「應用程式 (Applications)」資料夾。
 3. **首次啟動與 Gatekeeper 安全授權說明**：
    > 💡 **小提示**：Waterball 是非營利社群開源軟體，未向 Apple 每年支付商業開發者憑證年費。首次開啟時若出現「無法確認開發者」的安全提示，可透過以下方式輕鬆解鎖（只需設定一次，之後即可直接秒開）：
@@ -26,19 +26,119 @@
 
 ---
 
-### 🐧 Linux (Ubuntu / Debian / Fedora / Arch)
+### 🐧 Linux (Ubuntu / Debian)
 - **Ubuntu / Debian 使用者**：
-  下載 **`Waterball_0.1.0_amd64.deb`**，並在終端機執行安裝：
+  從 [Releases](../../releases) 下載最新的 `.deb` 檔案，並在終端機執行安裝：
   ```bash
-  sudo dpkg -i Waterball_0.1.0_amd64.deb
+  sudo dpkg -i <Waterball.deb>
   sudo apt-get install -f -y
   ```
-- **其他 Linux 發行版（免安裝隨身版）**：
-  下載 **`Waterball_0.1.0_amd64.AppImage`**，賦予執行權限後即可點開使用：
-  ```bash
-  chmod +x Waterball_0.1.0_amd64.AppImage
-  ./Waterball_0.1.0_amd64.AppImage
-  ```
+
+> 💡 目前建議優先使用 `.deb` 或依照下方方式從原始碼編譯。AppImage 雖然方便攜帶，但中文輸入功能會受到主機上的 IBus／Fcitx、WebKitGTK 與桌面環境整合影響，Waterball 目前不將 AppImage 視為 Linux 的首選安裝方式。
+
+### 🐧 Linux (Fedora / Arch / Manjaro 與其他發行版)
+
+由於不同 Linux 發行版的 WebKitGTK、輸入法與桌面元件版本差異較大，建議使用該發行版的原生依賴自行編譯。Tauri 2 的 Linux 編譯需要 WebKitGTK 4.1 與基本 Rust／C 編譯工具，完整依賴可參考 [Tauri 官方 Linux prerequisites](https://v2.tauri.app/start/prerequisites/)。
+
+#### Fedora
+
+```bash
+sudo dnf install webkit2gtk4.1-devel openssl-devel curl wget file \
+  libappindicator-gtk3-devel librsvg2-devel libxdo-devel
+sudo dnf group install "c-development"
+```
+
+#### Arch Linux / Manjaro
+
+```bash
+sudo pacman -Syu
+sudo pacman -S --needed webkit2gtk-4.1 base-devel curl wget file \
+  openssl appmenu-gtk-module libappindicator-gtk3 librsvg xdotool
+```
+
+#### 從原始碼編譯
+
+先安裝 [Node.js 18+](https://nodejs.org/)、[Rust stable](https://www.rust-lang.org/tools/install) 與上述系統依賴：
+
+```bash
+git clone https://github.com/cerebellum92/waterball.git
+cd waterball
+npm install
+
+# 直接從原始碼啟動
+npm run tauri dev
+
+# 編譯正式版
+npm run tauri build
+```
+
+  編譯完成後，產物會放在 `src-tauri/target/release/bundle/`。若只想使用該發行版的原生輸入法與 WebKitGTK，也可以先使用 `npm run tauri dev` 測試中文輸入，再決定是否建立正式版套件。
+
+#### 讓程式出現在應用程式選單
+
+編譯完成後，直接放在 `src-tauri/target/release/` 的執行檔只適合從終端機啟動，不會自動出現在桌面環境的 App 選單中。
+
+**Ubuntu / Debian：優先安裝 `.deb`**
+
+```bash
+sudo apt install ./src-tauri/target/release/bundle/deb/*.deb
+```
+
+安裝完成後，Waterball 會出現在應用程式選單，可以直接搜尋並點擊開啟，不需要再輸入指令。
+
+**Fedora / Arch / Manjaro：系統範圍安裝**
+
+如果希望像 Ubuntu 的 `.deb` 一樣，讓電腦上的所有使用者都能在 App 選單看到 Waterball，可以使用以下方式安裝：
+
+```bash
+sudo mkdir -p /opt/waterball
+sudo mkdir -p /usr/share/applications
+sudo mkdir -p /usr/share/icons/hicolor/128x128/apps
+
+# Tauri 專案目前的 Rust 執行檔名稱是 bbsterm
+sudo install -Dm755 src-tauri/target/release/bbsterm /opt/waterball/Waterball
+sudo install -Dm644 src-tauri/icons/128x128.png /usr/share/icons/hicolor/128x128/apps/waterball.png
+```
+
+接著建立桌面啟動器：
+
+```bash
+sudo tee /usr/share/applications/waterball.desktop > /dev/null <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Waterball
+Comment=跨平台 BBS 連線軟體
+Exec=/opt/waterball/Waterball
+Icon=waterball
+Terminal=false
+Categories=Network;Chat;
+StartupWMClass=Waterball
+EOF
+```
+
+重新整理桌面環境的應用程式資料庫：
+
+```bash
+sudo update-desktop-database /usr/share/applications 2>/dev/null || true
+```
+
+重新開啟應用程式選單或登出再登入後，所有使用者都可以直接搜尋 **Waterball** 並點擊啟動。之後若重新編譯，只需要再次執行以下指令更新程式：
+
+```bash
+sudo install -Dm755 src-tauri/target/release/bbsterm /opt/waterball/Waterball
+```
+
+若不想使用 `sudo`，也可以將相同檔案放到 `~/.local/opt/waterball/`，並把 `.desktop` 放到 `~/.local/share/applications/`，但那只會對目前使用者有效。
+
+#### AppImage（可選）
+
+若只需要免安裝測試，可以使用 AppImage：
+```bash
+chmod +x <Waterball.AppImage>
+./<Waterball.AppImage>
+```
+
+但 AppImage 的中文輸入相容性取決於主機的 IBus／Fcitx、WebKitGTK 與桌面環境；遇到無法輸入中文時，建議改用原始碼編譯版本。
 
 ---
 
@@ -46,7 +146,7 @@
 - **免安裝綠色版（推薦）**：
   下載 **`Waterball_windows_x64_portable.zip`**，解壓縮後直接點擊 `Waterball.exe` 即可使用！
 - **標準安裝版**：
-  下載 **`Waterball_0.1.0_x64.msi`** 或 `setup.exe` 進行安裝。
+  從 [Releases](../../releases) 下載最新的 `.msi` 或 `setup.exe` 進行安裝。
   > 💡 首次啟動若出現 Windows Defender SmartScreen 藍色保護畫面，點擊 **「其他資訊」➔「仍要執行」** 即可。
 
 ---

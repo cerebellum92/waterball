@@ -114,7 +114,9 @@ export class TermBuf {
 
     this.curAttr = new TermChar(' ');
     this.newChar = new TermChar(' ');
-    this.pointerCells = new Set();
+    this.outputBatchDepth = 0;
+    this.syncOutputEndGeneration = 0;
+    this.syncOutputOrphanEndGeneration = 0;
 
     this.lines = [];
     for (let r = 0; r < rows; r++) {
@@ -129,6 +131,10 @@ export class TermBuf {
     this.onUpdate = null;
     this.timerUpdate = null;
     this.delayedUpdate = false;
+    this.synchronizedOutputActive = false;
+    this.synchronizedOutputFallback = false;
+    this.synchronizedOutputTimer = null;
+    this.synchronizedOutputMaxWait = 80;
 
     // Dirty Rows tracking for high-efficiency differential rendering
     this.dirtyRows = new Uint8Array(rows);
@@ -159,21 +165,36 @@ export class TermBuf {
     this.dirtyRows.fill(0);
   }
 
-  queueUpdate() {
-    if (this.timerUpdate) {
-      if (this.delayedUpdate) {
-        clearTimeout(this.timerUpdate);
-        this.timerUpdate = null;
-      } else {
-        return;
-      }
+  beginSynchronizedOutput() {
+    this.synchronizedOutputActive = true;
+  }
+
+  endSynchronizedOutput() {
+    if (!this.synchronizedOutputActive) {
+      this.syncOutputOrphanEndGeneration++;
+      return;
     }
-    const delay = this.delayedUpdate ? 80 : 16;
-    this.timerUpdate = setTimeout(() => {
-      this.timerUpdate = null;
-      this.delayedUpdate = false;
-      if (this.onUpdate) this.onUpdate();
-    }, delay);
+    this.synchronizedOutputActive = false;
+    this.syncOutputEndGeneration++;
+    this.markAllDirty();
+    this.queueUpdate();
+  }
+
+  queueUpdate() {
+    if (this.onUpdate) this.onUpdate();
+  }
+
+  beginOutputBatch() {
+    this.outputBatchDepth++;
+  }
+
+  endOutputBatch() {
+    if (this.outputBatchDepth === 0) return;
+    this.outputBatchDepth--;
+  }
+
+  getRowText(line) {
+    return line.map((cell) => cell?.isTrailByte ? '' : cell?.ch || ' ').join('');
   }
 
   isFullWidth(ch) {
@@ -273,38 +294,20 @@ export class TermBuf {
       }
 
       if (this.cur_x >= cols) {
-        this.cur_x = 0;
-        this.lineFeed();
+        continue;
       }
 
       const full = this.isFullWidth(ch);
 
       // Prevent DBCS wrap overflow beyond col 80
       if (full && this.cur_x >= cols - 1) {
-        this.cur_x = 0;
-        this.lineFeed();
+        continue;
       }
 
       if (this.cur_y >= rows || this.cur_x >= cols) continue;
 
       const line = lines[this.cur_y];
       const curX = this.cur_x;
-
-      if (ch === '●') {
-        for (const key of this.pointerCells) {
-          const separator = key.indexOf(':');
-          const rowIndex = Number(key.slice(0, separator));
-          const colIndex = Number(key.slice(separator + 1));
-          if (rowIndex === this.cur_y && colIndex === curX) continue;
-          const row = lines[rowIndex];
-          if (row && row[colIndex]?.ch === '●' && row[colIndex].isLeadByte) {
-            this.clearCellAt(row, colIndex);
-            this.markRowDirty(rowIndex);
-          }
-        }
-        this.pointerCells.clear();
-        this.pointerCells.add(`${this.cur_y}:${curX}`);
-      }
 
       // Sever any existing DBCS pair at curX before overwriting
       if (line[curX].isTrailByte && curX > 0) {
@@ -349,6 +352,31 @@ export class TermBuf {
       }
       this.cur_x++;
     }
+
+    this.queueUpdate();
+  }
+
+  putDBCS(ch, leadAttr, trailAttr) {
+    if (this.cur_x >= this.cols - 1) {
+      return;
+    }
+    if (this.cur_y >= this.rows) return;
+
+    const row = this.lines[this.cur_y];
+    const col = this.cur_x;
+    this.clearCellAt(row, col);
+    this.clearCellAt(row, col + 1);
+
+    row[col].ch = ch;
+    row[col].copyAttr(leadAttr);
+    row[col].isLeadByte = true;
+    row[col].isTrailByte = false;
+    row[col + 1].ch = '';
+    row[col + 1].copyAttr(trailAttr);
+    row[col + 1].isLeadByte = false;
+    row[col + 1].isTrailByte = true;
+    this.cur_x += 2;
+    this.markRowDirty(this.cur_y);
     this.queueUpdate();
   }
 
@@ -500,17 +528,13 @@ export class TermBuf {
     const cur_x = this.cur_x;
     if (cur_x >= cols) return;
 
+    const count = Math.min(param, cols - cur_x);
     this.markRowDirty(this.cur_y);
-    if (cur_x + param >= cols) {
-      for (let col = cur_x; col < cols; col++) {
-        this.clearCellAt(line, col);
-      }
-    } else {
-      while (--param >= 0) {
-        const ch = line.pop();
-        line.splice(cur_x, 0, ch);
-        ch.copyFrom(this.newChar);
-      }
+    for (let c = cols - 1; c >= cur_x + count; c--) {
+      line[c].copyFrom(line[c - count]);
+    }
+    for (let c = cur_x; c < cur_x + count; c++) {
+      this.clearCellAt(line, c);
     }
     this.normalizeDbcsRow(line);
     this.queueUpdate();
@@ -523,17 +547,13 @@ export class TermBuf {
     const cur_x = this.cur_x;
     if (cur_x >= cols) return;
 
+    const count = Math.min(param, cols - cur_x);
     this.markRowDirty(this.cur_y);
-    if (cur_x + param >= cols) {
-      for (let col = cur_x; col < cols; col++) {
-        this.clearCellAt(line, col);
-      }
-    } else {
-      let n = cols - cur_x - param;
-      while (--n >= 0) line.splice(cur_x, 0, line.pop());
-      for (let col = cols - param; col < cols; col++) {
-        line[col].copyFrom(this.newChar);
-      }
+    for (let c = cur_x; c < cols - count; c++) {
+      line[c].copyFrom(line[c + count]);
+    }
+    for (let c = cols - count; c < cols; c++) {
+      this.clearCellAt(line, c);
     }
     this.normalizeDbcsRow(line);
     this.queueUpdate();
@@ -627,7 +647,6 @@ export class TermBuf {
           }
         }
         this.markAllDirty();
-        this.pointerCells.clear();
         break;
       }
     }

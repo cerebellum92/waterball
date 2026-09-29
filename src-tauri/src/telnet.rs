@@ -21,10 +21,86 @@ impl BbsCharset {
     }
 }
 
+fn preserve_big5_bytes(bytes: &[u8]) -> String {
+    bytes.iter().copied().map(char::from).collect()
+}
+
 #[derive(Clone, serde::Serialize)]
 pub struct TerminalDataPayload {
     pub tab_id: String,
     pub data: String,
+    pub raw_big5: bool,
+    #[cfg(debug_assertions)]
+    pub read_at_unix_ms: u64,
+    #[cfg(debug_assertions)]
+    pub emitted_at_unix_ms: u64,
+    #[cfg(debug_assertions)]
+    pub raw_bytes: usize,
+    #[cfg(debug_assertions)]
+    pub raw_read_seq: u64,
+}
+
+#[cfg(debug_assertions)]
+#[derive(Clone, serde::Serialize)]
+pub struct TerminalRawReadPayload {
+    pub tab_id: String,
+    pub read_seq: u64,
+    pub raw_hex: String,
+}
+
+#[cfg(debug_assertions)]
+static RAW_CAPTURE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(debug_assertions)]
+pub fn set_raw_capture_enabled(enabled: bool) {
+    RAW_CAPTURE_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+#[cfg(debug_assertions)]
+fn unix_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+fn terminal_data_payload(
+    tab_id: String,
+    data: String,
+    raw_big5: bool,
+    #[cfg(debug_assertions)]
+    read_at_unix_ms: u64,
+    #[cfg(debug_assertions)]
+    raw_bytes: usize,
+    #[cfg(debug_assertions)]
+    raw_read_seq: u64,
+) -> TerminalDataPayload {
+    TerminalDataPayload {
+        tab_id,
+        data,
+        raw_big5,
+        #[cfg(debug_assertions)]
+        read_at_unix_ms,
+        #[cfg(debug_assertions)]
+        emitted_at_unix_ms: unix_time_ms(),
+        #[cfg(debug_assertions)]
+        raw_bytes,
+        #[cfg(debug_assertions)]
+        raw_read_seq,
+    }
+}
+
+macro_rules! terminal_data_payload {
+    ($tab_id:expr, $data:expr, $raw_big5:expr, $read_at:expr, $raw_bytes:expr, $read_seq:expr $(,)?) => {{
+        #[cfg(debug_assertions)]
+        {
+            terminal_data_payload($tab_id, $data, $raw_big5, $read_at, $raw_bytes, $read_seq)
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            terminal_data_payload($tab_id, $data, $raw_big5)
+        }
+    }};
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -41,7 +117,200 @@ pub struct BbsConnection {
     last_activity: Arc<std::sync::Mutex<std::time::Instant>>,
 }
 
+struct SshChannelWriter<T: Write>(Arc<std::sync::Mutex<T>>);
+
+impl<T: Write> Write for SshChannelWriter<T> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut attempts = 0;
+        loop {
+            let mut channel = self.0.lock().map_err(|_| std::io::Error::other("Lock error"))?;
+            match channel.write(buf) {
+                Ok(written) => return Ok(written),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && attempts < 30 => {
+                    attempts += 1;
+                    drop(channel);
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+struct WssChannelReader {
+    receiver: std::sync::mpsc::Receiver<Vec<u8>>,
+    current: Vec<u8>,
+}
+
+impl Read for WssChannelReader {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        if output.is_empty() {
+            return Ok(0);
+        }
+        if self.current.is_empty() {
+            self.current = match self.receiver.recv() {
+                Ok(bytes) => bytes,
+                Err(_) => return Ok(0),
+            };
+        }
+        let count = output.len().min(self.current.len());
+        output[..count].copy_from_slice(&self.current[..count]);
+        self.current.drain(..count);
+        Ok(count)
+    }
+}
+
 impl BbsConnection {
+    pub async fn connect_wss(
+        tab_id: String,
+        address: &str,
+        charset: BbsCharset,
+        app: AppHandle,
+    ) -> Result<Self, String> {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        use tokio_tungstenite::tungstenite::http::header::{ORIGIN, SEC_WEBSOCKET_PROTOCOL};
+        use tokio_tungstenite::tungstenite::http::HeaderValue;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let mut request = address
+            .into_client_request()
+            .map_err(|e| format!("WSS 位址錯誤: {}", e))?;
+        request.headers_mut().insert(
+            ORIGIN,
+            HeaderValue::from_static("https://term.ptt.cc"),
+        );
+        request.headers_mut().insert(
+            SEC_WEBSOCKET_PROTOCOL,
+            HeaderValue::from_static("telnet"),
+        );
+
+        type WssReady = Result<(
+            tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+            std::sync::mpsc::Receiver<Vec<u8>>,
+        ), String>;
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<WssReady>();
+        let alive = Arc::new(AtomicBool::new(true));
+        let driver_alive = alive.clone();
+
+        std::thread::spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    let _ = ready_tx.send(Err(format!("建立 WSS runtime 失敗: {}", error)));
+                    return;
+                }
+            };
+
+            runtime.block_on(async move {
+                let (socket, _) = match tokio_tungstenite::connect_async(request).await {
+                    Ok(connection) => connection,
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(format!("WSS 握手失敗: {}", error)));
+                        return;
+                    }
+                };
+
+                let (mut sink, mut stream) = socket.split();
+                let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+                let (data_tx, data_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+                if ready_tx.send(Ok((out_tx, data_rx))).is_err() {
+                    return;
+                }
+
+                loop {
+                    tokio::select! {
+                        outgoing = out_rx.recv() => match outgoing {
+                            Some(bytes) => {
+                                if sink.send(Message::Binary(bytes.into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                            None => {
+                                let _ = sink.close().await;
+                                break;
+                            }
+                        },
+                        incoming = stream.next() => match incoming {
+                            Some(Ok(Message::Binary(bytes))) => {
+                                if data_tx.send(bytes.to_vec()).is_err() { break; }
+                            }
+                            Some(Ok(Message::Text(text))) => {
+                                if data_tx.send(text.as_bytes().to_vec()).is_err() { break; }
+                            }
+                            Some(Ok(Message::Ping(bytes))) => {
+                                if sink.send(Message::Pong(bytes)).await.is_err() { break; }
+                            }
+                            Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                            Some(Ok(Message::Pong(_))) | Some(Ok(Message::Frame(_))) => {}
+                        }
+                    }
+                }
+                driver_alive.store(false, Ordering::Relaxed);
+            });
+        });
+
+        let (out_tx, data_rx) = ready_rx.await
+            .map_err(|_| "WSS 連線程序已結束".to_string())??;
+
+        struct WssWriter(tokio::sync::mpsc::UnboundedSender<Vec<u8>>);
+        impl Write for WssWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if bytes.is_empty() {
+                    return Ok(0);
+                }
+                self.0.send(bytes.to_vec()).map_err(|_| {
+                    std::io::Error::new(std::io::ErrorKind::BrokenPipe, "WSS 已關閉")
+                })?;
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let writer: Box<dyn Write + Send> = Box::new(WssWriter(out_tx));
+        let writer = Arc::new(std::sync::Mutex::new(writer));
+        let init_naws = [
+            0xFF, 0xFB, 0x1F,
+            0xFF, 0xFA, 0x1F, 0x00, 0x50, 0x00, 0x18, 0xFF, 0xF0,
+            0xFF, 0xFB, 0x18,
+        ];
+        writer.lock().map_err(|_| "WSS writer lock 失敗".to_string())?
+            .write_all(&init_naws)
+            .map_err(|e| format!("WSS 初始化失敗: {}", e))?;
+        let charset = Arc::new(RwLock::new(charset));
+        let _ = app.emit("connection-status", ConnectionStatusPayload {
+            tab_id: tab_id.clone(),
+            status: "connected".to_string(),
+        });
+
+        let reader = WssChannelReader { receiver: data_rx, current: Vec::new() };
+        let reader_alive = alive.clone();
+        let reader_charset = charset.clone();
+        let reader_app = app.clone();
+        let reader_tab_id = tab_id.clone();
+        std::thread::spawn(move || {
+            Self::read_loop_telnet(reader_tab_id, reader, reader_alive, reader_charset, reader_app);
+        });
+
+        Ok(BbsConnection {
+            writer,
+            alive,
+            charset,
+            is_ssh: false,
+            last_activity: Arc::new(std::sync::Mutex::new(std::time::Instant::now())),
+        })
+    }
+
     /// Connect via raw TCP (Telnet) to a BBS server
     pub async fn connect_telnet(
         tab_id: String,
@@ -218,40 +487,6 @@ impl BbsConnection {
             Self::read_loop_ssh2(tab_id_clone, channel_clone, alive_clone, charset_clone, app_clone);
         });
 
-        struct SshChannelWriter(Arc<std::sync::Mutex<ssh2::Channel>>);
-        impl Write for SshChannelWriter {
-            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                let mut attempts = 0;
-                loop {
-                    let mut ch = self.0.lock().map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "Lock error"))?;
-                    match ch.write(buf) {
-                        Ok(n) => return Ok(n),
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && attempts < 30 => {
-                            attempts += 1;
-                            drop(ch);
-                            std::thread::sleep(std::time::Duration::from_millis(5));
-                        }
-                        Err(e) => return Err(e),
-                    }
-                }
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                let mut attempts = 0;
-                loop {
-                    let mut ch = self.0.lock().map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "Lock error"))?;
-                    match ch.flush() {
-                        Ok(()) => return Ok(()),
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && attempts < 30 => {
-                            attempts += 1;
-                            drop(ch);
-                            std::thread::sleep(std::time::Duration::from_millis(5));
-                        }
-                        Err(e) => return Err(e),
-                    }
-                }
-            }
-        }
-
         let writer: Box<dyn Write + Send> = Box::new(SshChannelWriter(channel));
         let writer = Arc::new(std::sync::Mutex::new(writer));
         let last_activity = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
@@ -266,9 +501,9 @@ impl BbsConnection {
     }
 
     /// Read loop for Telnet connections
-    fn read_loop_telnet(
+    fn read_loop_telnet<R: Read>(
         tab_id: String,
-        mut reader: std::net::TcpStream,
+        mut reader: R,
         alive: Arc<AtomicBool>,
         charset: Arc<RwLock<BbsCharset>>,
         app: AppHandle,
@@ -277,15 +512,15 @@ impl BbsConnection {
         let mut pending_iac = Vec::new();
         let mut pending_charset = Vec::new();
         let mut pending_ansi = Vec::new();
+        let mut read_seq = 0u64;
 
         while alive.load(Ordering::Relaxed) {
             match reader.read(&mut buf) {
                 Ok(0) => {
                     if !pending_charset.is_empty() {
-                        let _ = app.emit("terminal-data", TerminalDataPayload {
-                            tab_id: tab_id.clone(),
-                            data: " ".to_string(),
-                        });
+                        let _ = app.emit("terminal-data", terminal_data_payload!(
+                            tab_id.clone(), " ".to_string(), false, unix_time_ms(), 0, read_seq,
+                        ));
                     }
                     alive.store(false, Ordering::Relaxed);
                     let _ = app.emit("connection-status", ConnectionStatusPayload {
@@ -295,6 +530,17 @@ impl BbsConnection {
                     break;
                 }
                 Ok(n) => {
+                    read_seq = read_seq.wrapping_add(1);
+                    #[cfg(debug_assertions)]
+                    let read_at_unix_ms = unix_time_ms();
+                    #[cfg(debug_assertions)]
+                    if RAW_CAPTURE_ENABLED.load(Ordering::Relaxed) {
+                        let _ = app.emit("terminal-raw-read", TerminalRawReadPayload {
+                            tab_id: tab_id.clone(),
+                            read_seq,
+                            raw_hex: buf[..n].iter().map(|byte| format!("{byte:02X}")).collect(),
+                        });
+                    }
                     // 1. Telnet Protocol IAC Stripping
                     let mut iac_input = Vec::with_capacity(pending_iac.len() + n);
                     if !pending_iac.is_empty() {
@@ -309,15 +555,18 @@ impl BbsConnection {
                     // 2. Charset & ANSI Decoding
                     if !clean.is_empty() {
                         let cs = charset.read().map(|g| *g).unwrap_or(BbsCharset::Big5);
-                        Self::trace_ansi_chunk(&clean, &pending_ansi);
-                        let decoded = Self::decode_terminal_stream(
-                            &clean, cs, &mut pending_charset, &mut pending_ansi,
-                        );
+                        let raw_big5 = cs == BbsCharset::Big5;
+                        let decoded = if raw_big5 {
+                            preserve_big5_bytes(&clean)
+                        } else {
+                            Self::decode_terminal_stream(
+                                &clean, cs, &mut pending_charset, &mut pending_ansi,
+                            )
+                        };
                         if !decoded.is_empty() {
-                            let _ = app.emit("terminal-data", TerminalDataPayload {
-                                tab_id: tab_id.clone(),
-                                data: decoded,
-                            });
+                            let _ = app.emit("terminal-data", terminal_data_payload!(
+                                tab_id.clone(), decoded, raw_big5, read_at_unix_ms, n, read_seq,
+                            ));
                         }
                     }
                 }
@@ -348,6 +597,7 @@ impl BbsConnection {
         let mut buf = [0u8; 4096];
         let mut pending_charset = Vec::new();
         let mut pending_ansi = Vec::new();
+        let mut read_seq = 0u64;
 
         while alive.load(Ordering::Relaxed) {
             let read_res = {
@@ -369,10 +619,9 @@ impl BbsConnection {
                     };
                     if is_eof {
                         if !pending_charset.is_empty() {
-                            let _ = app.emit("terminal-data", TerminalDataPayload {
-                                tab_id: tab_id.clone(),
-                                data: " ".to_string(),
-                            });
+                            let _ = app.emit("terminal-data", terminal_data_payload!(
+                                tab_id.clone(), " ".to_string(), false, unix_time_ms(), 0, read_seq,
+                            ));
                         }
                         alive.store(false, Ordering::Relaxed);
                         let _ = app.emit("connection-status", ConnectionStatusPayload {
@@ -384,16 +633,30 @@ impl BbsConnection {
                     std::thread::sleep(std::time::Duration::from_millis(5));
                 }
                 Ok(n) => {
-                    let cs = charset.read().map(|g| *g).unwrap_or(BbsCharset::Big5);
-                    Self::trace_ansi_chunk(&buf[..n], &pending_ansi);
-                    let decoded = Self::decode_terminal_stream(
-                        &buf[..n], cs, &mut pending_charset, &mut pending_ansi,
-                    );
-                    if !decoded.is_empty() {
-                        let _ = app.emit("terminal-data", TerminalDataPayload {
+                    read_seq = read_seq.wrapping_add(1);
+                    #[cfg(debug_assertions)]
+                    let read_at_unix_ms = unix_time_ms();
+                    #[cfg(debug_assertions)]
+                    if RAW_CAPTURE_ENABLED.load(Ordering::Relaxed) {
+                        let _ = app.emit("terminal-raw-read", TerminalRawReadPayload {
                             tab_id: tab_id.clone(),
-                            data: decoded,
+                            read_seq,
+                            raw_hex: buf[..n].iter().map(|byte| format!("{byte:02X}")).collect(),
                         });
+                    }
+                    let cs = charset.read().map(|g| *g).unwrap_or(BbsCharset::Big5);
+                    let raw_big5 = cs == BbsCharset::Big5;
+                    let decoded = if raw_big5 {
+                        preserve_big5_bytes(&buf[..n])
+                    } else {
+                        Self::decode_terminal_stream(
+                            &buf[..n], cs, &mut pending_charset, &mut pending_ansi,
+                        )
+                    };
+                    if !decoded.is_empty() {
+                        let _ = app.emit("terminal-data", terminal_data_payload!(
+                            tab_id.clone(), decoded, raw_big5, read_at_unix_ms, n, read_seq,
+                        ));
                     }
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock
@@ -443,12 +706,9 @@ impl BbsConnection {
                         output.push_str(&Self::decode_text(&text, charset, pending_bytes));
                         text.clear();
                     }
+                    pending_bytes.clear();
                     control.clear();
-                    if !pending_bytes.is_empty() {
-                        output.push_str(&Self::decode_text(&[byte], charset, pending_bytes));
-                    } else {
-                        control.push(byte);
-                    }
+                    control.push(byte);
                     state = 1;
                 } else if byte == 0x9B
                     && bytes.get(index + 1).is_some_and(|next| (0x20..=0x3F).contains(next))
@@ -495,23 +755,6 @@ impl BbsConnection {
             output.push_str(&Self::decode_text(&text, charset, pending_bytes));
         }
         output
-    }
-
-    fn trace_ansi_chunk(raw: &[u8], pending_ansi: &[u8]) {
-        if std::env::var_os("BBSTERM_TRACE_ANSI").is_none() {
-            return;
-        }
-        if !raw.contains(&0x1B) && !raw.contains(&0x9B) && pending_ansi.is_empty() {
-            return;
-        }
-        let hex: String = raw.iter().take(512).map(|byte| format!("{byte:02X} ")).collect();
-        eprintln!(
-            "[ANSI raw len={} pending={:?}] {}{}",
-            raw.len(),
-            pending_ansi,
-            hex,
-            if raw.len() > 512 { "..." } else { "" }
-        );
     }
 
     fn decode_text(raw: &[u8], charset: BbsCharset, pending_bytes: &mut Vec<u8>) -> String {
@@ -850,6 +1093,46 @@ impl BbsConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssh_writer_flush_does_not_flush_incoming_channel_data() {
+        struct TestChannel {
+            written: Vec<u8>,
+            flushed: bool,
+        }
+
+        impl Write for TestChannel {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.written.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.flushed = true;
+                Ok(())
+            }
+        }
+
+        let channel = Arc::new(std::sync::Mutex::new(TestChannel {
+            written: Vec::new(),
+            flushed: false,
+        }));
+        let mut writer = SshChannelWriter(channel.clone());
+        writer.write_all(b"key").unwrap();
+        writer.flush().unwrap();
+
+        let channel = channel.lock().unwrap();
+        assert_eq!(channel.written, b"key");
+        assert!(!channel.flushed);
+    }
+
+    #[test]
+    fn test_big5_bytes_survive_transport() {
+        let bytes = [0x00, 0x1b, 0xa2, 0x66, 0xff];
+        let transported = preserve_big5_bytes(&bytes);
+        let restored: Vec<_> = transported.chars().map(|ch| ch as u32 as u8).collect();
+        assert_eq!(restored, bytes);
+    }
 
     #[test]
     fn test_big5_uao_decoding() {

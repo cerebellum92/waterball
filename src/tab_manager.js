@@ -192,15 +192,17 @@ export class TabManager {
     }
   }
 
-  feedData(tabId, data) {
+  feedData(tabId, data, rawBig5 = false) {
     const tab = this.getTabById(tabId);
     if (tab) {
-      tab.parser.feed(data);
+      const decoded = tab.parser.feed(data, rawBig5);
       if (this.activeTabId !== tabId) {
         tab.unread = true;
         this.renderTabBar();
       }
+      return decoded;
     }
+    return '';
   }
 
   renderTabBar() {

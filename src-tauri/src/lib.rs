@@ -98,6 +98,7 @@ async fn connect(
     address: String,
     port: u16,
     charset: Option<String>,
+    transport: Option<String>,
 ) -> Result<String, String> {
     // Disconnect existing connection for this tab if any
     {
@@ -107,7 +108,9 @@ async fn connect(
         }
     }
 
-    let is_ssh = port == 22 || port == 8888;
+    let transport = transport.unwrap_or_else(|| {
+        if port == 22 || port == 8888 { "ssh".to_string() } else { "telnet".to_string() }
+    });
     let app_handle = app.clone();
     let cs = charset
         .as_deref()
@@ -120,7 +123,25 @@ async fn connect(
         status: "connecting".to_string(),
     });
 
-    if is_ssh {
+    if transport == "wss" {
+        println!("[Rust] Connecting Tab {} via WSS to {} ({:?})", tab_id, address, cs);
+        match BbsConnection::connect_wss(tab_id.clone(), &address, cs, app_handle).await {
+            Ok(conn) => {
+                println!("[Rust] Tab {} WSS Connected successfully", tab_id);
+                let mut map = state.connections.lock().map_err(|e| e.to_string())?;
+                map.insert(tab_id, conn);
+                Ok("connected".to_string())
+            }
+            Err(e) => {
+                println!("[Rust] Tab {} WSS Connection error: {}", tab_id, e);
+                let _ = app.emit("connection-status", ConnectionStatusPayload {
+                    tab_id,
+                    status: "disconnected".to_string(),
+                });
+                Err(e)
+            }
+        }
+    } else if transport == "ssh" {
         println!("[Rust] Connecting Tab {} via SSH to {}:{} ({:?})", tab_id, address, port, cs);
         match BbsConnection::connect_ssh(tab_id.clone(), &address, port, cs, app_handle).await {
             Ok(conn) => {
@@ -202,6 +223,15 @@ async fn send_bytes(
     } else {
         Err(format!("Tab {} not connected", tab_id))
     }
+}
+
+#[tauri::command]
+fn set_raw_terminal_capture(enabled: bool) -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    telnet::set_raw_capture_enabled(enabled);
+    #[cfg(not(debug_assertions))]
+    let _ = enabled;
+    Ok(())
 }
 
 #[tauri::command]
@@ -355,6 +385,13 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            #[cfg(debug_assertions)]
+            if std::env::var_os("WATERBALL_OPEN_DEVTOOLS").is_some() {
+                if let Some(window) = app.get_webview_window("main") {
+                    window.open_devtools();
+                }
+            }
+
             if let Some(window) = app.get_webview_window("main") {
                 if let Some(state) = WindowState::load(app.handle()) {
                     state.apply_to(&window);
@@ -367,6 +404,7 @@ pub fn run() {
             set_charset,
             send_input,
             send_bytes,
+            set_raw_terminal_capture,
             record_activity,
             set_anti_idle,
             disconnect,
