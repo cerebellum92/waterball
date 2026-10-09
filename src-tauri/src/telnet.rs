@@ -1239,7 +1239,7 @@ mod tests {
         );
 
         assert_eq!(first, "");
-        assert_eq!(second, " \x1B[H");
+        assert_eq!(second, "\x1B[H");
         assert!(pending_bytes.is_empty());
         assert!(pending_ansi.is_empty());
     }

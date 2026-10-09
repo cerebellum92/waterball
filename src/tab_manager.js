@@ -65,6 +65,8 @@ export class TabManager {
     tab.view.onUrlClick = (url) => this.onUrlClick?.(url, tab);
     tab.view.onUrlHover = (url, cx, cy) => this.onUrlHover?.(url, cx, cy, tab);
     tab.view.onUrlLeave = () => this.onUrlLeave?.(tab);
+    tab.view.onWordHover = (word, cx, cy) => this.onWordHover?.(word, cx, cy, tab);
+    tab.view.onWordLeave = () => this.onWordLeave?.(tab);
     tab.view.onWheel = (direction) => this.onWheel?.(direction, tab);
     tab.view.onSelectionChange = (sel) => this.onSelectionChange?.(sel, tab);
     tab.view.onArticleClick = (row) => this.onArticleClick?.(row, tab);

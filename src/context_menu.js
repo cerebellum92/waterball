@@ -6,14 +6,20 @@ export class ContextMenuController {
   constructor({
     contextMenuEl,
     blacklistManager,
+    userTagsManager,
     onQuickPush,
     onBlacklistChange,
+    onEditTag,
+    onSendWaterball,
     onShowToast,
   }) {
     this.contextMenuEl = contextMenuEl;
     this.blacklistManager = blacklistManager;
+    this.userTagsManager = userTagsManager;
     this.onQuickPush = onQuickPush || (() => {});
     this.onBlacklistChange = onBlacklistChange || (() => {});
+    this.onEditTag = onEditTag || (() => {});
+    this.onSendWaterball = onSendWaterball || (() => {});
     this.onShowToast = onShowToast || (() => {});
 
     this.activeTarget = '';
@@ -28,6 +34,8 @@ export class ContextMenuController {
     const ctxCopy = document.getElementById('ctx-copy');
     const ctxCopyAnsi = document.getElementById('ctx-copy-ansi');
     const ctxSearchGoogle = document.getElementById('ctx-search-google');
+    const ctxWaterballSend = document.getElementById('ctx-waterball-send');
+    const ctxTagEdit = document.getElementById('ctx-tag-edit');
     const ctxBlacklistToggle = document.getElementById('ctx-blacklist-toggle');
     const ctxQuickPush = document.getElementById('ctx-quick-push');
 
@@ -61,6 +69,18 @@ export class ContextMenuController {
         window.open(`https://www.google.com/search?q=${encodeURIComponent(this.activeTarget)}`, '_blank');
       }
       this.hide();
+    });
+
+    ctxWaterballSend?.addEventListener('click', () => {
+      const target = this.activeTarget;
+      this.hide();
+      this.onSendWaterball(target);
+    });
+
+    ctxTagEdit?.addEventListener('click', () => {
+      const target = this.activeTarget;
+      this.hide();
+      this.onEditTag(target);
     });
 
     ctxBlacklistToggle?.addEventListener('click', () => {
@@ -99,6 +119,29 @@ export class ContextMenuController {
     const targetText = info.selectedText || info.word || '';
     this.activeTarget = targetText;
 
+    const ctxWaterballSend = document.getElementById('ctx-waterball-send');
+    if (ctxWaterballSend) {
+      if (targetText) {
+        ctxWaterballSend.textContent = `💧 傳送水球給 (${targetText})`;
+      } else {
+        ctxWaterballSend.textContent = '💧 開啟水球通話紀錄 (Alt+W)';
+      }
+      ctxWaterballSend.style.display = 'flex';
+    }
+
+    const ctxTagEdit = document.getElementById('ctx-tag-edit');
+    if (ctxTagEdit) {
+      if (targetText) {
+        const existing = this.userTagsManager?.getTag(targetText);
+        ctxTagEdit.textContent = existing
+          ? `🏷️ 編輯標籤與備註 (${targetText})`
+          : `🏷️ 新增標籤與備註 (${targetText})`;
+      } else {
+        ctxTagEdit.textContent = '🏷️ 編輯鄉民標籤 / 備註';
+      }
+      ctxTagEdit.style.display = 'flex';
+    }
+
     const ctxBlacklistToggle = document.getElementById('ctx-blacklist-toggle');
     if (ctxBlacklistToggle) {
       if (targetText) {
@@ -112,8 +155,8 @@ export class ContextMenuController {
 
     // Positioning with edge collision prevention
     this.contextMenuEl.classList.remove('hidden');
-    const menuW = 200;
-    const menuH = 180;
+    const menuW = 220;
+    const menuH = 260;
     let posX = info.clientX;
     let posY = info.clientY;
 

@@ -1,6 +1,7 @@
 import { isImageUrl, normalizeImageUrl } from './image_preview.js';
 import { blacklistManager } from './blacklist.js';
 import { writeClipboardText } from './platform.js';
+import { userTagsManager, TAG_COLORS } from './user_tags.js';
 
 export class ArticleParser {
   static parseFromBuf(buf) {
@@ -88,26 +89,31 @@ export class ArticleParser {
         else if (tag === '噓') pushStats.boo++;
         else pushStats.arrow++;
 
-        // Check if push contains image links
+        // Check if push contains image links & YouTube links
         const pushImages = this.extractImageUrls(rest);
+        const pushYoutubes = this.extractYoutubeUrls(rest);
 
         pushList.push({
+          floor: pushList.length + 1,
           tag,
           user,
           content: rest,
           time: pushTime,
           ip: pushIp,
           images: pushImages,
+          youtubes: pushYoutubes,
         });
         continue;
       }
 
       // Standard Article Body Line
       const imageUrls = this.extractImageUrls(line);
+      const youtubes = this.extractYoutubeUrls(line);
       bodyBlocks.push({
         type: 'line',
         text: line,
         images: imageUrls,
+        youtubes,
       });
     }
 
@@ -143,6 +149,28 @@ export class ArticleParser {
 
     return images;
   }
+
+  static extractYoutubeUrls(text) {
+    if (!text) return [];
+    const ytRegex = /(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?(?:[^&\s]*&)?v=|shorts\/|v\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/gi;
+    const matches = [];
+    const seen = new Set();
+    let m;
+    while ((m = ytRegex.exec(text)) !== null) {
+      const videoId = m[1];
+      if (!seen.has(videoId)) {
+        seen.add(videoId);
+        matches.push({
+          raw: m[0],
+          videoId,
+          embedUrl: `https://www.youtube.com/embed/${videoId}`,
+          thumbnailUrl: `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`,
+          watchUrl: `https://www.youtube.com/watch?v=${videoId}`,
+        });
+      }
+    }
+    return matches;
+  }
 }
 
 export class ArticleReaderModal {
@@ -151,6 +179,10 @@ export class ArticleReaderModal {
     this.lightboxEl = null;
     this.fontSize = 16;
     this.isOpen = false;
+    this.currentArticle = null;
+    this.onEditUserTag = null;
+    this.currentFilter = 'all';
+    this.pushSearchQuery = '';
     this.createDom();
   }
 
@@ -172,10 +204,11 @@ export class ArticleReaderModal {
             <span id="reader-font-val">16px</span>
             <button id="reader-font-inc" title="放大字體">A+</button>
           </div>
+          <button id="reader-jump-push-btn" class="btn-reader-action" title="快速捲動至推文區">💬 跳至留言</button>
           <button id="reader-copy-btn" class="btn-reader-action" title="複製文章連結與內容">📋 複製內容</button>
         </div>
       </div>
-      <div class="reader-body-scroll">
+      <div class="reader-body-scroll" id="reader-scroll-container">
         <div class="reader-container">
           <div class="reader-meta-card">
             <h1 id="reader-title" class="reader-title">載入中...</h1>
@@ -190,10 +223,23 @@ export class ArticleReaderModal {
               <div class="push-title">💬 留言推文區</div>
               <div id="push-stats" class="push-stats"></div>
             </div>
+            <div class="push-toolbar">
+              <div class="push-filter-tabs">
+                <button class="push-filter-btn active" data-filter="all">全部 <span class="filter-count" id="count-all">0</span></button>
+                <button class="push-filter-btn filter-up" data-filter="push">🟢 只看推 <span class="filter-count" id="count-push">0</span></button>
+                <button class="push-filter-btn filter-down" data-filter="boo">🔴 只看噓 <span class="filter-count" id="count-boo">0</span></button>
+                <button class="push-filter-btn filter-arrow" data-filter="arrow">⚪ 只看箭頭 <span class="filter-count" id="count-arrow">0</span></button>
+                <button class="push-filter-btn filter-author" data-filter="author">✍️ 只看原PO <span class="filter-count" id="count-author">0</span></button>
+              </div>
+              <div class="push-search-box">
+                <input type="text" id="push-search-input" placeholder="🔍 搜尋推文內容或鄉民 ID..." />
+              </div>
+            </div>
             <div id="push-list" class="push-list"></div>
           </div>
         </div>
       </div>
+      <button id="reader-scroll-top-btn" class="reader-floating-btn hidden" title="回到頂端">🔝</button>
     `;
 
     document.body.appendChild(modal);
@@ -219,6 +265,41 @@ export class ArticleReaderModal {
     document.getElementById('reader-font-dec')?.addEventListener('click', () => this.adjustFontSize(-2));
     document.getElementById('reader-font-inc')?.addEventListener('click', () => this.adjustFontSize(2));
     document.getElementById('reader-copy-btn')?.addEventListener('click', () => this.copyArticle());
+
+    // Jump to push section
+    document.getElementById('reader-jump-push-btn')?.addEventListener('click', () => {
+      document.getElementById('reader-push-section')?.scrollIntoView({ behavior: 'smooth' });
+    });
+
+    // Scroll to top
+    const scrollTopBtn = document.getElementById('reader-scroll-top-btn');
+    scrollTopBtn?.addEventListener('click', () => {
+      document.getElementById('reader-scroll-container')?.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+
+    // Toggle scroll to top button
+    const scrollContainer = document.getElementById('reader-scroll-container');
+    scrollContainer?.addEventListener('scroll', () => {
+      if (scrollTopBtn) {
+        scrollTopBtn.classList.toggle('hidden', scrollContainer.scrollTop < 250);
+      }
+    });
+
+    // Push filter tabs
+    modal.querySelectorAll('.push-filter-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        modal.querySelectorAll('.push-filter-btn').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        this.currentFilter = btn.dataset.filter || 'all';
+        this.renderPushList();
+      });
+    });
+
+    // Push search input
+    document.getElementById('push-search-input')?.addEventListener('input', (e) => {
+      this.pushSearchQuery = e.target.value.trim();
+      this.renderPushList();
+    });
 
     this.lightboxEl.addEventListener('click', (e) => {
       if (e.target.classList.contains('lightbox-backdrop') || e.target.classList.contains('lightbox-close')) {
@@ -457,6 +538,7 @@ export class ArticleReaderModal {
   }
 
   renderArticle(article) {
+    this.currentArticle = article;
     // Populate metadata
     const titleEl = document.getElementById('reader-title');
     const authorEl = document.getElementById('reader-author');
@@ -464,11 +546,27 @@ export class ArticleReaderModal {
     const boardEl = document.getElementById('reader-board-badge');
 
     if (titleEl) titleEl.textContent = article.title;
-    const isAuthorBlacklisted = blacklistManager.isBlacklisted(article.author);
+    const authorUser = article.author ? article.author.split('(')[0].trim() : '';
+    const isAuthorBlacklisted = blacklistManager.isBlacklisted(authorUser);
+    const authorTag = userTagsManager.getTag(authorUser);
+    const authorTagHtml = authorTag && authorTag.tag ? (() => {
+      const col = TAG_COLORS[authorTag.color] || TAG_COLORS.blue;
+      const noteTitle = authorTag.note ? ` title="備註: ${authorTag.note.replace(/"/g, '&quot;')}"` : '';
+      return ` <span class="user-tag-badge" data-user="${authorUser}" style="color: ${col.text}; background: ${col.bg}; border-color: ${col.border}; cursor: pointer;"${noteTitle}>🏷️ ${authorTag.tag}</span>`;
+    })() : '';
+
     if (authorEl) {
-      authorEl.innerHTML = isAuthorBlacklisted
+      authorEl.innerHTML = (isAuthorBlacklisted
         ? `${article.author} <span class="reader-author-badge blacklisted" title="此作者已被列入黑名單">🚫 黑名單作者</span>`
-        : article.author;
+        : article.author) + authorTagHtml;
+
+      authorEl.querySelectorAll('.user-tag-badge').forEach((badge) => {
+        badge.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const u = badge.dataset.user;
+          if (u) this.onEditUserTag?.(u);
+        });
+      });
     }
     if (timeEl) timeEl.textContent = article.time;
     if (boardEl) boardEl.textContent = article.board;
@@ -511,10 +609,17 @@ export class ArticleReaderModal {
             contentEl.appendChild(imgContainer);
           });
         }
+
+        // In-place embedded YouTube cards
+        if (block.youtubes && block.youtubes.length > 0) {
+          block.youtubes.forEach((yt) => {
+            contentEl.appendChild(this.createYoutubeCard(yt));
+          });
+        }
       });
     }
 
-    // Render Push Comments
+    // Update Push Stats Header
     const pushStatsEl = document.getElementById('push-stats');
     if (pushStatsEl) {
       const { push, boo, arrow } = article.pushStats;
@@ -526,42 +631,147 @@ export class ArticleReaderModal {
       `;
     }
 
+    // Update Filter Tab Badge Counts
+    const countAll = document.getElementById('count-all');
+    const countPush = document.getElementById('count-push');
+    const countBoo = document.getElementById('count-boo');
+    const countArrow = document.getElementById('count-arrow');
+    const countAuthor = document.getElementById('count-author');
+
+    const totalPushes = article.pushList ? article.pushList.length : 0;
+    const authorPushes = article.pushList
+      ? article.pushList.filter((p) => p.user.trim().toLowerCase() === authorUser.toLowerCase()).length
+      : 0;
+
+    if (countAll) countAll.textContent = String(totalPushes);
+    if (countPush) countPush.textContent = String(article.pushStats.push);
+    if (countBoo) countBoo.textContent = String(article.pushStats.boo);
+    if (countArrow) countArrow.textContent = String(article.pushStats.arrow);
+    if (countAuthor) countAuthor.textContent = String(authorPushes);
+
+    // Render Push List with Filters & Floor Numbers
+    this.renderPushList();
+  }
+
+  createYoutubeCard(yt) {
+    const card = document.createElement('div');
+    card.className = 'reader-yt-card';
+    card.innerHTML = `
+      <div class="yt-thumb-wrapper" title="點擊在好讀模式中直接播放影片">
+        <img class="yt-thumb" src="${yt.thumbnailUrl}" alt="YouTube Preview" loading="lazy" />
+        <div class="yt-play-btn">▶</div>
+      </div>
+      <div class="yt-info-bar">
+        <span class="yt-icon">▶ YouTube 影片</span>
+        <a href="${yt.watchUrl}" target="_blank" rel="noreferrer" class="yt-link" title="在新分頁開啟 YouTube">${yt.raw}</a>
+      </div>
+    `;
+
+    const thumbWrapper = card.querySelector('.yt-thumb-wrapper');
+    thumbWrapper?.addEventListener('click', () => {
+      const iframe = document.createElement('iframe');
+      iframe.className = 'yt-embed-iframe';
+      iframe.src = `${yt.embedUrl}?autoplay=1`;
+      iframe.title = 'YouTube video player';
+      iframe.frameBorder = '0';
+      iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share';
+      iframe.allowFullscreen = true;
+      card.replaceChildren(iframe);
+    });
+
+    return card;
+  }
+
+  renderPushList() {
     const pushListEl = document.getElementById('push-list');
-    if (pushListEl) {
-      pushListEl.innerHTML = '';
-      if (article.pushList.length === 0) {
-        pushListEl.innerHTML = '<div class="push-empty">目前此篇文章尚無推文</div>';
-      } else {
-        article.pushList.forEach((p) => {
-          const isPushBlacklisted = blacklistManager.isBlacklisted(p.user);
-          const row = document.createElement('div');
-          row.className = `push-item push-type-${p.tag === '推' ? 'up' : p.tag === '噓' ? 'down' : 'neutral'}${isPushBlacklisted ? ' blacklisted-push' : ''}`;
+    if (!pushListEl || !this.currentArticle) return;
+    pushListEl.innerHTML = '';
 
-          row.innerHTML = `
-            <span class="push-tag">${p.tag}</span>
-            <span class="push-user">${p.user}${isPushBlacklisted ? ' <span class="push-blacklist-badge" title="黑名單用戶">🚫</span>' : ''}</span>
-            <span class="push-content">${this.formatLineHtml(p.content)}</span>
-            <span class="push-time">${p.ip ? p.ip + ' ' : ''}${p.time}</span>
-          `;
+    const authorUser = this.currentArticle.author ? this.currentArticle.author.split('(')[0].trim().toLowerCase() : '';
+    let list = this.currentArticle.pushList || [];
 
-          // If push has images, embed them under push
-          if (p.images && p.images.length > 0) {
-            const pushImgs = document.createElement('div');
-            pushImgs.className = 'push-images';
-            p.images.forEach((imgObj) => {
-              const img = document.createElement('img');
-              img.className = 'push-inline-img';
-              img.src = imgObj.url;
-              img.loading = 'lazy';
-              img.onclick = () => this.openLightbox(imgObj.url);
-              pushImgs.appendChild(img);
-            });
-            row.appendChild(pushImgs);
-          }
+    // 1. Filter by Push Type
+    if (this.currentFilter === 'push') {
+      list = list.filter((p) => p.tag === '推');
+    } else if (this.currentFilter === 'boo') {
+      list = list.filter((p) => p.tag === '噓');
+    } else if (this.currentFilter === 'arrow') {
+      list = list.filter((p) => p.tag === '→');
+    } else if (this.currentFilter === 'author') {
+      list = list.filter((p) => p.user.trim().toLowerCase() === authorUser);
+    }
 
-          pushListEl.appendChild(row);
+    // 2. Filter by Search Query
+    if (this.pushSearchQuery) {
+      const q = this.pushSearchQuery.toLowerCase();
+      list = list.filter((p) =>
+        p.user.toLowerCase().includes(q) ||
+        p.content.toLowerCase().includes(q)
+      );
+    }
+
+    if (list.length === 0) {
+      pushListEl.innerHTML = '<div class="push-empty">沒有符合篩選條件的推文</div>';
+      return;
+    }
+
+    list.forEach((p) => {
+      const isPushBlacklisted = blacklistManager.isBlacklisted(p.user);
+      const pushTag = userTagsManager.getTag(p.user);
+      const pushTagHtml = pushTag && pushTag.tag ? (() => {
+        const col = TAG_COLORS[pushTag.color] || TAG_COLORS.blue;
+        const noteTitle = pushTag.note ? ` title="備註: ${pushTag.note.replace(/"/g, '&quot;')}"` : '';
+        return ` <span class="user-tag-badge mini" data-user="${p.user}" style="color: ${col.text}; background: ${col.bg}; border-color: ${col.border}; cursor: pointer;"${noteTitle}>🏷️ ${pushTag.tag}</span>`;
+      })() : '';
+
+      const isAuthor = authorUser && p.user.trim().toLowerCase() === authorUser;
+      const authorBadgeHtml = isAuthor ? ' <span class="push-author-badge" title="此推文由文章原作者發表">✍️ 原PO</span>' : '';
+
+      const row = document.createElement('div');
+      row.className = `push-item push-type-${p.tag === '推' ? 'up' : p.tag === '噓' ? 'down' : 'neutral'}${isPushBlacklisted ? ' blacklisted-push' : ''}${isAuthor ? ' is-author-push' : ''}`;
+
+      row.innerHTML = `
+        <span class="push-floor">${p.floor || 1}F</span>
+        <span class="push-tag">${p.tag}</span>
+        <span class="push-user">${p.user}${authorBadgeHtml}${pushTagHtml}${isPushBlacklisted ? ' <span class="push-blacklist-badge" title="黑名單用戶">🚫</span>' : ''}</span>
+        <span class="push-content">${this.formatLineHtml(p.content)}</span>
+        <span class="push-time">${p.ip ? p.ip + ' ' : ''}${p.time}</span>
+      `;
+
+      row.querySelector('.user-tag-badge')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.onEditUserTag?.(p.user);
+      });
+
+      // Embed images in push
+      if (p.images && p.images.length > 0) {
+        const pushImgs = document.createElement('div');
+        pushImgs.className = 'push-images';
+        p.images.forEach((imgObj) => {
+          const img = document.createElement('img');
+          img.className = 'push-inline-img';
+          img.src = imgObj.url;
+          img.loading = 'lazy';
+          img.onclick = () => this.openLightbox(imgObj.url);
+          pushImgs.appendChild(img);
+        });
+        row.appendChild(pushImgs);
+      }
+
+      // Embed YouTube cards in push
+      if (p.youtubes && p.youtubes.length > 0) {
+        p.youtubes.forEach((yt) => {
+          row.appendChild(this.createYoutubeCard(yt));
         });
       }
+
+      pushListEl.appendChild(row);
+    });
+  }
+
+  refresh() {
+    if (this.isOpen && this.currentArticle) {
+      this.renderArticle(this.currentArticle);
     }
   }
 

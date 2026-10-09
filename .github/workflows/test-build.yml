@@ -1,0 +1,121 @@
+name: Test Build (Private Artifacts - No Public Release)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+
+jobs:
+  build:
+    name: Build on ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'macos-latest'
+            artifact_name: 'Waterball-macOS'
+          - platform: 'ubuntu-22.04'
+            artifact_name: 'Waterball-Linux-Ubuntu'
+          - platform: 'windows-latest'
+            artifact_name: 'Waterball-Windows'
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install Linux system dependencies (Ubuntu)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          echo 'Acquire::http::Timeout "15";' | sudo tee /etc/apt/apt.conf.d/99timeout
+          echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4
+          sudo sed -i 's/archive.ubuntu.com/azure.archive.ubuntu.com/g' /etc/apt/sources.list
+          sudo sed -i 's/security.ubuntu.com/azure.archive.ubuntu.com/g' /etc/apt/sources.list
+          sudo apt-get update -o Acquire::Retries=3 -y || sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install Frontend Dependencies
+        shell: bash
+        run: npm ci
+
+      - name: Run Tests
+        shell: bash
+        run: |
+          node --test
+          cargo test --lib --manifest-path src-tauri/Cargo.toml
+
+      - name: Build Tauri Application
+        shell: bash
+        run: npx tauri build
+
+      - name: Fix macOS Ad-hoc Codesign & Repackage DMG
+        if: matrix.platform == 'macos-latest'
+        run: |
+          APP_PATH="src-tauri/target/release/bundle/macos/Waterball.app"
+          if [ -d "$APP_PATH" ]; then
+            echo "Re-signing $APP_PATH with clean Ad-hoc signature..."
+            codesign --force --deep --sign - "$APP_PATH"
+            mkdir -p dist_macos_dmg
+            cp -R "$APP_PATH" dist_macos_dmg/
+            rm -rf src-tauri/target/release/bundle/dmg
+            mkdir -p src-tauri/target/release/bundle/dmg
+            hdiutil create -volname "Waterball" -srcfolder dist_macos_dmg -ov -format UDZO "src-tauri/target/release/bundle/dmg/Waterball_macOS.dmg"
+            rm -rf dist_macos_dmg
+          fi
+
+      - name: Package Windows Portable Zip
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        run: |
+          mkdir -p portable
+          cp src-tauri/target/release/waterball.exe portable/Waterball.exe 2>/dev/null || cp src-tauri/target/release/bbsterm.exe portable/Waterball.exe 2>/dev/null || true
+          7z a Waterball_windows_x64_portable.zip ./portable/*
+
+      # Upload Private Artifacts (No GitHub Release, visible only to repository owner in Actions tab)
+      - name: Upload macOS Private Artifact
+        if: matrix.platform == 'macos-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Waterball-macOS-dmg
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+          retention-days: 14
+
+      - name: Upload Linux Private Artifacts
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Waterball-Linux-Ubuntu
+          path: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/appimage/*.AppImage
+          retention-days: 14
+
+      - name: Upload Windows Private Artifacts
+        if: matrix.platform == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Waterball-Windows
+          path: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*.exe
+            Waterball_windows_x64_portable.zip
+          retention-days: 14

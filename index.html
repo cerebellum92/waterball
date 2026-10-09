@@ -45,6 +45,14 @@
         <button id="push-helper-btn" class="tb-btn" title="長推文自動分段發送 (Cmd+Shift+X / Alt+X)">
           <span class="tb-icon">💬</span><span class="tb-label">推文</span>
         </button>
+        <button id="waterball-btn" class="tb-btn" title="水球通訊錄與對話紀錄 (Cmd+Alt+W)">
+          <span class="tb-icon">💧</span><span class="tb-label">水球</span>
+          <span id="waterball-unread-badge" class="tb-unread-badge hidden">0</span>
+        </button>
+        <button id="article-monitor-btn" class="tb-btn" title="新文章追蹤與推播通知 (Alt+M)">
+          <span class="tb-icon">📢</span><span class="tb-label">追蹤</span>
+          <span id="monitor-unread-badge" class="tb-unread-badge hidden">0</span>
+        </button>
         <button id="palette-btn" class="tb-btn" title="ANSI 調色盤 (Cmd+P)">
           <span class="tb-icon">🎨</span><span class="tb-label">調色盤</span>
         </button>
@@ -90,6 +98,7 @@
           <button class="tab-btn" data-tab="tab-connection">⏱️ 連線與防閒置</button>
           <button class="tab-btn" data-tab="tab-keyboard">⌨️ 鍵盤與滑鼠</button>
           <button class="tab-btn" data-tab="tab-display">🎨 顯示與主題</button>
+          <button class="tab-btn" data-tab="tab-user-tags">🏷️ 鄉民標籤管理</button>
           <button class="tab-btn" data-tab="tab-blacklist">🚫 黑名單管理</button>
           <button class="tab-btn" data-tab="tab-about">ℹ️ 關於與致謝</button>
         </div>
@@ -301,7 +310,30 @@
             </div>
           </div>
 
-          <!-- Tab 5: Blacklist Management (黑名單管理) -->
+          <!-- Tab 5: User Tags Management (鄉民標籤管理) -->
+          <div id="tab-user-tags" class="tab-pane">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+              <div>
+                <span style="font-weight: 600; font-size: 13.5px;">已自訂的鄉民標籤與備註 (<span id="user-tags-count">0</span>)</span>
+                <p class="hint" style="margin-top: 2px;">為常互動的鄉民加上專屬標籤與個人備忘錄，好讀版與終端機畫面皆一目了然。</p>
+              </div>
+              <button id="btn-user-tag-new" class="btn-primary" style="height: 28px; padding: 0 12px; font-size: 12px;">➕ 新增鄉民標籤</button>
+            </div>
+
+            <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+              <input type="text" id="user-tags-search-input" placeholder="🔍 搜尋鄉民 ID、標籤名稱或備註..." style="flex: 1; padding: 6px 10px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-primary);" />
+              <button id="btn-user-tags-import" class="btn-secondary" style="height: 28px; padding: 0 10px; font-size: 11.5px; cursor: pointer;">📥 匯入 JSON</button>
+              <input type="file" id="file-user-tags-import" accept=".json" class="hidden" />
+              <button id="btn-user-tags-export" class="btn-secondary" style="height: 28px; padding: 0 10px; font-size: 11.5px; cursor: pointer;">📤 匯出 JSON</button>
+              <button id="btn-user-tags-clear" class="btn-danger" style="height: 28px; padding: 0 10px; font-size: 11.5px; cursor: pointer;">🗑️ 全部清空</button>
+            </div>
+
+            <div id="user-tags-list-container" class="user-tags-list-container">
+              <!-- Rendered dynamically -->
+            </div>
+          </div>
+
+          <!-- Tab 6: Blacklist Management (黑名單管理) -->
           <div id="tab-blacklist" class="tab-pane">
             <div class="form-group">
               <label class="checkbox-label">
@@ -492,12 +524,188 @@
     </div>
   </div>
 
+  <!-- User Tag & Note Edit Modal (鄉民自訂標籤與備註編輯視窗) -->
+  <div id="user-tag-modal" class="modal-backdrop hidden">
+    <div class="modal-dialog user-tag-dialog">
+      <div class="modal-header">
+        <h2>🏷️ 鄉民標籤與備註 (User Tag & Note)</h2>
+        <button id="user-tag-modal-close" class="close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="tag-input-userid">鄉民帳號 ID：</label>
+          <input type="text" id="tag-input-userid" placeholder="輸入 PTT 帳號 ID (例如: cerebellum)" spellcheck="false" autocomplete="off" />
+        </div>
+        <div class="form-group">
+          <label for="tag-input-text">自訂標籤名稱 (顯示於名稱旁)：</label>
+          <input type="text" id="tag-input-text" placeholder="例如：優質好文、鍵盤柯南、交易黑單 (最多 12 字)" maxlength="20" />
+        </div>
+        <div class="form-group">
+          <label>標籤色彩風格：</label>
+          <div id="tag-color-palette" class="tag-color-palette"></div>
+        </div>
+        <div class="form-group">
+          <label for="tag-input-note">詳細備註說明 (僅供自己查看)：</label>
+          <textarea id="tag-input-note" rows="3" placeholder="例如：2026/08 電蝦板推薦優質菜單、或是交易注意事項備忘..."></textarea>
+        </div>
+      </div>
+      <div class="modal-footer" style="display: flex; justify-content: space-between; padding: 12px 20px; border-top: 1px solid var(--border-color);">
+        <div>
+          <button id="tag-btn-delete" class="btn-danger hidden" style="height: 30px; padding: 0 12px; font-size: 12px;">🗑️ 刪除標籤</button>
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button id="tag-btn-cancel" class="btn-secondary" style="height: 30px; padding: 0 12px; font-size: 12px;">取消</button>
+          <button id="tag-btn-save" class="btn-primary" style="height: 30px; padding: 0 14px; font-size: 12px;">儲存標籤</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Dedicated Floating Hover Tooltip for Tagged Users (鄉民標籤懸浮提示卡片) -->
+  <div id="user-tag-tooltip" class="user-tag-tooltip hidden">
+    <div class="user-tag-tooltip-header">
+      <span class="user-tag-tooltip-id"></span>
+      <span class="user-tag-tooltip-badge"></span>
+    </div>
+    <div class="user-tag-tooltip-note"></div>
+  </div>
+
+  <!-- Waterball (水球) Chat & History Modal -->
+  <div id="waterball-modal" class="modal-backdrop hidden">
+    <div class="modal-dialog wb-dialog">
+      <div class="modal-header wb-modal-header">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <h2>💧 水球通訊錄與對話紀錄 (Waterball Messenger)</h2>
+        </div>
+        <button id="wb-close-btn" class="close-btn">&times;</button>
+      </div>
+      <div class="modal-body wb-modal-body">
+        <!-- Left: Contacts Sidebar -->
+        <div class="wb-sidebar">
+          <div class="wb-search-bar">
+            <input type="text" id="wb-search-input" placeholder="🔍 搜尋鄉民帳號..." />
+          </div>
+          <div id="wb-contacts-list" class="wb-contacts-list"></div>
+        </div>
+
+        <!-- Right: Chat Area -->
+        <div class="wb-chat-main">
+          <div id="wb-empty-chat-prompt" class="wb-empty-chat-prompt">
+            <div style="font-size: 38px; margin-bottom: 8px;">💧</div>
+            <div style="font-weight: 600; font-size: 15px; margin-bottom: 4px;">尚未選取任何鄉民</div>
+            <div style="font-size: 12px; color: var(--text-secondary);">請從左側清單選擇對話，或在終端機對鄉民點擊右鍵「傳送水球」</div>
+          </div>
+          <div id="wb-chat-section" class="wb-chat-section hidden">
+            <div class="wb-chat-header">
+              <div class="wb-chat-header-user">
+                <span class="wb-header-avatar">👤</span>
+                <span id="wb-active-name" class="wb-header-name">user</span>
+                <span id="wb-active-tag" class="wb-user-tag-badge hidden">🏷️ 標籤</span>
+              </div>
+              <div class="wb-chat-header-actions">
+                <button id="wb-btn-export-chat" class="btn-secondary" style="height: 26px; padding: 0 8px; font-size: 11px;">📤 匯出紀錄</button>
+                <button id="wb-btn-clear-chat" class="btn-danger" style="height: 26px; padding: 0 8px; font-size: 11px;">🗑️ 清空此對話</button>
+              </div>
+            </div>
+            <div id="wb-messages-container" class="wb-messages-container"></div>
+            <div class="wb-reply-bar">
+              <input type="text" id="wb-reply-input" placeholder="輸入回覆水球訊息... (按 Enter 發送)" />
+              <button id="wb-reply-btn" class="btn-primary" title="發送水球至 PTT 終端機 (Ctrl+R)">🚀 發送 (Ctrl+R)</button>
+            </div>
+            <div class="wb-reply-hint">💡 提示：發送時自動使用 PTT 原生 Ctrl+R 水球回覆協定發出。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  <!-- Article Monitor Modal (新文章追蹤與推播通知中心) -->
+  <div id="article-monitor-modal" class="modal-backdrop hidden">
+    <div class="monitor-modal-content">
+      <div class="modal-header">
+        <h2>📢 新文章追蹤與推播通知中心</h2>
+        <button id="monitor-close-btn" class="modal-close">&times;</button>
+      </div>
+
+      <!-- Navigation Tabs -->
+      <div class="monitor-tabs">
+        <button id="monitor-tab-history-btn" class="monitor-tab-btn active">🔔 最新動態 (<span id="monitor-history-count">0</span>)</button>
+        <button id="monitor-tab-rules-btn" class="monitor-tab-btn">⚙️ 追蹤規則與看板 (<span id="monitor-rules-count">0</span>)</button>
+        <div class="monitor-tab-actions">
+          <button id="monitor-check-now-btn" class="btn-secondary" title="立即連線 PTT 檢查最新文章">⚡ 立即檢查</button>
+        </div>
+      </div>
+
+      <!-- Tab 1: Alert History -->
+      <div id="monitor-pane-history" class="monitor-pane active">
+        <div class="monitor-pane-header">
+          <span class="hint">偵測到符合追蹤規則的新文章時，系統將自動彈出桌面原生推播。</span>
+          <div class="monitor-history-actions">
+            <button id="monitor-mark-read-btn" class="btn-text">全部標為已讀</button>
+            <button id="monitor-clear-history-btn" class="btn-text danger">清空紀錄</button>
+          </div>
+        </div>
+        <div id="monitor-history-list" class="monitor-history-list"></div>
+      </div>
+
+      <!-- Tab 2: Rules Management -->
+      <div id="monitor-pane-rules" class="monitor-pane hidden">
+        <div class="monitor-rule-form">
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="monitor-input-board">看板名稱：</label>
+              <input type="text" id="monitor-input-board" placeholder="如: Stock, Lifeismoney, Gossiping" />
+            </div>
+            <div class="form-group flex-2">
+              <label for="monitor-input-keywords">標題關鍵字 (多組以逗號或空白分隔，留空表示全板追蹤)：</label>
+              <input type="text" id="monitor-input-keywords" placeholder="如: [情報], 營收, 特價, 贈送" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="monitor-input-author">指定作者 (可選)：</label>
+              <input type="text" id="monitor-input-author" placeholder="留空不限制作者" />
+            </div>
+            <div class="form-group flex-1">
+              <label for="monitor-input-pushes">最低推文數門檻：</label>
+              <select id="monitor-input-pushes">
+                <option value="0" selected>不限推文數 (即時通知)</option>
+                <option value="10">至少 10 推 (熱門文章)</option>
+                <option value="30">至少 30 推 (超熱門)</option>
+                <option value="100">爆文 (100 推以上)</option>
+              </select>
+            </div>
+            <div class="form-group align-end">
+              <button id="monitor-add-rule-btn" class="btn-primary">➕ 新增追蹤規則</button>
+            </div>
+          </div>
+          <!-- Quick board chips -->
+          <div class="quick-board-chips">
+            <span class="chips-label">熱門推薦：</span>
+            <button type="button" class="chip-btn" data-board="Stock">股市 (Stock)</button>
+            <button type="button" class="chip-btn" data-board="Lifeismoney">省錢 (Lifeismoney)</button>
+            <button type="button" class="chip-btn" data-board="Gossiping">八卦 (Gossiping)</button>
+            <button type="button" class="chip-btn" data-board="C_Chat">西洽 (C_Chat)</button>
+            <button type="button" class="chip-btn" data-board="HardwareSale">買賣 (HardwareSale)</button>
+            <button type="button" class="chip-btn" data-board="NBA">NBA</button>
+            <button type="button" class="chip-btn" data-board="Baseball">棒球 (Baseball)</button>
+          </div>
+        </div>
+
+        <div class="rules-list-container">
+          <h3 class="rules-subtitle">目前追蹤規則清單</h3>
+          <div id="monitor-rules-list" class="monitor-rules-list"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Global Terminal Context Menu (右鍵選單) -->
   <div id="terminal-context-menu" class="context-menu hidden">
     <div class="context-menu-item" id="ctx-copy">📋 複製選取文字 (Cmd+C)</div>
     <div class="context-menu-item" id="ctx-copy-ansi">🎨 複製含色彩 ANSI 代碼</div>
     <div class="context-menu-item" id="ctx-search-google">🔍 Google 搜尋此文字</div>
     <div class="context-menu-separator"></div>
+    <div class="context-menu-item" id="ctx-waterball-send">💧 傳送水球訊息</div>
+    <div class="context-menu-item" id="ctx-tag-edit">🏷️ 編輯鄉民標籤 / 備註</div>
     <div class="context-menu-item" id="ctx-blacklist-toggle">🚫 加入黑名單</div>
     <div class="context-menu-item" id="ctx-quick-push">💬 快速開啟長推文小幫手 (Alt+X)</div>
   </div>

@@ -166,6 +166,7 @@ export class TermView {
               this.hoverUrl = url;
               this.redraw();
             }
+            this.onWordLeave?.();
             this.onUrlHover?.(url.url, e.clientX, e.clientY);
           } else {
             const action = this.getMouseActionAt(pos.col, pos.row);
@@ -179,18 +180,40 @@ export class TermView {
               this.redraw();
               this.onUrlLeave?.();
             }
+            const word = this.getWordAt(pos.col, pos.row);
+            if (word) {
+              this.onWordHover?.(word, e.clientX, e.clientY);
+            } else {
+              this.onWordLeave?.();
+            }
           }
-        } else if (this.hoverUrl) {
-          this.canvas.style.cursor = 'default';
-          this.hoverUrl = null;
-          this.hoverAction = null;
-          this.redraw();
-          this.onUrlLeave?.();
-        } else if (this.hoverAction) {
-          this.canvas.style.cursor = 'default';
-          this.hoverAction = null;
-          this.redraw();
+        } else {
+          this.onWordLeave?.();
+          if (this.hoverUrl) {
+            this.canvas.style.cursor = 'default';
+            this.hoverUrl = null;
+            this.hoverAction = null;
+            this.redraw();
+            this.onUrlLeave?.();
+          } else if (this.hoverAction) {
+            this.canvas.style.cursor = 'default';
+            this.hoverAction = null;
+            this.redraw();
+          }
         }
+      }
+    });
+
+    this.canvas.addEventListener('mouseleave', () => {
+      this.onWordLeave?.();
+      if (this.hoverUrl) {
+        this.hoverUrl = null;
+        this.redraw();
+        this.onUrlLeave?.();
+      }
+      if (this.hoverAction) {
+        this.hoverAction = null;
+        this.redraw();
       }
     });
 

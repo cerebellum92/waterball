@@ -20,6 +20,12 @@ import { BookmarksUI } from './bookmarks_ui.js';
 import { SettingsUI } from './settings_ui.js';
 import { ContextMenuController } from './context_menu.js';
 import { terminalDiagnostics } from './terminal_diagnostics.js';
+import { userTagsManager } from './user_tags.js';
+import { userTagsUI } from './user_tags_ui.js';
+import { waterballManager } from './waterball_manager.js';
+import { waterballUI } from './waterball_ui.js';
+import { articleMonitorManager } from './article_monitor.js';
+import { articleMonitorUI } from './article_monitor_ui.js';
 
 const { invoke } = window.__TAURI__.core;
 
@@ -129,6 +135,9 @@ function areAnyModalsOpen() {
   if (paletteWidget && paletteWidget.isOpen) return true;
   if (exportModal && exportModal.isOpen) return true;
   if (boardSwitcherWidget && boardSwitcherWidget.isOpen) return true;
+  if (userTagsUI && userTagsUI.isOpen()) return true;
+  if (waterballUI && waterballUI.isOpen()) return true;
+  if (articleMonitorUI && articleMonitorUI.isOpen()) return true;
   return false;
 }
 
@@ -228,6 +237,7 @@ const settingsUI = new SettingsUI({
     btnBlacklistClear: document.getElementById('btn-blacklist-clear'),
   },
   onBookmarksRender: () => bookmarksUI.renderBookmarkList(),
+  onUserTagsRender: () => userTagsUI.renderList(),
   onFocusTerminal: () => imeCtrl.focusTerminal(),
   onShowToast: showGlobalToast,
   onMouseBrowsingChange: updateMouseBrowsingButton,
@@ -245,18 +255,66 @@ mouseBrowsingBtn?.addEventListener('click', () => {
 const contextMenuCtrl = new ContextMenuController({
   contextMenuEl: document.getElementById('terminal-context-menu'),
   blacklistManager,
+  userTagsManager,
   onQuickPush: () => pushHelper.open(),
   onBlacklistChange: () => {
     settingsUI.renderBlacklistUI();
     tabManager.getActiveTab()?.view?.redraw();
   },
+  onEditTag: (userId) => {
+    userTagsUI.openModal(userId);
+  },
+  onSendWaterball: (userId) => {
+    waterballUI.open(userId);
+  },
   onShowToast: showGlobalToast,
+});
+
+// Waterball UI Integration
+waterballUI.onSendWaterball = (contactName, message) => {
+  const activeTab = tabManager.getActiveTab();
+  if (!activeTab || !activeTab.isConnected) {
+    showGlobalToast('尚未連線至 BBS，無法發送水球');
+    return;
+  }
+  connectionCtrl.sendData(`\x12${message}\r`);
+};
+waterballUI.onShowToast = showGlobalToast;
+
+// Article Monitor UI Integration
+articleMonitorUI.onOpenArticleReader = (url) => {
+  invoke('open_browser_url', { url }).catch(() => {
+    window.open(url, '_blank');
+  });
+};
+articleMonitorUI.onSwitchBoard = (board) => {
+  const activeTab = tabManager.getActiveTab();
+  if (activeTab && activeTab.isConnected) {
+    connectionCtrl.sendData(`s${board}\r`);
+    showGlobalToast(`已送出切換至看板 [${board}]`);
+  } else {
+    showGlobalToast(`尚未連線至 BBS，無法切換至 [${board}]`);
+  }
+};
+articleMonitorUI.onShowToast = showGlobalToast;
+
+// Start background article monitoring scheduler (every 3 minutes)
+articleMonitorManager.startScheduler(3);
+
+// Article Reader User Tag Integration
+articleReader.onEditUserTag = (userId) => {
+  userTagsUI.openModal(userId);
+};
+userTagsManager.addListener(() => {
+  articleReader.refresh();
+  tabManager.getActiveTab()?.view?.redraw();
 });
 
 // Tab Manager Event Hooks
 tabManager.onActiveTabChange = (activeTab) => {
   if (!activeTab) return;
   imagePreview.hideImmediate();
+  userTagsUI.hideTooltip();
   searchWidget.close();
   if (addressInput) addressInput.value = activeTab.address;
   if (encodingSelect) encodingSelect.value = activeTab.encoding;
@@ -265,6 +323,7 @@ tabManager.onActiveTabChange = (activeTab) => {
 
 tabManager.onTabCloseRequest = (closingTab) => {
   imagePreview.hideImmediate();
+  userTagsUI.hideTooltip();
   if (closingTab.isConnected) {
     invoke('disconnect', { tabId: closingTab.id }).catch(() => {});
   }
@@ -272,6 +331,7 @@ tabManager.onTabCloseRequest = (closingTab) => {
 
 tabManager.onUrlClick = (url) => {
   imagePreview.hideImmediate();
+  userTagsUI.hideTooltip();
   invoke('open_browser_url', { url }).catch((err) => {
     console.error('Failed to open URL via Tauri:', err);
     window.open(url, '_blank');
@@ -279,6 +339,7 @@ tabManager.onUrlClick = (url) => {
 };
 
 tabManager.onUrlHover = (url, cx, cy) => {
+  userTagsUI.hideTooltip();
   if (settingsManager.settings.imagePreviewEnabled !== false) {
     imagePreview.show(url, cx, cy);
   }
@@ -286,6 +347,18 @@ tabManager.onUrlHover = (url, cx, cy) => {
 
 tabManager.onUrlLeave = () => {
   imagePreview.hide();
+};
+
+tabManager.onWordHover = (word, cx, cy) => {
+  if (word && userTagsManager.hasTag(word)) {
+    userTagsUI.showTooltip(word, cx, cy);
+  } else {
+    userTagsUI.hideTooltip();
+  }
+};
+
+tabManager.onWordLeave = () => {
+  userTagsUI.hideTooltip();
 };
 
 tabManager.onWheel = (direction, tab) => {
@@ -561,7 +634,50 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
+  if (waterballUI && waterballUI.isOpen()) {
+    if (e.key === 'Escape') {
+      waterballUI.close();
+    }
+    return;
+  }
+
+  if (userTagsUI && userTagsUI.isOpen()) {
+    if (e.key === 'Escape') {
+      userTagsUI.closeModal();
+    }
+    return;
+  }
+
+  if (articleMonitorUI && articleMonitorUI.isOpen()) {
+    if (e.key === 'Escape') {
+      articleMonitorUI.close();
+    }
+    return;
+  }
+
   if (isInteractiveInputElement(document.activeElement, imeInput)) {
+    return;
+  }
+
+  // Article Monitor & Alert Center (Alt+M / Cmd+Alt+M / Ctrl+Alt+M)
+  if (e.altKey && (e.code === 'KeyM' || e.key === 'm' || e.key === 'M')) {
+    e.preventDefault();
+    if (articleMonitorUI.isOpen()) {
+      articleMonitorUI.close();
+    } else {
+      articleMonitorUI.open();
+    }
+    return;
+  }
+
+  // Waterball Messenger (Alt+W / Cmd+Alt+W / Ctrl+Alt+W)
+  if (e.altKey && (e.code === 'KeyW' || e.key === 'w' || e.key === 'W')) {
+    e.preventDefault();
+    if (waterballUI.isOpen()) {
+      waterballUI.close();
+    } else {
+      waterballUI.open();
+    }
     return;
   }
 

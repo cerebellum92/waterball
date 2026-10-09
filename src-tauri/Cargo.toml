@@ -26,3 +26,5 @@ encoding_rs = "0.8"
 openssl-sys = { version = "0.9", features = ["vendored"] }
 ssh2 = { version = "0.9", features = ["vendored-openssl"] }
 log = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+

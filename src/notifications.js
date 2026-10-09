@@ -2,6 +2,7 @@
 
 import { settingsManager } from './settings.js';
 import { requestNotificationPermission, sendNativeNotification } from './platform.js';
+import { waterballManager } from './waterball_manager.js';
 
 export class NotificationManager {
   constructor() {
@@ -79,18 +80,40 @@ export class NotificationManager {
       // Example: "★abc 呼叫: 你好 [08/19 10:20]" or "★abc: 你好" or "★abc 你在嗎？"
       // Must NOT be an article title line (no '□', 'R:', '轉:', etc.)
       if (!/[□■◆◇]|(?:R:|Re:|轉:)\s/i.test(cleanLine)) {
+        // Outgoing waterball detection (e.g. ★對 abc 丟水球: 你好)
+        const outMatch = cleanLine.match(/^★(?:對|給)\s*([a-zA-Z0-9_-]{2,16})\s*(?:丟水球\s*[:：]?|[:：]\s*)\s*(.+)$/);
+        if (outMatch) {
+          const receiver = outMatch[1];
+          let outMessage = outMatch[2].trim();
+          outMessage = outMessage.replace(/\[\d{2}\/\d{2}\s+\d{2}:\d{2}\]$/, '').trim();
+          const outHash = `wb_out:${tabId}:${receiver}:${outMessage}`;
+          const now = Date.now();
+          if (!this.recentCache.has(outHash) || now - this.recentCache.get(outHash) >= 5000) {
+            this.recentCache.set(outHash, now);
+            waterballManager.addOutgoingMessage({
+              receiver,
+              message: outMessage,
+              tabId,
+              tabTitle,
+            });
+          }
+        }
+
+        // Incoming waterball detection
         const wbMatch = cleanLine.match(/^★\s*([a-zA-Z0-9_-]{2,16})\s*(?:呼叫\s*[:：]?|[:：]\s*|\s+)(.+)$/);
         if (wbMatch) {
           const sender = wbMatch[1];
           let message = wbMatch[2].trim();
 
-          // Strip trailing timestamp [MM/DD HH:MM]
+          // Extract trailing timestamp [MM/DD HH:MM]
+          const timeMatch = message.match(/\[(\d{2}\/\d{2}\s+\d{2}:\d{2})\]$/);
+          const timeStr = timeMatch ? timeMatch[1] : '';
           message = message.replace(/\[\d{2}\/\d{2}\s+\d{2}:\d{2}\]$/, '').trim();
 
           // Ignore system titles and menu headers
           const ignoredSenders = ['BBS', '站長', '系統', '公告', '精華區', '文章選單', '主功能表', '看板列表'];
           if (!ignoredSenders.includes(sender) && message.length > 0) {
-            this.triggerWaterballNotification(tabId, sender, message, tabTitle);
+            this.triggerWaterballNotification(tabId, sender, message, tabTitle, timeStr);
           }
         }
       }
@@ -102,7 +125,7 @@ export class NotificationManager {
     }
   }
 
-  async triggerWaterballNotification(tabId, sender, message, tabTitle) {
+  async triggerWaterballNotification(tabId, sender, message, tabTitle, timeStr = '') {
     const hash = `wb:${tabId}:${sender}:${message}`;
     const now = Date.now();
     if (this.recentCache.has(hash) && now - this.recentCache.get(hash) < 6000) {
@@ -110,6 +133,15 @@ export class NotificationManager {
     }
     this.recentCache.set(hash, now);
     this.cleanCache();
+
+    // Record incoming waterball in manager
+    waterballManager.addIncomingMessage({
+      sender,
+      message,
+      timeStr,
+      tabId,
+      tabTitle,
+    });
 
     this.playChime();
     this.onTabBadgeTrigger?.(tabId);

@@ -329,6 +329,129 @@ async fn set_remember_window_state(
     Ok(())
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct PttArticleItem {
+    pub id: String,
+    pub title: String,
+    pub author: String,
+    pub date: String,
+    pub nrec: String,
+    pub link: String,
+    pub board: String,
+}
+
+pub fn parse_ptt_articles_html(html: &str, board: &str) -> Vec<PttArticleItem> {
+    let mut articles = Vec::new();
+    for block in html.split("<div class=\"r-ent\">") {
+        let link_start = match block.find("<a href=\"") {
+            Some(idx) => idx + "<a href=\"".len(),
+            None => continue,
+        };
+        let link_end = match block[link_start..].find('"') {
+            Some(idx) => link_start + idx,
+            None => continue,
+        };
+        let link = block[link_start..link_end].trim().to_string();
+
+        let id = link
+            .rsplit('/')
+            .next()
+            .and_then(|file| file.strip_suffix(".html"))
+            .unwrap_or(&link)
+            .to_string();
+
+        let after_link = &block[link_end..];
+        let title_tag_end = match after_link.find('>') {
+            Some(idx) => idx + 1,
+            None => continue,
+        };
+        let title_close = match after_link[title_tag_end..].find("</a>") {
+            Some(idx) => title_tag_end + idx,
+            None => continue,
+        };
+        let raw_title = &after_link[title_tag_end..title_close];
+        let title = unescape_html(raw_title).trim().to_string();
+
+        let author = extract_tag_content(block, "class=\"author\">", "</div>").unwrap_or_default();
+        let date = extract_tag_content(block, "class=\"date\">", "</div>").unwrap_or_default();
+        let raw_nrec = extract_tag_content(block, "class=\"nrec\">", "</div>").unwrap_or_default();
+        let nrec = strip_tags(&raw_nrec).trim().to_string();
+
+        articles.push(PttArticleItem {
+            id,
+            title,
+            author,
+            date,
+            nrec,
+            link,
+            board: board.to_string(),
+        });
+    }
+    articles
+}
+
+fn extract_tag_content(text: &str, open: &str, close: &str) -> Option<String> {
+    let start = text.find(open)? + open.len();
+    let end = text[start..].find(close)? + start;
+    Some(text[start..end].trim().to_string())
+}
+
+fn strip_tags(text: &str) -> String {
+    let mut result = String::new();
+    let mut in_tag = false;
+    for ch in text.chars() {
+        if ch == '<' {
+            in_tag = true;
+        } else if ch == '>' {
+            in_tag = false;
+        } else if !in_tag {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+fn unescape_html(text: &str) -> String {
+    text.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+}
+
+#[tauri::command]
+async fn fetch_ptt_board_articles(board: String) -> Result<Vec<PttArticleItem>, String> {
+    let clean_board = board.trim();
+    if clean_board.is_empty() {
+        return Err("看板名稱不能為空".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|e| format!("無法建立 HTTP 客戶端: {}", e))?;
+
+    let url = format!("https://www.ptt.cc/bbs/{}/index.html", clean_board);
+    let resp = client
+        .get(&url)
+        .header("Cookie", "over18=1")
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        )
+        .send()
+        .await
+        .map_err(|e| format!("連線 PTT 失敗: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("PTT 回應狀態碼異常: HTTP {}", resp.status()));
+    }
+
+    let html = resp.text().await.map_err(|e| format!("讀取內容失敗: {}", e))?;
+    Ok(parse_ptt_articles_html(&html, clean_board))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let connections = Arc::new(Mutex::new(HashMap::<String, BbsConnection>::new()));
@@ -412,7 +535,65 @@ pub fn run() {
             save_window_state,
             get_saved_window_state,
             set_remember_window_state,
+            fetch_ptt_board_articles,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_ptt_articles_html;
+
+    #[test]
+    fn test_parse_ptt_articles_html() {
+        let sample_html = r#"
+        <div class="r-ent">
+            <div class="nrec"><span class="hl f2">9</span></div>
+            <div class="title">
+                <a href="/bbs/Stock/M.1791535001.A.2E5.html">[情報] 4938 和碩 9月營收 &amp; 獲利</a>
+            </div>
+            <div class="meta">
+                <div class="author">q1a1</div>
+                <div class="date"> 10/09</div>
+            </div>
+        </div>
+        <div class="r-ent">
+            <div class="nrec"><span class="hl f1">爆</span></div>
+            <div class="title">
+                <a href="/bbs/Stock/M.1791536586.A.177.html">[新聞] 台積電最新法說會資訊整理</a>
+            </div>
+            <div class="meta">
+                <div class="author">analyst</div>
+                <div class="date"> 10/09</div>
+            </div>
+        </div>
+        <div class="r-ent">
+            <div class="nrec"></div>
+            <div class="title">
+                (本文已被刪除) [spammer]
+            </div>
+            <div class="meta">
+                <div class="author">-</div>
+                <div class="date"> 10/09</div>
+            </div>
+        </div>
+        "#;
+
+        let articles = parse_ptt_articles_html(sample_html, "Stock");
+        assert_eq!(articles.len(), 2);
+
+        assert_eq!(articles[0].id, "M.1791535001.A.2E5");
+        assert_eq!(articles[0].title, "[情報] 4938 和碩 9月營收 & 獲利");
+        assert_eq!(articles[0].author, "q1a1");
+        assert_eq!(articles[0].nrec, "9");
+        assert_eq!(articles[0].date, "10/09");
+        assert_eq!(articles[0].link, "/bbs/Stock/M.1791535001.A.2E5.html");
+        assert_eq!(articles[0].board, "Stock");
+
+        assert_eq!(articles[1].id, "M.1791536586.A.177");
+        assert_eq!(articles[1].title, "[新聞] 台積電最新法說會資訊整理");
+        assert_eq!(articles[1].author, "analyst");
+        assert_eq!(articles[1].nrec, "爆");
+    }
 }

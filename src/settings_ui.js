@@ -12,6 +12,7 @@ export class SettingsUI {
     updateChecker,
     elements,
     onBookmarksRender,
+    onUserTagsRender,
     onFocusTerminal,
     onShowToast,
     onMouseBrowsingChange,
@@ -24,6 +25,7 @@ export class SettingsUI {
     this.updateChecker = updateChecker;
     this.elements = elements;
     this.onBookmarksRender = onBookmarksRender || (() => {});
+    this.onUserTagsRender = onUserTagsRender || (() => {});
     this.onFocusTerminal = onFocusTerminal || (() => {});
     this.onShowToast = onShowToast || (() => {});
     this.onMouseBrowsingChange = onMouseBrowsingChange || (() => {});
@@ -86,7 +88,12 @@ export class SettingsUI {
         document.querySelectorAll('.tab-pane').forEach((p) => p.classList.remove('active'));
         btn.classList.add('active');
         const target = document.getElementById(btn.dataset.tab);
-        if (target) target.classList.add('active');
+        if (target) {
+          target.classList.add('active');
+          if (btn.dataset.tab === 'tab-user-tags') {
+            this.onUserTagsRender();
+          }
+        }
       });
     });
 
@@ -229,6 +236,7 @@ export class SettingsUI {
     this.loadSettingsToUI();
     this.onBookmarksRender();
     this.renderBlacklistUI();
+    this.onUserTagsRender();
     this.elements.settingsModal?.classList.remove('hidden');
 
     // Clear red badge dot on settingsBtn

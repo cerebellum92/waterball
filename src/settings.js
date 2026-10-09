@@ -9,13 +9,6 @@ export const DEFAULT_BOOKMARKS = [
     description: '台灣最大 BBS 站台 (SSH Port 22)',
   },
   {
-    id: 'ptt-telnet',
-    name: '批踢踢實業坊 (PTT Telnet)',
-    address: 'ptt.cc:23',
-    encoding: 'big5',
-    description: '批踢踢 Telnet 連線 (Port 23 / 8888)',
-  },
-  {
     id: 'ptt2-ssh',
     name: '批踢踢兔 (PTT2 SSH)',
     address: 'bbs@ptt2.cc:22',
@@ -121,7 +114,13 @@ class SettingsManager {
       if (stored) {
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
+          const filtered = parsed.filter((b) => b.id !== 'ptt-telnet' && b.address !== 'ptt.cc:23');
+          if (filtered.length !== parsed.length) {
+            this.saveBookmarks(filtered);
+          }
+          if (filtered.length > 0) {
+            return filtered;
+          }
         }
       }
     } catch (e) {
