@@ -3922,5 +3922,133 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
   color: var(--text-secondary);
 }
 
+/* Telegram Forwarding Styles */
+.tg-settings-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.tg-intro-card {
+  background: rgba(41, 151, 230, 0.08);
+  border: 1px solid rgba(41, 151, 230, 0.25);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.tg-intro-title {
+  margin: 0 0 6px 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #2997e6;
+}
+
+.tg-intro-desc {
+  margin: 0 0 10px 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.tg-steps-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg-surface-elevated, rgba(0, 0, 0, 0.2));
+  padding: 10px 12px;
+  border-radius: 6px;
+}
+
+.tg-step-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.tg-step-item .step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  background: #2997e6;
+  color: #fff;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: bold;
+  flex-shrink: 0;
+}
+
+.tg-config-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.password-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.password-wrapper input {
+  width: 100%;
+  padding-right: 36px;
+}
+
+.token-toggle-btn {
+  position: absolute;
+  right: 6px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  font-size: 14px;
+  opacity: 0.7;
+}
+
+.token-toggle-btn:hover {
+  opacity: 1;
+}
+
+.tg-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.tg-status-banner {
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.4;
+  margin-top: 6px;
+}
+
+.tg-status-banner.success {
+  background: rgba(46, 204, 113, 0.12);
+  border: 1px solid rgba(46, 204, 113, 0.35);
+  color: #2ecc71;
+}
+
+.tg-status-banner.error {
+  background: rgba(231, 76, 60, 0.12);
+  border: 1px solid rgba(231, 76, 60, 0.35);
+  color: #e74c3c;
+}
+
+.tg-status-banner.loading {
+  background: rgba(52, 152, 219, 0.12);
+  border: 1px solid rgba(52, 152, 219, 0.35);
+  color: #3498db;
+}
+
 
 

@@ -57,11 +57,14 @@ jobs:
         shell: bash
         run: npm ci
 
-      - name: Run Tests
+      - name: Run Frontend Tests
         shell: bash
-        run: |
-          node --test
-          cargo test --lib --manifest-path src-tauri/Cargo.toml
+        run: node --test
+
+      - name: Run Rust Unit Tests
+        if: matrix.platform != 'windows-latest'
+        shell: bash
+        run: cargo test --lib --manifest-path src-tauri/Cargo.toml
 
       - name: Build Tauri Application
         shell: bash

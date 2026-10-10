@@ -21,13 +21,44 @@ export const DEFAULT_MONITOR_RULES = [
   },
 ];
 
+export function formatTelegramArticleMessage(item) {
+  const escapeHtml = (str) =>
+    String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+  const board = escapeHtml(item.board);
+  const title = escapeHtml(item.title);
+  const author = escapeHtml(item.author || '未知');
+  const nrec = escapeHtml(item.nrec ? `${item.nrec}推` : '0推');
+  const link = item.link?.startsWith('http')
+    ? item.link
+    : `https://www.ptt.cc${item.link?.startsWith('/') ? '' : '/'}${item.link || `bbs/${item.board}/index.html`}`;
+
+  return [
+    `🚨 <b>【Waterball PTT 文章追蹤通知】</b>`,
+    `📌 <b>看板</b>：#${board}`,
+    `📝 <b>標題</b>：${title}`,
+    `👤 <b>作者</b>：${author}`,
+    `🔥 <b>推文</b>：${nrec}`,
+    `🔗 <a href="${link}">${link}</a>`,
+  ].join('\n');
+}
+
 export class ArticleMonitorManager {
-  constructor(storage = (typeof localStorage !== 'undefined' ? localStorage : null), fetchFn = null) {
+  constructor(
+    storage = (typeof localStorage !== 'undefined' ? localStorage : null),
+    fetchFn = null,
+    telegramSendFn = null
+  ) {
     this.storage = storage;
     this.customFetch = fetchFn;
+    this.customTelegramSend = telegramSendFn;
     this.rules = this.loadRules();
     this.history = this.loadHistory();
     this.seenIds = this.loadSeenIds();
+    this.telegramConfig = this.loadTelegramConfig();
     this.initializedBoards = new Set();
     this.intervalMinutes = 3;
     this.timer = null;
@@ -108,6 +139,97 @@ export class ArticleMonitorManager {
     } catch (e) {
       console.warn('Failed to save seen article IDs:', e);
     }
+  }
+
+  // --- Telegram Push Forwarding ---
+
+  loadTelegramConfig() {
+    if (!this.storage) {
+      return { enabled: false, botToken: '', chatId: '', silent: false };
+    }
+    try {
+      const raw = this.storage.getItem('bbsterm_monitor_telegram');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return {
+          enabled: Boolean(parsed.enabled),
+          botToken: String(parsed.botToken || '').trim(),
+          chatId: String(parsed.chatId || '').trim(),
+          silent: Boolean(parsed.silent),
+        };
+      }
+    } catch (e) {
+      console.warn('Failed to load Telegram config:', e);
+    }
+    return { enabled: false, botToken: '', chatId: '', silent: false };
+  }
+
+  saveTelegramConfig(config) {
+    this.telegramConfig = {
+      enabled: Boolean(config.enabled),
+      botToken: String(config.botToken || '').trim(),
+      chatId: String(config.chatId || '').trim(),
+      silent: Boolean(config.silent),
+    };
+    if (this.storage) {
+      try {
+        this.storage.setItem('bbsterm_monitor_telegram', JSON.stringify(this.telegramConfig));
+      } catch (e) {
+        console.warn('Failed to save Telegram config:', e);
+      }
+    }
+    this.notify();
+  }
+
+  getTelegramConfig() {
+    return { ...this.telegramConfig };
+  }
+
+  async sendTelegramRawMessage(botToken, chatId, text, silent = false) {
+    if (this.customTelegramSend) {
+      return this.customTelegramSend(botToken, chatId, text, silent);
+    }
+    if (typeof window !== 'undefined' && window.__TAURI__?.core?.invoke) {
+      try {
+        return await window.__TAURI__.core.invoke('send_telegram_message', {
+          botToken,
+          chatId,
+          text,
+          silent: Boolean(silent),
+        });
+      } catch (e) {
+        console.warn('[ArticleMonitor] Telegram send failed via Tauri:', e);
+        return { success: false, message: String(e) };
+      }
+    }
+    return { success: false, message: 'Tauri runtime not available' };
+  }
+
+  async sendTelegramAlert(alertItem) {
+    if (!this.telegramConfig?.enabled) return null;
+    const { botToken, chatId, silent } = this.telegramConfig;
+    if (!botToken || !chatId) return null;
+
+    const text = formatTelegramArticleMessage(alertItem);
+    return this.sendTelegramRawMessage(botToken, chatId, text, silent);
+  }
+
+  async testTelegram(botToken, chatId) {
+    const cleanToken = String(botToken || '').trim();
+    const cleanChatId = String(chatId || '').trim();
+    if (!cleanToken || !cleanChatId) {
+      return { success: false, message: '請填寫完整的 Bot Token 與 Chat ID' };
+    }
+
+    const now = new Date();
+    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+    const testText = [
+      `💧 <b>【Waterball】Telegram 推播連線測試成功！</b>`,
+      `🕒 測試時間：${timeStr}`,
+      `🔔 您的 Telegram 推播已設定完成。電腦於背景監測到符合條件的 PTT 新文章時，將會即時發送通知至此處。`,
+    ].join('\n');
+
+    return this.sendTelegramRawMessage(cleanToken, cleanChatId, testText, false);
   }
 
   addListener(fn) {
@@ -333,6 +455,11 @@ export class ArticleMonitorManager {
             sendNativeNotification(notifTitle, notifBody, () => {
               this.onNewAlert?.(alertItem);
             }).catch(() => {});
+
+            // Forward to Telegram if enabled
+            this.sendTelegramAlert(alertItem).catch((e) => {
+              console.warn('[ArticleMonitor] Telegram forward error:', e);
+            });
           }
         }
       }

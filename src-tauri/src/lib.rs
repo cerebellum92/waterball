@@ -452,6 +452,92 @@ async fn fetch_ptt_board_articles(board: String) -> Result<Vec<PttArticleItem>, 
     Ok(parse_ptt_articles_html(&html, clean_board))
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct TelegramSendResult {
+    pub success: bool,
+    pub message: String,
+}
+
+#[derive(serde::Serialize)]
+struct TelegramSendMessagePayload<'a> {
+    chat_id: &'a str,
+    text: &'a str,
+    parse_mode: &'a str,
+    disable_web_page_preview: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    disable_notification: Option<bool>,
+}
+
+#[tauri::command]
+async fn send_telegram_message(
+    bot_token: String,
+    chat_id: String,
+    text: String,
+    silent: Option<bool>,
+) -> Result<TelegramSendResult, String> {
+    let clean_token = bot_token.trim();
+    let clean_chat_id = chat_id.trim();
+
+    if clean_token.is_empty() {
+        return Ok(TelegramSendResult {
+            success: false,
+            message: "Telegram Bot Token 未填寫".to_string(),
+        });
+    }
+    if clean_chat_id.is_empty() {
+        return Ok(TelegramSendResult {
+            success: false,
+            message: "Telegram Chat ID 未填寫".to_string(),
+        });
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("無法建立 HTTP 客戶端: {}", e))?;
+
+    let url = format!("https://api.telegram.org/bot{}/sendMessage", clean_token);
+
+    let payload = TelegramSendMessagePayload {
+        chat_id: clean_chat_id,
+        text: &text,
+        parse_mode: "HTML",
+        disable_web_page_preview: false,
+        disable_notification: silent,
+    };
+
+    let json_body = serde_json::to_string(&payload)
+        .map_err(|e| format!("序列化 Payload 失敗: {}", e))?;
+
+    let resp = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .body(json_body)
+        .send()
+        .await
+        .map_err(|e| format!("發送至 Telegram 失敗 (網路連線錯誤): {}", e))?;
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+
+    if status.is_success() {
+        Ok(TelegramSendResult {
+            success: true,
+            message: "訊息發送成功！".to_string(),
+        })
+    } else {
+        let err_detail = if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+            v["description"].as_str().unwrap_or(&body).to_string()
+        } else {
+            body
+        };
+        Ok(TelegramSendResult {
+            success: false,
+            message: format!("Telegram 回應錯誤 (HTTP {}): {}", status, err_detail),
+        })
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let connections = Arc::new(Mutex::new(HashMap::<String, BbsConnection>::new()));
@@ -536,6 +622,7 @@ pub fn run() {
             get_saved_window_state,
             set_remember_window_state,
             fetch_ptt_board_articles,
+            send_telegram_message,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -595,5 +682,20 @@ mod tests {
         assert_eq!(articles[1].title, "[新聞] 台積電最新法說會資訊整理");
         assert_eq!(articles[1].author, "analyst");
         assert_eq!(articles[1].nrec, "爆");
+    }
+
+    #[test]
+    fn test_telegram_payload_serialization() {
+        let payload = super::TelegramSendMessagePayload {
+            chat_id: "12345678",
+            text: "Hello <b>PTT</b>",
+            parse_mode: "HTML",
+            disable_web_page_preview: false,
+            disable_notification: Some(true),
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        assert!(json.contains("\"chat_id\":\"12345678\""));
+        assert!(json.contains("\"parse_mode\":\"HTML\""));
+        assert!(json.contains("\"disable_notification\":true"));
     }
 }

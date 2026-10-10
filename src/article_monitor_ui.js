@@ -41,6 +41,17 @@ export class ArticleMonitorUI {
     this.inputAuthor = document.getElementById('monitor-input-author');
     this.inputPushes = document.getElementById('monitor-input-pushes');
 
+    this.tabTelegramBtn = document.getElementById('monitor-tab-telegram-btn');
+    this.paneTelegram = document.getElementById('monitor-pane-telegram');
+    this.tgEnabledInput = document.getElementById('monitor-tg-enabled');
+    this.tgTokenInput = document.getElementById('monitor-tg-token');
+    this.tgChatIdInput = document.getElementById('monitor-tg-chatid');
+    this.tgSilentInput = document.getElementById('monitor-tg-silent');
+    this.tgToggleTokenBtn = document.getElementById('monitor-tg-toggle-token-btn');
+    this.tgTestBtn = document.getElementById('monitor-tg-test-btn');
+    this.tgSaveBtn = document.getElementById('monitor-tg-save-btn');
+    this.tgStatusEl = document.getElementById('monitor-tg-status');
+
     this.initEventListeners();
     this.updateToolbarBadge();
 
@@ -83,6 +94,64 @@ export class ArticleMonitorUI {
 
     this.tabRulesBtn?.addEventListener('click', () => {
       this.switchTab('rules');
+    });
+
+    this.tabTelegramBtn?.addEventListener('click', () => {
+      this.switchTab('telegram');
+    });
+
+    // Toggle token password visibility
+    this.tgToggleTokenBtn?.addEventListener('click', () => {
+      if (!this.tgTokenInput) return;
+      const isPassword = this.tgTokenInput.type === 'password';
+      this.tgTokenInput.type = isPassword ? 'text' : 'password';
+      this.tgToggleTokenBtn.textContent = isPassword ? '🙈' : '👁️';
+    });
+
+    // Save Telegram config button
+    this.tgSaveBtn?.addEventListener('click', () => {
+      const enabled = Boolean(this.tgEnabledInput?.checked);
+      const botToken = String(this.tgTokenInput?.value || '').trim();
+      const chatId = String(this.tgChatIdInput?.value || '').trim();
+      const silent = Boolean(this.tgSilentInput?.checked);
+
+      this.manager.saveTelegramConfig({ enabled, botToken, chatId, silent });
+      this.showTelegramStatus('success', '✅ Telegram 設定已成功儲存！');
+      this.onShowToast('Telegram 設定已儲存');
+    });
+
+    // Test Telegram connection & send button
+    this.tgTestBtn?.addEventListener('click', async () => {
+      const botToken = String(this.tgTokenInput?.value || '').trim();
+      const chatId = String(this.tgChatIdInput?.value || '').trim();
+
+      if (!botToken || !chatId) {
+        this.showTelegramStatus('error', '❌ 請先填寫 Bot Token 與 Chat ID 才能進行測試！');
+        return;
+      }
+
+      if (this.tgTestBtn) {
+        this.tgTestBtn.textContent = '⏳ 連線測試中...';
+        this.tgTestBtn.disabled = true;
+      }
+      this.showTelegramStatus('loading', '⏳ 正在向 Telegram 伺服器傳送測試訊息...');
+
+      try {
+        const res = await this.manager.testTelegram(botToken, chatId);
+        if (res && res.success) {
+          this.showTelegramStatus('success', '🎉 測試成功！已向 Telegram 送出測試訊息，請查看您的手機！');
+          this.onShowToast('Telegram 測試訊息發送成功');
+        } else {
+          this.showTelegramStatus('error', `❌ 測試失敗：${res?.message || '未知錯誤，請檢查 Token 與 Chat ID'}`);
+        }
+      } catch (e) {
+        this.showTelegramStatus('error', `❌ 測試發生異常：${e}`);
+      } finally {
+        if (this.tgTestBtn) {
+          this.tgTestBtn.textContent = '📱 發送測試訊息';
+          this.tgTestBtn.disabled = false;
+        }
+      }
     });
 
     // Check now button
@@ -187,16 +256,47 @@ export class ArticleMonitorUI {
     if (tab === 'history') {
       this.tabHistoryBtn?.classList.add('active');
       this.tabRulesBtn?.classList.remove('active');
+      this.tabTelegramBtn?.classList.remove('active');
       this.paneHistory?.classList.remove('hidden');
       this.paneRules?.classList.add('hidden');
+      this.paneTelegram?.classList.add('hidden');
       this.manager.markAllRead();
       this.updateToolbarBadge();
-    } else {
+    } else if (tab === 'rules') {
       this.tabRulesBtn?.classList.add('active');
       this.tabHistoryBtn?.classList.remove('active');
+      this.tabTelegramBtn?.classList.remove('active');
       this.paneRules?.classList.remove('hidden');
       this.paneHistory?.classList.add('hidden');
+      this.paneTelegram?.classList.add('hidden');
+    } else if (tab === 'telegram') {
+      this.tabTelegramBtn?.classList.add('active');
+      this.tabHistoryBtn?.classList.remove('active');
+      this.tabRulesBtn?.classList.remove('active');
+      this.paneTelegram?.classList.remove('hidden');
+      this.paneHistory?.classList.add('hidden');
+      this.paneRules?.classList.add('hidden');
+      this.loadTelegramForm();
     }
+  }
+
+  loadTelegramForm() {
+    const config = this.manager.getTelegramConfig();
+    if (this.tgEnabledInput) this.tgEnabledInput.checked = Boolean(config.enabled);
+    if (this.tgTokenInput) this.tgTokenInput.value = config.botToken || '';
+    if (this.tgChatIdInput) this.tgChatIdInput.value = config.chatId || '';
+    if (this.tgSilentInput) this.tgSilentInput.checked = Boolean(config.silent);
+    if (this.tgStatusEl) {
+      this.tgStatusEl.className = 'tg-status-banner hidden';
+      this.tgStatusEl.textContent = '';
+    }
+  }
+
+  showTelegramStatus(type, msg) {
+    if (!this.tgStatusEl) return;
+    this.tgStatusEl.className = `tg-status-banner ${type}`;
+    this.tgStatusEl.textContent = msg;
+    this.tgStatusEl.classList.remove('hidden');
   }
 
   updateToolbarBadge() {

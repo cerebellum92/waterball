@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ArticleMonitorManager } from '../src/article_monitor.js';
+import { ArticleMonitorManager, formatTelegramArticleMessage } from '../src/article_monitor.js';
 
 class MockStorage {
   constructor() {
@@ -120,4 +120,106 @@ test('ArticleMonitorManager respects baseline on first check and alerts on new a
   // 4. Mark all as read
   manager.markAllRead();
   assert.equal(manager.getUnreadCount(), 0);
+});
+
+test('formatTelegramArticleMessage formats HTML and escapes reserved characters', () => {
+  const item = {
+    board: 'Stock',
+    title: '[情報] 2330 台積電 & 聯電 <最新法說>',
+    author: 'market_watch',
+    nrec: '爆',
+    link: 'https://www.ptt.cc/bbs/Stock/M.123456.html',
+  };
+
+  const message = formatTelegramArticleMessage(item);
+  assert.ok(message.includes('【Waterball PTT 文章追蹤通知】'));
+  assert.ok(message.includes('<b>看板</b>：#Stock'));
+  assert.ok(message.includes('&amp; 聯電 &lt;最新法說&gt;'));
+  assert.ok(message.includes('<b>推文</b>：爆推'));
+  assert.ok(message.includes('<a href="https://www.ptt.cc/bbs/Stock/M.123456.html">'));
+});
+
+test('ArticleMonitorManager persists and loads Telegram config', () => {
+  const storage = new MockStorage();
+  const manager = new ArticleMonitorManager(storage);
+
+  assert.deepEqual(manager.getTelegramConfig(), {
+    enabled: false,
+    botToken: '',
+    chatId: '',
+    silent: false,
+  });
+
+  manager.saveTelegramConfig({
+    enabled: true,
+    botToken: '123456:ABC-DEF',
+    chatId: '987654321',
+    silent: true,
+  });
+
+  assert.deepEqual(manager.getTelegramConfig(), {
+    enabled: true,
+    botToken: '123456:ABC-DEF',
+    chatId: '987654321',
+    silent: true,
+  });
+
+  // Verify reload from storage
+  const manager2 = new ArticleMonitorManager(storage);
+  assert.deepEqual(manager2.getTelegramConfig(), {
+    enabled: true,
+    botToken: '123456:ABC-DEF',
+    chatId: '987654321',
+    silent: true,
+  });
+});
+
+test('ArticleMonitorManager forwards alert to Telegram when enabled', async () => {
+  const storage = new MockStorage();
+  const sentMessages = [];
+
+  const mockTelegramSend = async (botToken, chatId, text, silent) => {
+    sentMessages.push({ botToken, chatId, text, silent });
+    return { success: true, message: 'ok' };
+  };
+
+  let currentFeed = [
+    { id: 'art_old', board: 'Lifeismoney', title: '特賣', author: 'u1', nrec: '10', link: '/1' },
+  ];
+  const mockFetch = async () => currentFeed;
+
+  const manager = new ArticleMonitorManager(storage, mockFetch, mockTelegramSend);
+  manager.rules = [
+    { id: 'r1', board: 'Lifeismoney', keywords: ['特價'], author: '', minPushes: 0, enabled: true },
+  ];
+
+  // Configure Telegram
+  manager.saveTelegramConfig({
+    enabled: true,
+    botToken: 'test_token',
+    chatId: 'test_chat_id',
+    silent: false,
+  });
+
+  // 1. Establish baseline
+  await manager.checkBoard('Lifeismoney');
+  assert.equal(sentMessages.length, 0);
+
+  // 2. Incoming new article
+  currentFeed = [
+    ...currentFeed,
+    { id: 'art_new', board: 'Lifeismoney', title: '[情報] 超市特價買一送一', author: 'shopper', nrec: '15', link: '/2' },
+  ];
+
+  await manager.checkBoard('Lifeismoney');
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0].botToken, 'test_token');
+  assert.equal(sentMessages[0].chatId, 'test_chat_id');
+  assert.ok(sentMessages[0].text.includes('超市特價買一送一'));
+
+  // 3. testTelegram sends verification message
+  const testRes = await manager.testTelegram('test_token', 'test_chat_id');
+  assert.equal(testRes.success, true);
+  assert.equal(sentMessages.length, 2);
+  assert.ok(sentMessages[1].text.includes('連線測試成功'));
 });

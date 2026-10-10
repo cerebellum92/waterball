@@ -629,6 +629,7 @@
       <div class="monitor-tabs">
         <button id="monitor-tab-history-btn" class="monitor-tab-btn active">🔔 最新動態 (<span id="monitor-history-count">0</span>)</button>
         <button id="monitor-tab-rules-btn" class="monitor-tab-btn">⚙️ 追蹤規則與看板 (<span id="monitor-rules-count">0</span>)</button>
+        <button id="monitor-tab-telegram-btn" class="monitor-tab-btn">📱 Telegram 轉發設定</button>
         <div class="monitor-tab-actions">
           <button id="monitor-check-now-btn" class="btn-secondary" title="立即連線 PTT 檢查最新文章">⚡ 立即檢查</button>
         </div>
@@ -693,6 +694,71 @@
         <div class="rules-list-container">
           <h3 class="rules-subtitle">目前追蹤規則清單</h3>
           <div id="monitor-rules-list" class="monitor-rules-list"></div>
+        </div>
+      </div>
+
+      <!-- Tab 3: Telegram Bot Forwarding -->
+      <div id="monitor-pane-telegram" class="monitor-pane hidden">
+        <div class="tg-settings-container">
+          <div class="tg-intro-card">
+            <h3 class="tg-intro-title">📱 Telegram 即時推播轉發 (出門在外也能手機收信)</h3>
+            <p class="tg-intro-desc">當電腦在背景偵測到符合追蹤規則的 PTT 新文章時，可透過您專屬的 Telegram Bot 即時將文章推播到您的手機！</p>
+            <div class="tg-steps-box">
+              <div class="tg-step-item">
+                <span class="step-num">1</span>
+                <span>在 Telegram 搜尋 <b>@BotFather</b> 發送 <code>/newbot</code>，建立機器人並複製取得 <b>HTTP API Token</b>。</span>
+              </div>
+              <div class="tg-step-item">
+                <span class="step-num">2</span>
+                <span>點入您的新機器人對話框並點擊 <b>Start</b>（或傳送任意訊息給它）。</span>
+              </div>
+              <div class="tg-step-item">
+                <span class="step-num">3</span>
+                <span>在 Telegram 搜尋 <b>@userinfobot</b> 取得您的 <b>Id (Chat ID)</b>，填入下方並點擊「發送測試訊息」。</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="tg-config-form">
+            <div class="form-group">
+              <label class="checkbox-label font-bold">
+                <input type="checkbox" id="monitor-tg-enabled" />
+                <span>🔔 啟用 Telegram 即時推播轉發</span>
+              </label>
+              <p class="hint">啟用後，符合條件的新文章將同時發送至您的 Telegram，享受雙重推播保險。</p>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group flex-2">
+                <label for="monitor-tg-token">Telegram Bot Token：</label>
+                <div class="password-wrapper">
+                  <input type="password" id="monitor-tg-token" placeholder="例如: 123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ" autocomplete="off" />
+                  <button type="button" id="monitor-tg-toggle-token-btn" class="token-toggle-btn" title="顯示/隱藏 Token">👁️</button>
+                </div>
+                <p class="hint">安全承諾：Token 僅加密/保存在本機端，絕不經過任何第三方雲端或代理伺服器。</p>
+              </div>
+
+              <div class="form-group flex-1">
+                <label for="monitor-tg-chatid">您的 Chat ID：</label>
+                <input type="text" id="monitor-tg-chatid" placeholder="例如: 987654321 或群組 -100xxxxxxxxxx" />
+                <p class="hint">個人 ID，或已加入機器人的群組/頻道 ID。</p>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="monitor-tg-silent" />
+                <span>🔕 無聲推播模式 (發送無聲訊息，避免半夜發出響鈴或震動)</span>
+              </label>
+            </div>
+
+            <div class="tg-form-actions">
+              <button type="button" id="monitor-tg-test-btn" class="btn-secondary">📱 發送測試訊息</button>
+              <button type="button" id="monitor-tg-save-btn" class="btn-primary">💾 儲存 Telegram 設定</button>
+            </div>
+
+            <div id="monitor-tg-status" class="tg-status-banner hidden"></div>
+          </div>
         </div>
       </div>
     </div>
