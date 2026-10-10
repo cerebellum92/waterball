@@ -6,10 +6,12 @@ export class UserTagsUI {
     userTagsManager: manager = userTagsManager,
     onShowToast = () => {},
     onTagChange = () => {},
+    onFocusTerminal = () => {},
   } = {}) {
     this.manager = manager;
     this.onShowToast = onShowToast;
     this.onTagChange = onTagChange;
+    this.onFocusTerminal = onFocusTerminal;
 
     this.selectedColor = 'blue';
     this.searchFilter = '';
@@ -203,6 +205,7 @@ export class UserTagsUI {
     if (this.modalEl) {
       this.modalEl.classList.add('hidden');
     }
+    this.onFocusTerminal?.();
   }
 
   isOpen() {

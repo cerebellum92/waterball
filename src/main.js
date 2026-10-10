@@ -280,6 +280,7 @@ waterballUI.onSendWaterball = (contactName, message) => {
   connectionCtrl.sendData(`\x12${message}\r`);
 };
 waterballUI.onShowToast = showGlobalToast;
+waterballUI.onFocusTerminal = (force = true) => imeCtrl.focusTerminal(force);
 
 // Article Monitor UI Integration
 articleMonitorUI.onOpenArticleReader = (url) => {
@@ -297,6 +298,8 @@ articleMonitorUI.onSwitchBoard = (board) => {
   }
 };
 articleMonitorUI.onShowToast = showGlobalToast;
+articleMonitorUI.onFocusTerminal = (force = true) => imeCtrl.focusTerminal(force);
+userTagsUI.onFocusTerminal = (force = true) => imeCtrl.focusTerminal(force);
 
 // Start background article monitoring scheduler (every 3 minutes)
 articleMonitorManager.startScheduler(3);
@@ -634,6 +637,28 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
+  // Article Monitor & Alert Center Toggle (Alt+M / Cmd+Alt+M / Ctrl+Alt+M)
+  if (e.altKey && (e.code === 'KeyM' || e.key === 'm' || e.key === 'M')) {
+    e.preventDefault();
+    if (articleMonitorUI.isOpen()) {
+      articleMonitorUI.close();
+    } else {
+      articleMonitorUI.open();
+    }
+    return;
+  }
+
+  // Waterball Messenger Toggle (Alt+W / Cmd+Alt+W / Ctrl+Alt+W)
+  if (e.altKey && (e.code === 'KeyW' || e.key === 'w' || e.key === 'W')) {
+    e.preventDefault();
+    if (waterballUI.isOpen()) {
+      waterballUI.close();
+    } else {
+      waterballUI.open();
+    }
+    return;
+  }
+
   if (waterballUI && waterballUI.isOpen()) {
     if (e.key === 'Escape') {
       waterballUI.close();
@@ -656,28 +681,6 @@ window.addEventListener('keydown', (e) => {
   }
 
   if (isInteractiveInputElement(document.activeElement, imeInput)) {
-    return;
-  }
-
-  // Article Monitor & Alert Center (Alt+M / Cmd+Alt+M / Ctrl+Alt+M)
-  if (e.altKey && (e.code === 'KeyM' || e.key === 'm' || e.key === 'M')) {
-    e.preventDefault();
-    if (articleMonitorUI.isOpen()) {
-      articleMonitorUI.close();
-    } else {
-      articleMonitorUI.open();
-    }
-    return;
-  }
-
-  // Waterball Messenger (Alt+W / Cmd+Alt+W / Ctrl+Alt+W)
-  if (e.altKey && (e.code === 'KeyW' || e.key === 'w' || e.key === 'W')) {
-    e.preventDefault();
-    if (waterballUI.isOpen()) {
-      waterballUI.close();
-    } else {
-      waterballUI.open();
-    }
     return;
   }
 
@@ -787,7 +790,7 @@ window.addEventListener('keydown', (e) => {
   if (!activeTab || !activeTab.isConnected) return;
 
   // Make sure terminal textarea has focus
-  imeCtrl.focusTerminal();
+  imeCtrl.focusTerminal(true);
 
   // If user is actively in IME composition or candidate selection popup
   if (imeCtrl.isComposing || e.isComposing || e.key === 'Process' || e.keyCode === 229) {

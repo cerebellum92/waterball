@@ -223,3 +223,40 @@ test('ArticleMonitorManager forwards alert to Telegram when enabled', async () =
   assert.equal(sentMessages.length, 2);
   assert.ok(sentMessages[1].text.includes('連線測試成功'));
 });
+
+test('index.html integrity: all modals are properly closed and not nested', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const html = fs.readFileSync(path.resolve('index.html'), 'utf8');
+
+  // Verify none of the key modals are nested inside another modal
+  const modalIds = [
+    'settings-modal',
+    'push-modal',
+    'waterball-modal',
+    'user-tag-modal',
+    'article-monitor-modal',
+  ];
+
+  for (const modalId of modalIds) {
+    const modalPattern = new RegExp(`<div[^>]*id=["']${modalId}["'][^>]*>`, 'i');
+    assert.ok(modalPattern.test(html), `Expected modal #${modalId} in index.html`);
+  }
+
+  // Verify waterball-modal is closed before article-monitor-modal
+  const waterballIdx = html.indexOf('id="waterball-modal"');
+  const monitorIdx = html.indexOf('id="article-monitor-modal"');
+  assert.ok(waterballIdx > 0 && monitorIdx > 0);
+  assert.ok(monitorIdx > waterballIdx);
+
+  // Substring between waterball and article-monitor must balance all open/close divs
+  const between = html.slice(waterballIdx, monitorIdx);
+  const openDivs = (between.match(/<div\b/gi) || []).length;
+  const closeDivs = (between.match(/<\/div>/gi) || []).length;
+  assert.equal(
+    openDivs,
+    closeDivs,
+    `waterball-modal must be fully closed before article-monitor-modal begins (open: ${openDivs}, close: ${closeDivs})`
+  );
+});
+

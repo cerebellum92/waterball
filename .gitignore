@@ -28,3 +28,4 @@ target/
 *.sw?
 DEPLOY.md
 DEVELOPER.md
+*.dmg

@@ -41,6 +41,9 @@ export class ImeController {
         e.target.closest('#palette-widget') ||
         e.target.closest('#export-modal') ||
         e.target.closest('#board-switcher-widget') ||
+        e.target.closest('#waterball-modal') ||
+        e.target.closest('#user-tag-modal') ||
+        e.target.closest('#article-monitor-modal') ||
         e.target.closest('#toolbar') ||
         e.target.closest('#tab-bar')
       ) {

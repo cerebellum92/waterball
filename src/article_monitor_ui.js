@@ -8,11 +8,13 @@ export class ArticleMonitorUI {
     manager = articleMonitorManager,
     onOpenArticleReader = () => {},
     onSwitchBoard = () => {},
+    onFocusTerminal = () => {},
     onShowToast = () => {},
   } = {}) {
     this.manager = manager;
     this.onOpenArticleReader = onOpenArticleReader;
     this.onSwitchBoard = onSwitchBoard;
+    this.onFocusTerminal = onFocusTerminal;
     this.onShowToast = onShowToast;
 
     // Cache elements
@@ -250,6 +252,7 @@ export class ArticleMonitorUI {
     if (this.modalEl) {
       this.modalEl.classList.add('hidden');
     }
+    this.onFocusTerminal?.();
   }
 
   switchTab(tab) {

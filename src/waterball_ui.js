@@ -7,10 +7,12 @@ export class WaterballUI {
   constructor({
     manager = waterballManager,
     onSendWaterball = () => {},
+    onFocusTerminal = () => {},
     onShowToast = () => {},
   } = {}) {
     this.manager = manager;
     this.onSendWaterball = onSendWaterball;
+    this.onFocusTerminal = onFocusTerminal;
     this.onShowToast = onShowToast;
 
     this.activeContactId = '';
@@ -159,6 +161,7 @@ export class WaterballUI {
     if (this.modalEl) {
       this.modalEl.classList.add('hidden');
     }
+    this.onFocusTerminal?.();
   }
 
   renderContacts() {
