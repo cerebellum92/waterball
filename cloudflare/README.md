@@ -19,7 +19,7 @@
 
 ### 步驟 2：綁定免費 KV 資料庫（儲存規則與狀態）
 1. 回到 Cloudflare 控制台，左側選單點選 **Build** ➡️ **Storage & Databases** ➡️ **KV**（若舊版介面則在 Workers & Pages 旁邊的 KV）。
-2. 點擊 **Create namespace**，名稱輸入 `PTT_TRACKER_KV`，點擊 **Add**。
+2. 點擊 **Create namespace**，名稱輸入 `PTT_TRACKER_KV`，點擊 **Create**。
 3. 回到您剛建立的 Worker 頁面，點選 **Settings**（設定）➡️ **Variables and Secrets**（或 **Bindings**）。
 4. 找到 **KV Namespace Bindings** 區塊，點擊 **Add binding**：
    - **Variable name（變數名稱）**：務必填寫 `PTT_TRACKER_KV`
