@@ -632,6 +632,7 @@
         <button id="monitor-tab-history-btn" class="monitor-tab-btn active">🔔 最新動態 (<span id="monitor-history-count">0</span>)</button>
         <button id="monitor-tab-rules-btn" class="monitor-tab-btn">⚙️ 追蹤規則與看板 (<span id="monitor-rules-count">0</span>)</button>
         <button id="monitor-tab-telegram-btn" class="monitor-tab-btn">📱 Telegram 轉發設定</button>
+        <button id="monitor-tab-cloud-btn" class="monitor-tab-btn">☁️ 雲端 24H 守護 (Cloudflare)</button>
         <div class="monitor-tab-actions">
           <button id="monitor-check-now-btn" class="btn-secondary" title="立即連線 PTT 檢查最新文章">⚡ 立即檢查</button>
         </div>
@@ -761,6 +762,75 @@
             </div>
 
             <div id="monitor-tg-status" class="tg-status-banner hidden"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 4: Cloudflare 24H Edge Guard -->
+      <div id="monitor-pane-cloud" class="monitor-pane hidden">
+        <div class="tg-settings-container">
+          <div class="tg-intro-card">
+            <h3 class="tg-intro-title">☁️ Cloudflare Workers 雲端 24H 邊緣守護者</h3>
+            <p class="tg-intro-desc">
+              出門在外或電腦關機時，由您專屬的 Cloudflare Edge Worker 免費在背景全天候 24 小時守候追蹤！
+              在 Waterball 修改任何追蹤規則或 Telegram 設定，一鍵自動同步至雲端，徹底實現全自動無人值守。
+            </p>
+            <div class="tg-steps-box">
+              <div class="tg-step-item">
+                <span class="step-num">1</span>
+                <span>登入免費的 Cloudflare 帳號，建立 Worker 並貼入我們提供的 <code>cloudflare/worker.js</code> 腳本。</span>
+              </div>
+              <div class="tg-step-item">
+                <span class="step-num">2</span>
+                <span>綁定一個免費 KV Namespace（命名為 <code>PTT_TRACKER_KV</code>），並新增每 3 分鐘觸發一次的排程。</span>
+              </div>
+              <div class="tg-step-item">
+                <span class="step-num">3</span>
+                <span>將產生的專屬 Worker 網址填入下方，設定一組同步金鑰，點擊「🔄 立即同步規則至雲端」即可！</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="tg-config-form">
+            <div class="form-group">
+              <label class="checkbox-label font-bold">
+                <input type="checkbox" id="monitor-cloud-enabled" />
+                <span>☁️ 啟用 Cloudflare 雲端 24H 邊緣守護</span>
+              </label>
+              <p class="hint">啟用後，可將本機規則同步至雲端邊緣伺服器進行無人值守追蹤。</p>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group flex-2">
+                <label for="monitor-cloud-url">Cloudflare Worker 專屬網址：</label>
+                <input type="text" id="monitor-cloud-url" placeholder="例如: https://waterball-tracker.yourname.workers.dev" />
+                <p class="hint">在 Cloudflare Workers 控制台建立後取得的專屬 *.workers.dev 網址。</p>
+              </div>
+
+              <div class="form-group flex-1">
+                <label for="monitor-cloud-secret">同步安全密鑰 (Secret Key)：</label>
+                <div class="password-wrapper">
+                  <input type="password" id="monitor-cloud-secret" placeholder="自訂任意金鑰字串" autocomplete="off" />
+                  <button type="button" id="monitor-cloud-gen-secret-btn" class="token-toggle-btn" title="隨機產生金鑰" style="font-size: 13px;">🎲</button>
+                </div>
+                <p class="hint">防止他人未經授權向您的 Worker 同步規則的安全金鑰。</p>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="monitor-cloud-autosync" checked />
+                <span>🔄 本機追蹤規則修改時，自動同步更新至雲端</span>
+              </label>
+            </div>
+
+            <div class="tg-form-actions">
+              <button type="button" id="monitor-cloud-sync-btn" class="btn-primary">🔄 立即同步規則至雲端</button>
+              <button type="button" id="monitor-cloud-test-btn" class="btn-secondary">🧪 測試雲端連線</button>
+              <button type="button" id="monitor-cloud-save-btn" class="btn-secondary">💾 儲存設定</button>
+            </div>
+
+            <div id="monitor-cloud-status" class="tg-status-banner hidden"></div>
           </div>
         </div>
       </div>

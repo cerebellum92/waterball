@@ -86,15 +86,18 @@ export class ArticleMonitorManager {
   constructor(
     storage = (typeof localStorage !== 'undefined' ? localStorage : null),
     fetchFn = null,
-    telegramSendFn = null
+    telegramSendFn = null,
+    cloudSyncFn = null
   ) {
     this.storage = storage;
     this.customFetch = fetchFn;
     this.customTelegramSend = telegramSendFn;
+    this.customCloudSync = cloudSyncFn;
     this.rules = this.loadRules();
     this.history = this.loadHistory();
     this.seenIds = this.loadSeenIds();
     this.telegramConfig = this.loadTelegramConfig();
+    this.cloudSyncConfig = this.loadCloudSyncConfig();
     this.initializedBoards = new Set();
     this.intervalMinutes = 3;
     this.timer = null;
@@ -126,6 +129,9 @@ export class ArticleMonitorManager {
       console.warn('Failed to save monitor rules:', e);
     }
     this.notify();
+    if (this.cloudSyncConfig?.enabled && this.cloudSyncConfig?.autoSync && this.cloudSyncConfig?.workerUrl) {
+      this.syncToCloud().catch(() => {});
+    }
   }
 
   loadHistory() {
@@ -231,6 +237,9 @@ export class ArticleMonitorManager {
       }
     }
     this.notify();
+    if (this.cloudSyncConfig?.enabled && this.cloudSyncConfig?.autoSync && this.cloudSyncConfig?.workerUrl) {
+      this.syncToCloud().catch(() => {});
+    }
   }
 
   getTelegramConfig() {
@@ -302,6 +311,157 @@ export class ArticleMonitorManager {
     ].join('\n');
 
     return this.sendTelegramRawMessage(cleanToken, cleanChatId, testText, false);
+  }
+
+  // --- Cloudflare 24H Edge Guard & Sync ---
+
+  loadCloudSyncConfig() {
+    if (!this.storage) {
+      return { enabled: false, workerUrl: '', syncSecret: '', autoSync: true, lastSyncTime: null };
+    }
+    try {
+      const raw = this.storage.getItem('bbsterm_monitor_cloud_sync');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return {
+          enabled: Boolean(parsed.enabled),
+          workerUrl: String(parsed.workerUrl || '').trim(),
+          syncSecret: String(parsed.syncSecret || '').trim(),
+          autoSync: parsed.autoSync !== false,
+          lastSyncTime: parsed.lastSyncTime || null,
+        };
+      }
+    } catch (e) {
+      console.warn('Failed to load Cloudflare sync config:', e);
+    }
+    return { enabled: false, workerUrl: '', syncSecret: '', autoSync: true, lastSyncTime: null };
+  }
+
+  saveCloudSyncConfig(config) {
+    this.cloudSyncConfig = {
+      enabled: Boolean(config.enabled),
+      workerUrl: String(config.workerUrl || '').trim().replace(/\/+$/, ''),
+      syncSecret: String(config.syncSecret || '').trim(),
+      autoSync: config.autoSync !== false,
+      lastSyncTime: config.lastSyncTime || this.cloudSyncConfig?.lastSyncTime || null,
+    };
+    if (this.storage) {
+      try {
+        this.storage.setItem('bbsterm_monitor_cloud_sync', JSON.stringify(this.cloudSyncConfig));
+      } catch (e) {
+        console.warn('Failed to save Cloudflare sync config:', e);
+      }
+    }
+    this.notify();
+  }
+
+  getCloudSyncConfig() {
+    return { ...this.cloudSyncConfig };
+  }
+
+  async syncToCloud(options = {}) {
+    if (this.customCloudSync) {
+      return this.customCloudSync(options, {
+        rules: this.getRules(),
+        telegram: this.getTelegramConfig(),
+      });
+    }
+
+    const workerUrl = (options.workerUrl || this.cloudSyncConfig?.workerUrl || '').trim().replace(/\/+$/, '');
+    const syncSecret = (options.syncSecret || this.cloudSyncConfig?.syncSecret || '').trim();
+
+    if (!workerUrl) {
+      return { success: false, message: '請填寫 Cloudflare Worker 專屬網址' };
+    }
+    if (!syncSecret) {
+      return { success: false, message: '請填寫同步密鑰 (Sync Secret Key)' };
+    }
+
+    const payload = JSON.stringify({
+      rules: this.getRules(),
+      telegram: this.getTelegramConfig(),
+    });
+
+    if (typeof window !== 'undefined' && window.__TAURI__?.core?.invoke) {
+      try {
+        const res = await window.__TAURI__.core.invoke('sync_to_cloudflare_worker', {
+          workerUrl,
+          secretKey: syncSecret,
+          payloadJson: payload,
+        });
+        if (res.success) {
+          this.cloudSyncConfig.lastSyncTime = res.updated_at || Date.now();
+          this.saveCloudSyncConfig(this.cloudSyncConfig);
+        }
+        return res;
+      } catch (e) {
+        return { success: false, message: `同步失敗: ${e}` };
+      }
+    }
+
+    // Web fallback
+    try {
+      const endpoint = workerUrl.endsWith('/sync') ? workerUrl : `${workerUrl}/sync`;
+      const resp = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${syncSecret}`,
+        },
+        body: payload,
+      });
+      const data = await resp.json();
+      if (resp.ok && data.success) {
+        this.cloudSyncConfig.lastSyncTime = data.updatedAt || Date.now();
+        this.saveCloudSyncConfig(this.cloudSyncConfig);
+        return data;
+      }
+      return { success: false, message: data.message || `HTTP ${resp.status}` };
+    } catch (e) {
+      return { success: false, message: `無法連線至 Worker: ${e.message}` };
+    }
+  }
+
+  async testCloudConnection(workerUrl, syncSecret) {
+    const cleanUrl = String(workerUrl || '').trim().replace(/\/+$/, '');
+    const cleanSecret = String(syncSecret || '').trim();
+
+    if (!cleanUrl) {
+      return { success: false, message: '請填寫 Cloudflare Worker 網址' };
+    }
+    if (!cleanSecret) {
+      return { success: false, message: '請填寫同步密鑰 (Sync Secret Key)' };
+    }
+
+    if (typeof window !== 'undefined' && window.__TAURI__?.core?.invoke) {
+      try {
+        return await window.__TAURI__.core.invoke('test_cloudflare_worker', {
+          workerUrl: cleanUrl,
+          secretKey: cleanSecret,
+        });
+      } catch (e) {
+        return { success: false, message: String(e) };
+      }
+    }
+
+    try {
+      const endpoint = cleanUrl.endsWith('/sync') ? cleanUrl : `${cleanUrl}/sync`;
+      const resp = await fetch(endpoint, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${cleanSecret}`,
+        },
+      });
+      if (resp.ok) {
+        return { success: true, message: '連線成功！Cloudflare Worker 運作正常且金鑰驗證通過。' };
+      }
+      if (resp.status === 401) {
+        return { success: false, message: '連線失敗：同步密鑰 (Secret Key) 不正確。' };
+      }
+      return { success: false, message: `連線失敗 (HTTP ${resp.status})` };
+    } catch (e) {
+      return { success: false, message: `連線失敗: ${e.message}` };
+    }
   }
 
   addListener(fn) {

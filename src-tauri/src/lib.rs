@@ -633,6 +633,160 @@ async fn send_telegram_message(
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct CloudflareSyncResult {
+    pub success: bool,
+    pub message: String,
+    pub rule_count: Option<usize>,
+    pub updated_at: Option<u64>,
+}
+
+#[tauri::command]
+async fn sync_to_cloudflare_worker(
+    worker_url: String,
+    secret_key: String,
+    payload_json: String,
+) -> Result<CloudflareSyncResult, String> {
+    let clean_url = worker_url.trim().trim_end_matches('/').to_string();
+    let clean_secret = secret_key.trim();
+
+    if clean_url.is_empty() {
+        return Ok(CloudflareSyncResult {
+            success: false,
+            message: "請填寫 Cloudflare Worker 專屬網址".to_string(),
+            rule_count: None,
+            updated_at: None,
+        });
+    }
+
+    if clean_secret.is_empty() {
+        return Ok(CloudflareSyncResult {
+            success: false,
+            message: "請填寫同步密鑰 (Sync Secret Key)".to_string(),
+            rule_count: None,
+            updated_at: None,
+        });
+    }
+
+    let target_endpoint = if clean_url.ends_with("/sync") {
+        clean_url
+    } else {
+        format!("{}/sync", clean_url)
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(12))
+        .build()
+        .map_err(|e| format!("無法建立 HTTP 客戶端: {}", e))?;
+
+    let resp = client
+        .post(&target_endpoint)
+        .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", clean_secret))
+        .body(payload_json)
+        .send()
+        .await
+        .map_err(|e| format!("連線 Cloudflare Worker 失敗: {}", e))?;
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+
+    if status.is_success() {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+            let msg = v["message"].as_str().unwrap_or("同步成功！").to_string();
+            let count = v["ruleCount"].as_u64().map(|c| c as usize);
+            let updated = v["updatedAt"].as_u64();
+            Ok(CloudflareSyncResult {
+                success: true,
+                message: msg,
+                rule_count: count,
+                updated_at: updated,
+            })
+        } else {
+            Ok(CloudflareSyncResult {
+                success: true,
+                message: "規則同步成功！".to_string(),
+                rule_count: None,
+                updated_at: None,
+            })
+        }
+    } else {
+        let err_msg = if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+            v["message"].as_str().unwrap_or(&body).to_string()
+        } else {
+            body
+        };
+        Ok(CloudflareSyncResult {
+            success: false,
+            message: format!("Cloudflare 回應異常 (HTTP {}): {}", status, err_msg),
+            rule_count: None,
+            updated_at: None,
+        })
+    }
+}
+
+#[tauri::command]
+async fn test_cloudflare_worker(
+    worker_url: String,
+    secret_key: String,
+) -> Result<CloudflareSyncResult, String> {
+    let clean_url = worker_url.trim().trim_end_matches('/').to_string();
+    let clean_secret = secret_key.trim();
+
+    if clean_url.is_empty() {
+        return Ok(CloudflareSyncResult {
+            success: false,
+            message: "請填寫 Cloudflare Worker 網址".to_string(),
+            rule_count: None,
+            updated_at: None,
+        });
+    }
+
+    let target_endpoint = if clean_url.ends_with("/sync") {
+        clean_url
+    } else {
+        format!("{}/sync", clean_url)
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|e| format!("無法建立 HTTP 客戶端: {}", e))?;
+
+    let resp = client
+        .get(&target_endpoint)
+        .header("Authorization", format!("Bearer {}", clean_secret))
+        .send()
+        .await
+        .map_err(|e| format!("無法連線至 Worker: {}", e))?;
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+
+    if status.is_success() {
+        Ok(CloudflareSyncResult {
+            success: true,
+            message: "連線成功！Cloudflare Worker 運作正常且金鑰驗證通過。".to_string(),
+            rule_count: None,
+            updated_at: None,
+        })
+    } else if status.as_u16() == 401 {
+        Ok(CloudflareSyncResult {
+            success: false,
+            message: "連線失敗：同步密鑰 (Secret Key) 不正確，請確認金鑰設定。".to_string(),
+            rule_count: None,
+            updated_at: None,
+        })
+    } else {
+        Ok(CloudflareSyncResult {
+            success: false,
+            message: format!("連線失敗 (HTTP {}): {}", status, body),
+            rule_count: None,
+            updated_at: None,
+        })
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let connections = Arc::new(Mutex::new(HashMap::<String, BbsConnection>::new()));
@@ -718,6 +872,8 @@ pub fn run() {
             set_remember_window_state,
             fetch_ptt_board_articles,
             send_telegram_message,
+            sync_to_cloudflare_worker,
+            test_cloudflare_worker,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

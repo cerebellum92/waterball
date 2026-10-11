@@ -56,6 +56,18 @@ export class ArticleMonitorUI {
     this.tgSaveBtn = document.getElementById('monitor-tg-save-btn');
     this.tgStatusEl = document.getElementById('monitor-tg-status');
 
+    this.tabCloudBtn = document.getElementById('monitor-tab-cloud-btn');
+    this.paneCloud = document.getElementById('monitor-pane-cloud');
+    this.cloudEnabledInput = document.getElementById('monitor-cloud-enabled');
+    this.cloudUrlInput = document.getElementById('monitor-cloud-url');
+    this.cloudSecretInput = document.getElementById('monitor-cloud-secret');
+    this.cloudGenSecretBtn = document.getElementById('monitor-cloud-gen-secret-btn');
+    this.cloudAutoSyncInput = document.getElementById('monitor-cloud-autosync');
+    this.cloudSyncBtn = document.getElementById('monitor-cloud-sync-btn');
+    this.cloudTestBtn = document.getElementById('monitor-cloud-test-btn');
+    this.cloudSaveBtn = document.getElementById('monitor-cloud-save-btn');
+    this.cloudStatusEl = document.getElementById('monitor-cloud-status');
+
     this.initEventListeners();
     this.updateToolbarBadge();
 
@@ -102,6 +114,98 @@ export class ArticleMonitorUI {
 
     this.tabTelegramBtn?.addEventListener('click', () => {
       this.switchTab('telegram');
+    });
+
+    this.tabCloudBtn?.addEventListener('click', () => {
+      this.switchTab('cloud');
+    });
+
+    // Cloudflare secret generator button
+    this.cloudGenSecretBtn?.addEventListener('click', () => {
+      if (this.cloudSecretInput) {
+        this.cloudSecretInput.value = this.generateRandomSecret();
+        this.cloudSecretInput.type = 'text';
+      }
+    });
+
+    // Cloudflare save config button
+    this.cloudSaveBtn?.addEventListener('click', () => {
+      const enabled = Boolean(this.cloudEnabledInput?.checked);
+      const workerUrl = String(this.cloudUrlInput?.value || '').trim();
+      const syncSecret = String(this.cloudSecretInput?.value || '').trim();
+      const autoSync = Boolean(this.cloudAutoSyncInput?.checked);
+
+      this.manager.saveCloudSyncConfig({ enabled, workerUrl, syncSecret, autoSync });
+      this.showCloudStatus('success', '✅ Cloudflare 設定已儲存！');
+      this.onShowToast('Cloudflare 設定已儲存');
+    });
+
+    // Cloudflare test connection button
+    this.cloudTestBtn?.addEventListener('click', async () => {
+      const workerUrl = String(this.cloudUrlInput?.value || '').trim();
+      const syncSecret = String(this.cloudSecretInput?.value || '').trim();
+      if (!workerUrl || !syncSecret) {
+        this.showCloudStatus('error', '❌ 請先填寫 Worker 網址與同步密鑰才能進行測試！');
+        return;
+      }
+      if (this.cloudTestBtn) {
+        this.cloudTestBtn.textContent = '⏳ 連線測試中...';
+        this.cloudTestBtn.disabled = true;
+      }
+      try {
+        const res = await this.manager.testCloudConnection(workerUrl, syncSecret);
+        if (res && res.success) {
+          this.showCloudStatus('success', `✅ ${res.message}`);
+          this.onShowToast('Cloudflare 連線測試成功');
+        } else {
+          this.showCloudStatus('error', `❌ 測試失敗：${res?.message || '未知錯誤'}`);
+        }
+      } catch (e) {
+        this.showCloudStatus('error', `❌ 測試發生異常：${e}`);
+      } finally {
+        if (this.cloudTestBtn) {
+          this.cloudTestBtn.textContent = '🧪 測試雲端連線';
+          this.cloudTestBtn.disabled = false;
+        }
+      }
+    });
+
+    // Cloudflare sync now button
+    this.cloudSyncBtn?.addEventListener('click', async () => {
+      const workerUrl = String(this.cloudUrlInput?.value || '').trim();
+      const syncSecret = String(this.cloudSecretInput?.value || '').trim();
+      const autoSync = Boolean(this.cloudAutoSyncInput?.checked);
+
+      if (!workerUrl || !syncSecret) {
+        this.showCloudStatus('error', '❌ 請先填寫 Worker 網址與同步密鑰才能執行同步！');
+        return;
+      }
+
+      this.manager.saveCloudSyncConfig({ enabled: true, workerUrl, syncSecret, autoSync });
+      if (this.cloudEnabledInput) this.cloudEnabledInput.checked = true;
+
+      if (this.cloudSyncBtn) {
+        this.cloudSyncBtn.textContent = '⏳ 正在同步至雲端...';
+        this.cloudSyncBtn.disabled = true;
+      }
+
+      try {
+        const res = await this.manager.syncToCloud({ workerUrl, syncSecret });
+        if (res && res.success) {
+          const count = res.rule_count !== undefined ? res.rule_count : (res.ruleCount !== undefined ? res.ruleCount : this.manager.getRules().length);
+          this.showCloudStatus('success', `🎉 同步成功！已將 ${count} 筆追蹤規則更新至 Cloudflare 雲端。`);
+          this.onShowToast('已成功同步至 Cloudflare 雲端');
+        } else {
+          this.showCloudStatus('error', `❌ 同步失敗：${res?.message || '未知錯誤'}`);
+        }
+      } catch (e) {
+        this.showCloudStatus('error', `❌ 同步異常：${e}`);
+      } finally {
+        if (this.cloudSyncBtn) {
+          this.cloudSyncBtn.textContent = '🔄 立即同步規則至雲端';
+          this.cloudSyncBtn.disabled = false;
+        }
+      }
     });
 
     // Toggle token password visibility
@@ -305,30 +409,30 @@ export class ArticleMonitorUI {
   }
 
   switchTab(tab) {
+    const tabs = [
+      { id: 'history', btn: this.tabHistoryBtn, pane: this.paneHistory },
+      { id: 'rules', btn: this.tabRulesBtn, pane: this.paneRules },
+      { id: 'telegram', btn: this.tabTelegramBtn, pane: this.paneTelegram },
+      { id: 'cloud', btn: this.tabCloudBtn, pane: this.paneCloud },
+    ];
+
+    tabs.forEach((t) => {
+      if (t.id === tab) {
+        t.btn?.classList.add('active');
+        t.pane?.classList.remove('hidden');
+      } else {
+        t.btn?.classList.remove('active');
+        t.pane?.classList.add('hidden');
+      }
+    });
+
     if (tab === 'history') {
-      this.tabHistoryBtn?.classList.add('active');
-      this.tabRulesBtn?.classList.remove('active');
-      this.tabTelegramBtn?.classList.remove('active');
-      this.paneHistory?.classList.remove('hidden');
-      this.paneRules?.classList.add('hidden');
-      this.paneTelegram?.classList.add('hidden');
       this.manager.markAllRead();
       this.updateToolbarBadge();
-    } else if (tab === 'rules') {
-      this.tabRulesBtn?.classList.add('active');
-      this.tabHistoryBtn?.classList.remove('active');
-      this.tabTelegramBtn?.classList.remove('active');
-      this.paneRules?.classList.remove('hidden');
-      this.paneHistory?.classList.add('hidden');
-      this.paneTelegram?.classList.add('hidden');
     } else if (tab === 'telegram') {
-      this.tabTelegramBtn?.classList.add('active');
-      this.tabHistoryBtn?.classList.remove('active');
-      this.tabRulesBtn?.classList.remove('active');
-      this.paneTelegram?.classList.remove('hidden');
-      this.paneHistory?.classList.add('hidden');
-      this.paneRules?.classList.add('hidden');
       this.loadTelegramForm();
+    } else if (tab === 'cloud') {
+      this.loadCloudForm();
     }
   }
 
@@ -349,6 +453,42 @@ export class ArticleMonitorUI {
     this.tgStatusEl.className = `tg-status-banner ${type}`;
     this.tgStatusEl.textContent = msg;
     this.tgStatusEl.classList.remove('hidden');
+  }
+
+  loadCloudForm() {
+    const config = this.manager.getCloudSyncConfig();
+    if (this.cloudEnabledInput) this.cloudEnabledInput.checked = Boolean(config.enabled);
+    if (this.cloudUrlInput) this.cloudUrlInput.value = config.workerUrl || '';
+    if (this.cloudSecretInput) this.cloudSecretInput.value = config.syncSecret || '';
+    if (this.cloudAutoSyncInput) this.cloudAutoSyncInput.checked = Boolean(config.autoSync);
+    if (this.cloudStatusEl) {
+      this.cloudStatusEl.className = 'tg-status-banner hidden';
+      this.cloudStatusEl.textContent = '';
+    }
+  }
+
+  showCloudStatus(type, msg) {
+    if (!this.cloudStatusEl) return;
+    this.cloudStatusEl.className = `tg-status-banner ${type}`;
+    this.cloudStatusEl.textContent = msg;
+    this.cloudStatusEl.classList.remove('hidden');
+  }
+
+  generateRandomSecret() {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let result = '';
+    const array = new Uint8Array(24);
+    if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+      crypto.getRandomValues(array);
+      for (let i = 0; i < 24; i++) {
+        result += chars[array[i] % chars.length];
+      }
+    } else {
+      for (let i = 0; i < 24; i++) {
+        result += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+    }
+    return result;
   }
 
   updateToolbarBadge() {

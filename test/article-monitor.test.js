@@ -328,4 +328,108 @@ test('ArticleMonitorManager sanitizes and excludes Cloudflare honeypot trap item
   assert.equal(manager.getHistory().length, 1);
 });
 
+test('ArticleMonitorManager loads and saves Cloudflare sync config correctly', () => {
+  const storage = new MockStorage();
+  const manager = new ArticleMonitorManager(storage);
+
+  // Default config
+  const def = manager.getCloudSyncConfig();
+  assert.equal(def.enabled, false);
+  assert.equal(def.workerUrl, '');
+  assert.equal(def.syncSecret, '');
+  assert.equal(def.autoSync, true);
+  assert.equal(def.lastSyncTime, null);
+
+  // Save config
+  manager.saveCloudSyncConfig({
+    enabled: true,
+    workerUrl: 'https://my-worker.subdomain.workers.dev/',
+    syncSecret: 'secret12345',
+    autoSync: true,
+  });
+
+  const updated = manager.getCloudSyncConfig();
+  assert.equal(updated.enabled, true);
+  // Trailing slash stripped
+  assert.equal(updated.workerUrl, 'https://my-worker.subdomain.workers.dev');
+  assert.equal(updated.syncSecret, 'secret12345');
+  assert.equal(updated.autoSync, true);
+
+  // Verify persistence
+  const manager2 = new ArticleMonitorManager(storage);
+  const loaded = manager2.getCloudSyncConfig();
+  assert.equal(loaded.enabled, true);
+  assert.equal(loaded.workerUrl, 'https://my-worker.subdomain.workers.dev');
+  assert.equal(loaded.syncSecret, 'secret12345');
+});
+
+test('ArticleMonitorManager syncToCloud triggers auto-sync on rule or Telegram changes', async () => {
+  const storage = new MockStorage();
+  let syncPayload = null;
+  let syncCallCount = 0;
+
+  const mockCloudSync = async (_options, payload) => {
+    syncCallCount++;
+    syncPayload = payload;
+    return { success: true, rule_count: payload.rules.length };
+  };
+
+  const manager = new ArticleMonitorManager(storage, null, null, mockCloudSync);
+
+  // 1. Without cloud enabled, saving rule should not trigger sync
+  manager.addRule({ board: 'Baseball', keywords: ['WBC'], author: '', minPushes: 0 });
+  assert.equal(syncCallCount, 0);
+
+  // 2. Enable cloud sync
+  manager.saveCloudSyncConfig({
+    enabled: true,
+    workerUrl: 'https://ptt-worker.workers.dev',
+    syncSecret: 'abc123secret',
+    autoSync: true,
+  });
+
+  // 3. Modifying rule should automatically trigger syncToCloud
+  manager.addRule({ board: 'NBA', keywords: ['Curry'], author: '', minPushes: 10 });
+  assert.equal(syncCallCount, 1);
+  assert.ok(syncPayload);
+  assert.ok(syncPayload.rules.some((r) => r.board === 'NBA'));
+
+  // 4. Modifying Telegram settings should also trigger syncToCloud
+  manager.saveTelegramConfig({
+    enabled: true,
+    botToken: '123456:ABC-DEF',
+    chatId: '987654321',
+    silent: false,
+  });
+  assert.equal(syncCallCount, 2);
+  assert.equal(syncPayload.telegram.chatId, '987654321');
+  assert.equal(syncPayload.telegram.botToken, '123456:ABC-DEF');
+
+  // 5. When autoSync is turned off, rules change should NOT trigger sync
+  manager.saveCloudSyncConfig({
+    enabled: true,
+    workerUrl: 'https://ptt-worker.workers.dev',
+    syncSecret: 'abc123secret',
+    autoSync: false,
+  });
+  manager.addRule({ board: 'C_Chat', keywords: ['動漫'], author: '', minPushes: 0 });
+  assert.equal(syncCallCount, 2); // Still 2, no extra call
+});
+
+test('ArticleMonitorManager syncToCloud validates parameters', async () => {
+  const storage = new MockStorage();
+  const manager = new ArticleMonitorManager(storage);
+
+  // Missing URL
+  const res1 = await manager.syncToCloud({ workerUrl: '', syncSecret: 'sec' });
+  assert.equal(res1.success, false);
+  assert.match(res1.message, /網址/);
+
+  // Missing Secret
+  const res2 = await manager.syncToCloud({ workerUrl: 'https://test.dev', syncSecret: '' });
+  assert.equal(res2.success, false);
+  assert.match(res2.message, /密鑰/);
+});
+
+
 
