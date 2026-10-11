@@ -527,7 +527,7 @@ async function sendTelegramAlert(article, tgConfig) {
   const title = escapeHtml(article.title);
   const author = escapeHtml(article.author);
   const nrec = escapeHtml(article.nrec ? `${article.nrec}推` : '0推');
-  const fullUrl = `https://www.ptt.cc${article.link.startsWith('/') ? '' : '/'}${article.link}`;
+  const fullUrl = normalizePttArticleUrl(article.link, article.board);
 
   const messageText = [
     `🚨 <b>【Waterball 雲端 24H 追蹤推播】</b>`,
@@ -547,8 +547,34 @@ async function sendTelegramAlert(article, tgConfig) {
       chat_id: chatId,
       text: messageText,
       parse_mode: 'HTML',
-      disable_web_page_preview: false,
+      disable_web_page_preview: true,
       disable_notification: Boolean(tgConfig.silent),
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '📖 開啟 PTT 好讀版', url: fullUrl },
+          ],
+        ],
+      },
     }),
   });
 }
+
+function normalizePttArticleUrl(link, board) {
+  let raw = String(link || '').trim();
+  if (!raw && board) {
+    return `https://www.ptt.cc/bbs/${board}/index.html`;
+  }
+  while (raw.startsWith('https://www.ptt.cchttps://www.ptt.cc')) {
+    raw = raw.slice('https://www.ptt.cc'.length);
+  }
+  while (raw.startsWith('http://www.ptt.cchttp://www.ptt.cc')) {
+    raw = raw.slice('http://www.ptt.cc'.length);
+  }
+  if (raw.startsWith('http://') || raw.startsWith('https://')) {
+    return raw;
+  }
+  const cleanPath = raw.startsWith('/') ? raw : `/${raw}`;
+  return `https://www.ptt.cc${cleanPath}`;
+}
+

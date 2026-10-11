@@ -178,8 +178,8 @@ test('ArticleMonitorManager forwards alert to Telegram when enabled', async () =
   const storage = new MockStorage();
   const sentMessages = [];
 
-  const mockTelegramSend = async (botToken, chatId, text, silent) => {
-    sentMessages.push({ botToken, chatId, text, silent });
+  const mockTelegramSend = async (botToken, chatId, text, silent, buttonUrl, buttonText) => {
+    sentMessages.push({ botToken, chatId, text, silent, buttonUrl, buttonText });
     return { success: true, message: 'ok' };
   };
 
@@ -216,6 +216,8 @@ test('ArticleMonitorManager forwards alert to Telegram when enabled', async () =
   assert.equal(sentMessages[0].botToken, '123456:test_token');
   assert.equal(sentMessages[0].chatId, 'test_chat_id');
   assert.ok(sentMessages[0].text.includes('超市特價買一送一'));
+  assert.equal(sentMessages[0].buttonUrl, 'https://www.ptt.cc/2');
+  assert.equal(sentMessages[0].buttonText, '📖 開啟 PTT 好讀版');
 
   // 3. testTelegram sends verification message with normalization
   const testRes = await manager.testTelegram('https://api.telegram.org/bot123456:test_token/sendMessage', 'test_chat_id');

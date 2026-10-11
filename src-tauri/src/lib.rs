@@ -503,6 +503,17 @@ pub struct TelegramSendResult {
     pub message: String,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+struct InlineKeyboardButton {
+    text: String,
+    url: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+struct InlineKeyboardMarkup {
+    inline_keyboard: Vec<Vec<InlineKeyboardButton>>,
+}
+
 #[derive(serde::Serialize)]
 struct TelegramSendMessagePayload<'a> {
     chat_id: &'a str,
@@ -511,6 +522,8 @@ struct TelegramSendMessagePayload<'a> {
     disable_web_page_preview: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     disable_notification: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reply_markup: Option<InlineKeyboardMarkup>,
 }
 
 #[tauri::command]
@@ -519,6 +532,8 @@ async fn send_telegram_message(
     chat_id: String,
     text: String,
     silent: Option<bool>,
+    button_url: Option<String>,
+    button_text: Option<String>,
 ) -> Result<TelegramSendResult, String> {
     let mut clean_token = bot_token.trim().to_string();
     let clean_chat_id = chat_id.trim();
@@ -582,12 +597,29 @@ async fn send_telegram_message(
 
     let url = format!("https://api.telegram.org/bot{}/sendMessage", clean_token);
 
+    let reply_markup = button_url.and_then(|u| {
+        let trimmed = u.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            let label = button_text
+                .unwrap_or_else(|| "📖 開啟 PTT 好讀版".to_string());
+            Some(InlineKeyboardMarkup {
+                inline_keyboard: vec![vec![InlineKeyboardButton {
+                    text: label,
+                    url: trimmed,
+                }]],
+            })
+        }
+    });
+
     let payload = TelegramSendMessagePayload {
         chat_id: clean_chat_id,
         text: &text,
         parse_mode: "HTML",
-        disable_web_page_preview: false,
+        disable_web_page_preview: true,
         disable_notification: silent,
+        reply_markup,
     };
 
     let json_body = serde_json::to_string(&payload)
@@ -952,12 +984,21 @@ mod tests {
             chat_id: "12345678",
             text: "Hello <b>PTT</b>",
             parse_mode: "HTML",
-            disable_web_page_preview: false,
+            disable_web_page_preview: true,
             disable_notification: Some(true),
+            reply_markup: Some(super::InlineKeyboardMarkup {
+                inline_keyboard: vec![vec![super::InlineKeyboardButton {
+                    text: "📖 開啟 PTT 好讀版".to_string(),
+                    url: "https://www.ptt.cc/bbs/Stock/M.123.html".to_string(),
+                }]],
+            }),
         };
         let json = serde_json::to_string(&payload).unwrap();
         assert!(json.contains("\"chat_id\":\"12345678\""));
         assert!(json.contains("\"parse_mode\":\"HTML\""));
+        assert!(json.contains("\"disable_web_page_preview\":true"));
         assert!(json.contains("\"disable_notification\":true"));
+        assert!(json.contains("\"inline_keyboard\""));
+        assert!(json.contains("開啟 PTT 好讀版"));
     }
 }

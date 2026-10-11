@@ -246,9 +246,9 @@ export class ArticleMonitorManager {
     return { ...this.telegramConfig };
   }
 
-  async sendTelegramRawMessage(botToken, chatId, text, silent = false) {
+  async sendTelegramRawMessage(botToken, chatId, text, silent = false, buttonUrl = null, buttonText = null) {
     if (this.customTelegramSend) {
-      return this.customTelegramSend(botToken, chatId, text, silent);
+      return this.customTelegramSend(botToken, chatId, text, silent, buttonUrl, buttonText);
     }
     if (typeof window !== 'undefined' && window.__TAURI__?.core?.invoke) {
       try {
@@ -257,6 +257,8 @@ export class ArticleMonitorManager {
           chatId,
           text,
           silent: Boolean(silent),
+          buttonUrl: buttonUrl || null,
+          buttonText: buttonText || null,
         });
       } catch (e) {
         console.warn('[ArticleMonitor] Telegram send failed via Tauri:', e);
@@ -271,8 +273,9 @@ export class ArticleMonitorManager {
     const { botToken, chatId, silent } = this.telegramConfig;
     if (!botToken || !chatId) return null;
 
+    const link = normalizePttArticleUrl(alertItem.link, alertItem.board);
     const text = formatTelegramArticleMessage(alertItem);
-    return this.sendTelegramRawMessage(botToken, chatId, text, silent);
+    return this.sendTelegramRawMessage(botToken, chatId, text, silent, link, '📖 開啟 PTT 好讀版');
   }
 
   async testTelegram(botToken, chatId) {
