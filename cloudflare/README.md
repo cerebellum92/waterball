@@ -26,10 +26,12 @@
    - **KV namespace**：下拉選擇剛才建立的 `PTT_TRACKER_KV`
 5. 點擊 **Save and deploy**。
 
-### 步驟 3：設定每 3 分鐘自動檢查排程 (Cron Trigger)
-1. 在該 Worker 頁面點選 **Triggers**（觸發器）分頁（或 **Settings** ➡️ **Triggers**）。
-2. 滾動到 **Cron Triggers**，點擊 **Add Cron Trigger**。
-3. 輸入 `*/3 * * * *`（每 3 分鐘執行一次），點擊 **Save**。
+### 步驟 3：設定每 3 分鐘自動檢查排程 (Schedule / Cron Trigger)
+1. 在該 Worker 頁面點選 **Settings** ➡️ 找到 **Trigger Events**（觸發事件）。
+2. 點擊 **+ Add**（新增）。
+3. 選擇 **Schedule**（排程），在 **Execute worker every**（執行週期）直接選擇或填入 **3 minutes**（3 分鐘）。
+   *(若顯示進階 Cron 格式，亦可輸入 `*/3 * * * *`)*
+4. 點擊 **Save** 儲存。
 
 ### 步驟 4：在 Waterball 桌面端完成同步設定
 1. 複製您的 Worker 網址（例如：`https://waterball-tracker.xxx.workers.dev`）。
