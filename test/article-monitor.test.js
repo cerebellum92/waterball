@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ArticleMonitorManager, formatTelegramArticleMessage } from '../src/article_monitor.js';
+import { ArticleMonitorManager, formatTelegramArticleMessage, normalizePttArticleUrl } from '../src/article_monitor.js';
 
 class MockStorage {
   constructor() {
@@ -260,4 +260,72 @@ test('index.html integrity: all modals are properly closed and not nested', asyn
     `waterball-modal must be fully closed before article-monitor-modal begins (open: ${openDivs}, close: ${closeDivs})`
   );
 });
+
+test('normalizePttArticleUrl normalizes relative, full, and duplicated URLs properly', () => {
+  // Relative URL
+  assert.equal(
+    normalizePttArticleUrl('/bbs/Stock/M.123456.A.789.html', 'Stock'),
+    'https://www.ptt.cc/bbs/Stock/M.123456.A.789.html'
+  );
+  // Full URL
+  assert.equal(
+    normalizePttArticleUrl('https://www.ptt.cc/bbs/Stock/M.123456.A.789.html'),
+    'https://www.ptt.cc/bbs/Stock/M.123456.A.789.html'
+  );
+  // Duplicated prefix bug
+  assert.equal(
+    normalizePttArticleUrl('https://www.ptt.cchttps://www.ptt.cc/bbs/Stock/M.123456.A.789.html'),
+    'https://www.ptt.cc/bbs/Stock/M.123456.A.789.html'
+  );
+  // Empty URL with board
+  assert.equal(
+    normalizePttArticleUrl('', 'Gossiping'),
+    'https://www.ptt.cc/bbs/Gossiping/index.html'
+  );
+});
+
+test('ArticleMonitorManager sanitizes and excludes Cloudflare honeypot trap items', () => {
+  const storage = new MockStorage();
+  // Pre-seed storage with corrupted honeypot history
+  storage.setItem(
+    'bbsterm_monitor_history',
+    JSON.stringify([
+      {
+        id: 'content?id=trap123',
+        board: 'Stock',
+        title: '批踢踢實業坊',
+        author: '',
+        link: 'https://www.ptt.cc/cdn-cgi/content?id=trap123',
+      },
+      {
+        id: 'M.1791535001.A.2E5',
+        board: 'Stock',
+        title: '[情報] 正常文章',
+        author: 'analyst',
+        link: '/bbs/Stock/M.1791535001.A.2E5.html',
+      },
+    ])
+  );
+  storage.setItem(
+    'bbsterm_monitor_seen',
+    JSON.stringify(['content?id=trap123', 'M.1791535001.A.2E5'])
+  );
+
+  const manager = new ArticleMonitorManager(storage);
+
+  // Honeypot should be automatically purged from loaded history
+  const history = manager.getHistory();
+  assert.equal(history.length, 1);
+  assert.equal(history[0].id, 'M.1791535001.A.2E5');
+
+  // Attempting to add honeypot alert item should be rejected
+  manager.addAlertItem({
+    id: 'content?id=another',
+    board: 'Stock',
+    title: '批踢踢實業坊',
+    link: '/cdn-cgi/content?id=another',
+  });
+  assert.equal(manager.getHistory().length, 1);
+});
+
 

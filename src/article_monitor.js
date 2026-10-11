@@ -40,6 +40,25 @@ export function normalizeTelegramBotToken(token) {
   return clean.replace(/^\/+|\/+$/g, '').trim();
 }
 
+export function normalizePttArticleUrl(link, board = '') {
+  let raw = String(link || '').trim();
+  if (!raw) {
+    return board ? `https://www.ptt.cc/bbs/${board}/index.html` : 'https://www.ptt.cc';
+  }
+  // Strip duplicate domain prefixes (e.g. https://www.ptt.cchttps://www.ptt.cc)
+  while (raw.startsWith('https://www.ptt.cchttps://www.ptt.cc')) {
+    raw = raw.slice('https://www.ptt.cc'.length);
+  }
+  while (raw.startsWith('http://www.ptt.cchttp://www.ptt.cc')) {
+    raw = raw.slice('http://www.ptt.cc'.length);
+  }
+  if (raw.startsWith('http://') || raw.startsWith('https://')) {
+    return raw;
+  }
+  const cleanPath = raw.startsWith('/') ? raw : `/${raw}`;
+  return `https://www.ptt.cc${cleanPath}`;
+}
+
 export function formatTelegramArticleMessage(item) {
   const escapeHtml = (str) =>
     String(str || '')
@@ -51,9 +70,7 @@ export function formatTelegramArticleMessage(item) {
   const title = escapeHtml(item.title);
   const author = escapeHtml(item.author || '未知');
   const nrec = escapeHtml(item.nrec ? `${item.nrec}推` : '0推');
-  const link = item.link?.startsWith('http')
-    ? item.link
-    : `https://www.ptt.cc${item.link?.startsWith('/') ? '' : '/'}${item.link || `bbs/${item.board}/index.html`}`;
+  const link = normalizePttArticleUrl(item.link, item.board);
 
   return [
     `🚨 <b>【Waterball PTT 文章追蹤通知】</b>`,
@@ -117,7 +134,16 @@ export class ArticleMonitorManager {
       const raw = this.storage.getItem('bbsterm_monitor_history');
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed)) {
+          return parsed.filter((item) => {
+            if (!item || !item.link) return false;
+            const strLink = String(item.link);
+            const strId = String(item.id || '');
+            if (strLink.includes('cdn-cgi') || strId.startsWith('content?')) return false;
+            if (item.title === '批踢踢實業坊' && (!item.author || item.author === '-')) return false;
+            return true;
+          });
+        }
       }
     } catch (e) {
       console.warn('Failed to load monitor history:', e);
@@ -141,7 +167,14 @@ export class ArticleMonitorManager {
       const raw = this.storage.getItem('bbsterm_monitor_seen');
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) return new Set(parsed);
+        if (Array.isArray(parsed)) {
+          return new Set(
+            parsed.filter((id) => {
+              const strId = String(id || '');
+              return !strId.startsWith('content?') && !strId.includes('cdn-cgi');
+            })
+          );
+        }
       }
     } catch (e) {
       console.warn('Failed to load seen article IDs:', e);
@@ -382,6 +415,12 @@ export class ArticleMonitorManager {
   }
 
   addAlertItem(item) {
+    if (!item || !item.link) return;
+    const strLink = String(item.link);
+    const strId = String(item.id || '');
+    if (strLink.includes('cdn-cgi') || strId.startsWith('content?')) return;
+    if (item.title === '批踢踢實業坊' && (!item.author || item.author === '-')) return;
+
     this.history.unshift(item);
     if (this.history.length > 100) {
       this.history.pop();
@@ -460,7 +499,9 @@ export class ArticleMonitorManager {
     const newAlerts = [];
 
     for (const article of articles) {
-      if (!article.id) continue;
+      if (!article.id || String(article.id).startsWith('content?')) continue;
+      if (String(article.link || '').includes('cdn-cgi')) continue;
+      if (article.title === '批踢踢實業坊' && (!article.author || article.author === '-')) continue;
 
       if (!this.seenIds.has(article.id)) {
         this.seenIds.add(article.id);

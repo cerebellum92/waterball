@@ -24,7 +24,7 @@ import { userTagsManager } from './user_tags.js';
 import { userTagsUI } from './user_tags_ui.js';
 import { waterballManager } from './waterball_manager.js';
 import { waterballUI } from './waterball_ui.js';
-import { articleMonitorManager } from './article_monitor.js';
+import { articleMonitorManager, normalizePttArticleUrl } from './article_monitor.js';
 import { articleMonitorUI } from './article_monitor_ui.js';
 
 const { invoke } = window.__TAURI__.core;
@@ -284,8 +284,9 @@ waterballUI.onFocusTerminal = (force = true) => imeCtrl.focusTerminal(force);
 
 // Article Monitor UI Integration
 articleMonitorUI.onOpenArticleReader = (url) => {
-  invoke('open_browser_url', { url }).catch(() => {
-    window.open(url, '_blank');
+  const safeUrl = normalizePttArticleUrl(url);
+  invoke('open_browser_url', { url: safeUrl }).catch(() => {
+    window.open(safeUrl, '_blank');
   });
 };
 articleMonitorUI.onSwitchBoard = (board) => {

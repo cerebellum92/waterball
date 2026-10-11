@@ -342,16 +342,49 @@ pub struct PttArticleItem {
 
 pub fn parse_ptt_articles_html(html: &str, board: &str) -> Vec<PttArticleItem> {
     let mut articles = Vec::new();
-    for block in html.split("<div class=\"r-ent\">") {
-        let link_start = match block.find("<a href=\"") {
-            Some(idx) => idx + "<a href=\"".len(),
+    // Skip index 0 because everything before the first <div class="r-ent"> is the page header
+    // which contains top navigation and Cloudflare honeypot trap links (<a href="/cdn-cgi/content?...">)
+    for block in html.split("<div class=\"r-ent\">").skip(1) {
+        let title_block_start = match block.find("class=\"title\"") {
+            Some(idx) => idx,
             None => continue,
         };
-        let link_end = match block[link_start..].find('"') {
+        let title_block = &block[title_block_start..];
+        let title_div_end = match title_block.find("</div>") {
+            Some(idx) => idx,
+            None => continue,
+        };
+        let title_section = &title_block[..title_div_end];
+
+        let link_start = match title_section.find("<a href=\"") {
+            Some(idx) => idx + "<a href=\"".len(),
+            None => continue, // Deleted article or no link, skip
+        };
+        let link_end = match title_section[link_start..].find('"') {
             Some(idx) => link_start + idx,
             None => continue,
         };
-        let link = block[link_start..link_end].trim().to_string();
+        let raw_link = title_section[link_start..link_end].trim();
+
+        // Must be a legitimate PTT article link; reject honeypots, search links, etc.
+        if raw_link.contains("cdn-cgi")
+            || raw_link.contains("search?")
+            || raw_link.contains("javascript:")
+            || !raw_link.contains("/bbs/")
+        {
+            continue;
+        }
+
+        // Normalize link to relative path e.g. /bbs/Stock/M.123456789.A.ABC.html
+        let link = if let Some(pos) = raw_link.find("/bbs/") {
+            raw_link[pos..].to_string()
+        } else {
+            raw_link.to_string()
+        };
+
+        if !link.ends_with(".html") {
+            continue;
+        }
 
         let id = link
             .rsplit('/')
@@ -360,7 +393,11 @@ pub fn parse_ptt_articles_html(html: &str, board: &str) -> Vec<PttArticleItem> {
             .unwrap_or(&link)
             .to_string();
 
-        let after_link = &block[link_end..];
+        if !id.starts_with("M.") {
+            continue;
+        }
+
+        let after_link = &title_section[link_end..];
         let title_tag_end = match after_link.find('>') {
             Some(idx) => idx + 1,
             None => continue,
@@ -372,7 +409,15 @@ pub fn parse_ptt_articles_html(html: &str, board: &str) -> Vec<PttArticleItem> {
         let raw_title = &after_link[title_tag_end..title_close];
         let title = unescape_html(raw_title).trim().to_string();
 
+        if title.is_empty() || title == "批踢踢實業坊" {
+            continue;
+        }
+
         let author = extract_tag_content(block, "class=\"author\">", "</div>").unwrap_or_default();
+        if author.is_empty() || author == "-" {
+            continue;
+        }
+
         let date = extract_tag_content(block, "class=\"date\">", "</div>").unwrap_or_default();
         let raw_nrec = extract_tag_content(block, "class=\"nrec\">", "</div>").unwrap_or_default();
         let nrec = strip_tags(&raw_nrec).trim().to_string();
@@ -685,6 +730,12 @@ mod tests {
     #[test]
     fn test_parse_ptt_articles_html() {
         let sample_html = r#"
+        <!DOCTYPE html>
+        <html>
+        <head><title>Stock</title></head>
+        <body>
+        <a href="https://www.ptt.cc/cdn-cgi/content?id=trap123" style="display:none !important"></a>
+        <div id="topbar"><a id="logo" href="/bbs/">批踢踢實業坊</a></div>
         <div class="r-ent">
             <div class="nrec"><span class="hl f2">9</span></div>
             <div class="title">
@@ -712,6 +763,11 @@ mod tests {
             </div>
             <div class="meta">
                 <div class="author">-</div>
+                <div class="article-menu">
+                    <div class="dropdown">
+                        <div class="item"><a href="/bbs/Stock/search?q=author%3Aspammer">搜尋看板內文章</a></div>
+                    </div>
+                </div>
                 <div class="date"> 10/09</div>
             </div>
         </div>

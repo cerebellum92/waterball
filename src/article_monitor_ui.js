@@ -1,6 +1,6 @@
 // UI Controller for Article Monitor & Push Notification Center
 
-import { articleMonitorManager } from './article_monitor.js';
+import { articleMonitorManager, normalizePttArticleUrl } from './article_monitor.js';
 import { writeClipboardText } from './platform.js';
 
 export class ArticleMonitorUI {
@@ -373,7 +373,16 @@ export class ArticleMonitorUI {
     if (!this.historyList) return;
     this.historyList.innerHTML = '';
 
-    const history = this.manager.getHistory();
+    const rawHistory = this.manager.getHistory();
+    const history = rawHistory.filter((item) => {
+      if (!item || !item.link) return false;
+      const strLink = String(item.link);
+      const strId = String(item.id || '');
+      if (strLink.includes('cdn-cgi') || strId.startsWith('content?')) return false;
+      if (item.title === '批踢踢實業坊' && (!item.author || item.author === '-')) return false;
+      return true;
+    });
+
     if (history.length === 0) {
       this.historyList.innerHTML = `
         <div class="monitor-empty-box">
@@ -393,7 +402,7 @@ export class ArticleMonitorUI {
       if (item.nrec === '爆') nrecClass = 'nrec-hot';
       else if (parseInt(item.nrec, 10) >= 10) nrecClass = 'nrec-warm';
 
-      const fullUrl = `https://www.ptt.cc${item.link}`;
+      const fullUrl = normalizePttArticleUrl(item.link, item.board);
 
       card.innerHTML = `
         <div class="card-left">
