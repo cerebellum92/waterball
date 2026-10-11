@@ -475,8 +475,26 @@ async fn send_telegram_message(
     text: String,
     silent: Option<bool>,
 ) -> Result<TelegramSendResult, String> {
-    let clean_token = bot_token.trim();
+    let mut clean_token = bot_token.trim().to_string();
     let clean_chat_id = chat_id.trim();
+
+    // Strip URL prefix if user pasted full API endpoint
+    if let Some(pos) = clean_token.find("/bot") {
+        clean_token = clean_token[pos + 4..].to_string();
+    }
+    if let Some(pos) = clean_token.find("/sendMessage") {
+        clean_token = clean_token[..pos].to_string();
+    }
+
+    // Strip leading "bot" prefix if user entered e.g. bot123456:ABC...
+    if clean_token.to_lowercase().starts_with("bot") {
+        let remainder = &clean_token[3..];
+        if remainder.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+            clean_token = remainder.to_string();
+        }
+    }
+
+    let clean_token = clean_token.trim().trim_matches('/').to_string();
 
     if clean_token.is_empty() {
         return Ok(TelegramSendResult {
@@ -488,6 +506,27 @@ async fn send_telegram_message(
         return Ok(TelegramSendResult {
             success: false,
             message: "Telegram Chat ID 未填寫".to_string(),
+        });
+    }
+
+    // Proactive format diagnostics
+    if clean_token.starts_with('@') || clean_token.starts_with("t.me/") {
+        return Ok(TelegramSendResult {
+            success: false,
+            message: "Bot Token 填寫錯誤：您似乎填寫成了機器人帳號或連結（例如 @xxx_bot），請填寫 @BotFather 發給的「HTTP API Token」（格式應為 123456789:ABCdef...）".to_string(),
+        });
+    }
+
+    if !clean_token.contains(':') {
+        if clean_chat_id.contains(':') {
+            return Ok(TelegramSendResult {
+                success: false,
+                message: "您似乎把「Bot Token」和「Chat ID」的位置填反了！Bot Token 應包含冒號（例如 123456789:ABC...），而 Chat ID 通常為純數字（例如 987654321）。".to_string(),
+            });
+        }
+        return Ok(TelegramSendResult {
+            success: false,
+            message: "Bot Token 格式錯誤：有效的 Telegram Bot Token 必須包含冒號「:」（格式為 數字:英數代碼，例如 123456789:AA...）。請檢查是否複製不完整或誤填為 Chat ID。".to_string(),
         });
     }
 
@@ -531,9 +570,20 @@ async fn send_telegram_message(
         } else {
             body
         };
+
+        let friendly_msg = if status.as_u16() == 404 {
+            "Telegram 回應錯誤 (HTTP 404 Not Found)：Telegram 伺服器找不到此機器人。請確認 Bot Token 是否完整複製自 @BotFather（Token 格式應如 123456789:ABCdef...，不可有前後多餘字元）。".to_string()
+        } else if status.as_u16() == 400 && err_detail.to_lowercase().contains("chat not found") {
+            format!("Telegram 回應錯誤：找不到 Chat ID「{}」。請先在 Telegram 點入您的機器人對話框並點擊「Start」，否則機器人無法主動發送訊息給您！", clean_chat_id)
+        } else if status.as_u16() == 401 {
+            "Telegram 回應錯誤 (HTTP 401 Unauthorized)：Bot Token 無效或已被撤銷，請向 @BotFather 重新獲取 Token。".to_string()
+        } else {
+            format!("Telegram 回應錯誤 (HTTP {}): {}", status, err_detail)
+        };
+
         Ok(TelegramSendResult {
             success: false,
-            message: format!("Telegram 回應錯誤 (HTTP {}): {}", status, err_detail),
+            message: friendly_msg,
         })
     }
 }

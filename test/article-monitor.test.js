@@ -196,7 +196,7 @@ test('ArticleMonitorManager forwards alert to Telegram when enabled', async () =
   // Configure Telegram
   manager.saveTelegramConfig({
     enabled: true,
-    botToken: 'test_token',
+    botToken: 'bot123456:test_token', // test auto-strip of 'bot' prefix
     chatId: 'test_chat_id',
     silent: false,
   });
@@ -213,14 +213,15 @@ test('ArticleMonitorManager forwards alert to Telegram when enabled', async () =
 
   await manager.checkBoard('Lifeismoney');
   assert.equal(sentMessages.length, 1);
-  assert.equal(sentMessages[0].botToken, 'test_token');
+  assert.equal(sentMessages[0].botToken, '123456:test_token');
   assert.equal(sentMessages[0].chatId, 'test_chat_id');
   assert.ok(sentMessages[0].text.includes('超市特價買一送一'));
 
-  // 3. testTelegram sends verification message
-  const testRes = await manager.testTelegram('test_token', 'test_chat_id');
+  // 3. testTelegram sends verification message with normalization
+  const testRes = await manager.testTelegram('https://api.telegram.org/bot123456:test_token/sendMessage', 'test_chat_id');
   assert.equal(testRes.success, true);
   assert.equal(sentMessages.length, 2);
+  assert.equal(sentMessages[1].botToken, '123456:test_token');
   assert.ok(sentMessages[1].text.includes('連線測試成功'));
 });
 

@@ -21,6 +21,25 @@ export const DEFAULT_MONITOR_RULES = [
   },
 ];
 
+export function normalizeTelegramBotToken(token) {
+  let clean = String(token || '').trim();
+  const botIdx = clean.indexOf('/bot');
+  if (botIdx !== -1) {
+    clean = clean.slice(botIdx + 4);
+  }
+  const sendIdx = clean.indexOf('/sendMessage');
+  if (sendIdx !== -1) {
+    clean = clean.slice(0, sendIdx);
+  }
+  if (clean.toLowerCase().startsWith('bot')) {
+    const after = clean.slice(3);
+    if (/^\d/.test(after)) {
+      clean = after;
+    }
+  }
+  return clean.replace(/^\/+|\/+$/g, '').trim();
+}
+
 export function formatTelegramArticleMessage(item) {
   const escapeHtml = (str) =>
     String(str || '')
@@ -167,7 +186,7 @@ export class ArticleMonitorManager {
   saveTelegramConfig(config) {
     this.telegramConfig = {
       enabled: Boolean(config.enabled),
-      botToken: String(config.botToken || '').trim(),
+      botToken: normalizeTelegramBotToken(config.botToken),
       chatId: String(config.chatId || '').trim(),
       silent: Boolean(config.silent),
     };
@@ -215,10 +234,30 @@ export class ArticleMonitorManager {
   }
 
   async testTelegram(botToken, chatId) {
-    const cleanToken = String(botToken || '').trim();
+    const cleanToken = normalizeTelegramBotToken(botToken);
     const cleanChatId = String(chatId || '').trim();
     if (!cleanToken || !cleanChatId) {
       return { success: false, message: '請填寫完整的 Bot Token 與 Chat ID' };
+    }
+
+    if (cleanToken.startsWith('@') || cleanToken.startsWith('t.me/')) {
+      return {
+        success: false,
+        message: 'Bot Token 填寫錯誤：您似乎填寫成了機器人帳號或連結（例如 @xxx_bot），請填寫 @BotFather 發給的「HTTP API Token」（格式應為 123456789:ABCdef...）',
+      };
+    }
+
+    if (!cleanToken.includes(':')) {
+      if (cleanChatId.includes(':')) {
+        return {
+          success: false,
+          message: '您似乎把「Bot Token」和「Chat ID」的位置填反了！Bot Token 應包含冒號（例如 123456789:ABC...），而 Chat ID 通常為純數字（例如 987654321）。',
+        };
+      }
+      return {
+        success: false,
+        message: 'Bot Token 格式錯誤：有效的 Telegram Bot Token 必須包含冒號「:」（格式為 數字:英數代碼，例如 123456789:AA...）。請檢查是否複製不完整或誤填。',
+      };
     }
 
     const now = new Date();
