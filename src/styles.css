@@ -3847,6 +3847,12 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
   background: rgba(0, 0, 0, 0.2);
 }
 
+.monitor-rule-card.is-editing {
+  border: 1px solid var(--accent);
+  background: rgba(36, 200, 219, 0.12);
+  box-shadow: 0 0 8px rgba(36, 200, 219, 0.25);
+}
+
 .rule-card-left {
   display: flex;
   align-items: center;
@@ -3900,6 +3906,13 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
   color: var(--text-secondary);
 }
 
+.rule-card-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rule-btn-edit,
 .rule-btn-delete {
   background: none;
   border: none;
@@ -3911,9 +3924,15 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
   transition: opacity 0.12s, transform 0.1s;
 }
 
+.rule-btn-edit:hover,
 .rule-btn-delete:hover {
   opacity: 1;
   transform: scale(1.15);
+}
+
+.form-btn-group {
+  display: flex;
+  gap: 8px;
 }
 
 .monitor-empty-box {

@@ -153,13 +153,12 @@ export class SettingsUI {
 
     if (btnBlacklistClear) {
       btnBlacklistClear.addEventListener('click', () => {
-        if (confirm('確定要清空所有自訂黑名單帳號嗎？')) {
-          this.blacklistManager.customList.clear();
-          this.blacklistManager.saveCustomList();
-          this.renderBlacklistUI();
-          this.tabManager.getActiveTab()?.view?.redraw();
-          this.onShowToast('已清空自訂黑名單');
-        }
+        if (this.blacklistManager.customList.size === 0) return;
+        this.blacklistManager.customList.clear();
+        this.blacklistManager.saveCustomList();
+        this.renderBlacklistUI();
+        this.tabManager.getActiveTab()?.view?.redraw();
+        this.onShowToast('已清空自訂黑名單');
       });
     }
 

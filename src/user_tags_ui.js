@@ -157,10 +157,8 @@ export class UserTagsUI {
     this.btnClear?.addEventListener('click', () => {
       const allTags = this.manager.getAllTags();
       if (allTags.length === 0) return;
-      if (window.confirm(`確定要清空所有已建立的 ${allTags.length} 筆鄉民標籤與備註嗎？此操作無法復原。`)) {
-        this.manager.clear();
-        this.onShowToast('已清空所有鄉民標籤');
-      }
+      this.manager.clear();
+      this.onShowToast('已清空所有鄉民標籤');
     });
   }
 
@@ -239,11 +237,9 @@ export class UserTagsUI {
   deleteModal() {
     const rawUserId = this.inputUserId?.value?.trim() || '';
     if (!rawUserId) return;
-    if (window.confirm(`確定要刪除鄉民 ${rawUserId} 的標籤與備註嗎？`)) {
-      this.manager.removeTag(rawUserId);
-      this.onShowToast(`已刪除 ${rawUserId} 的標籤與備註`);
-      this.closeModal();
-    }
+    this.manager.removeTag(rawUserId);
+    this.onShowToast(`已刪除 ${rawUserId} 的標籤與備註`);
+    this.closeModal();
   }
 
   renderList() {
@@ -309,11 +305,10 @@ export class UserTagsUI {
         this.openModal(item.userId);
       });
 
-      card.querySelector('.btn-user-tag-delete')?.addEventListener('click', () => {
-        if (window.confirm(`確定要刪除 ${item.userId} 的標籤嗎？`)) {
-          this.manager.removeTag(item.userId);
-          this.onShowToast(`已刪除 ${item.userId} 的標籤`);
-        }
+      card.querySelector('.btn-user-tag-delete')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.manager.removeTag(item.userId);
+        this.onShowToast(`已刪除 ${item.userId} 的標籤`);
       });
 
       this.listContainer.appendChild(card);

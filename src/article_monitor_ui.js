@@ -38,10 +38,12 @@ export class ArticleMonitorUI {
     this.clearHistoryBtn = document.getElementById('monitor-clear-history-btn');
 
     this.addRuleBtn = document.getElementById('monitor-add-rule-btn');
+    this.cancelEditBtn = document.getElementById('monitor-cancel-edit-btn');
     this.inputBoard = document.getElementById('monitor-input-board');
     this.inputKeywords = document.getElementById('monitor-input-keywords');
     this.inputAuthor = document.getElementById('monitor-input-author');
     this.inputPushes = document.getElementById('monitor-input-pushes');
+    this.editingRuleId = null;
 
     this.tabTelegramBtn = document.getElementById('monitor-tab-telegram-btn');
     this.paneTelegram = document.getElementById('monitor-pane-telegram');
@@ -187,18 +189,16 @@ export class ArticleMonitorUI {
       this.onShowToast('已全部標為已讀');
     });
 
-    // Clear history button
+    // Clear history button (remove blocking window.confirm for Tauri compatibility)
     this.clearHistoryBtn?.addEventListener('click', () => {
       if (this.manager.getHistory().length === 0) return;
-      if (window.confirm('確定要清空所有追蹤推播紀錄嗎？')) {
-        this.manager.clearHistory();
-        this.renderHistory();
-        this.updateToolbarBadge();
-        this.onShowToast('已清空通知紀錄');
-      }
+      this.manager.clearHistory();
+      this.renderHistory();
+      this.updateToolbarBadge();
+      this.onShowToast('已清空通知紀錄');
     });
 
-    // Add rule button
+    // Add or Update rule button
     this.addRuleBtn?.addEventListener('click', () => {
       const board = this.inputBoard?.value?.trim();
       const keywords = this.inputKeywords?.value?.trim() || '';
@@ -211,15 +211,24 @@ export class ArticleMonitorUI {
         return;
       }
 
-      this.manager.addRule({ board, keywords, author, minPushes });
+      if (this.editingRuleId) {
+        this.manager.updateRule(this.editingRuleId, { board, keywords, author, minPushes });
+        this.onShowToast(`已更新 [${board}] 追蹤規則`);
+        this.cancelEdit();
+      } else {
+        this.manager.addRule({ board, keywords, author, minPushes });
+        if (this.inputBoard) this.inputBoard.value = '';
+        if (this.inputKeywords) this.inputKeywords.value = '';
+        if (this.inputAuthor) this.inputAuthor.value = '';
+        if (this.inputPushes) this.inputPushes.value = '0';
+        this.onShowToast(`已新增 [${board}] 追蹤規則`);
+        this.renderRules();
+      }
+    });
 
-      if (this.inputBoard) this.inputBoard.value = '';
-      if (this.inputKeywords) this.inputKeywords.value = '';
-      if (this.inputAuthor) this.inputAuthor.value = '';
-      if (this.inputPushes) this.inputPushes.value = '0';
-
-      this.renderRules();
-      this.onShowToast(`已新增 [${board}] 追蹤規則`);
+    // Cancel edit button
+    this.cancelEditBtn?.addEventListener('click', () => {
+      this.cancelEdit();
     });
 
     // Quick board recommendation chips
@@ -249,10 +258,50 @@ export class ArticleMonitorUI {
   }
 
   close() {
+    this.cancelEdit();
     if (this.modalEl) {
       this.modalEl.classList.add('hidden');
     }
     this.onFocusTerminal?.();
+  }
+
+  startEdit(rule) {
+    if (!rule) return;
+    this.editingRuleId = rule.id;
+    if (this.inputBoard) this.inputBoard.value = rule.board || '';
+    if (this.inputKeywords) {
+      this.inputKeywords.value = Array.isArray(rule.keywords) ? rule.keywords.join(', ') : (rule.keywords || '');
+    }
+    if (this.inputAuthor) this.inputAuthor.value = rule.author || '';
+    if (this.inputPushes) this.inputPushes.value = String(rule.minPushes || 0);
+
+    if (this.addRuleBtn) {
+      this.addRuleBtn.textContent = '💾 儲存修改';
+    }
+    if (this.cancelEditBtn) {
+      this.cancelEditBtn.classList.remove('hidden');
+    }
+    if (this.inputBoard) {
+      this.inputBoard.focus();
+    }
+    this.renderRules();
+    this.onShowToast(`正在修改 [${rule.board}] 追蹤規則`);
+  }
+
+  cancelEdit() {
+    this.editingRuleId = null;
+    if (this.inputBoard) this.inputBoard.value = '';
+    if (this.inputKeywords) this.inputKeywords.value = '';
+    if (this.inputAuthor) this.inputAuthor.value = '';
+    if (this.inputPushes) this.inputPushes.value = '0';
+
+    if (this.addRuleBtn) {
+      this.addRuleBtn.textContent = '➕ 新增追蹤規則';
+    }
+    if (this.cancelEditBtn) {
+      this.cancelEditBtn.classList.add('hidden');
+    }
+    this.renderRules();
   }
 
   switchTab(tab) {
@@ -412,7 +461,8 @@ export class ArticleMonitorUI {
 
     rules.forEach((rule) => {
       const card = document.createElement('div');
-      card.className = `monitor-rule-card ${rule.enabled ? 'enabled' : 'disabled'}`;
+      const isEditing = this.editingRuleId === rule.id;
+      card.className = `monitor-rule-card ${rule.enabled ? 'enabled' : 'disabled'}${isEditing ? ' is-editing' : ''}`;
 
       const kwChips =
         rule.keywords && rule.keywords.length > 0
@@ -423,15 +473,16 @@ export class ArticleMonitorUI {
         <div class="rule-card-left">
           <input type="checkbox" class="rule-toggle-cb" ${rule.enabled ? 'checked' : ''} title="啟用/停用此規則" />
           <div class="rule-details">
-            <div class="rule-board-name">[${rule.board}]</div>
+            <div class="rule-board-name">[${this.escapeHtml(rule.board)}]</div>
             <div class="rule-keywords-row">${kwChips}</div>
             <div class="rule-sub-info">
-              ${rule.author ? `<span>作者: <b>${rule.author}</b></span>` : '<span>作者: 不限</span>'}
+              ${rule.author ? `<span>作者: <b>${this.escapeHtml(rule.author)}</b></span>` : '<span>作者: 不限</span>'}
               <span>門檻: ${rule.minPushes > 0 ? `≥ ${rule.minPushes} 推` : '不限推文'}</span>
             </div>
           </div>
         </div>
         <div class="rule-card-right">
+          <button class="rule-btn-edit" title="編輯此規則">✏️</button>
           <button class="rule-btn-delete" title="刪除此規則">🗑️</button>
         </div>
       `;
@@ -440,12 +491,19 @@ export class ArticleMonitorUI {
         this.manager.toggleRule(rule.id);
       });
 
-      card.querySelector('.rule-btn-delete')?.addEventListener('click', () => {
-        if (window.confirm(`確定要刪除 [${rule.board}] 的這筆追蹤規則嗎？`)) {
-          this.manager.deleteRule(rule.id);
-          this.renderRules();
-          this.onShowToast('已刪除追蹤規則');
+      card.querySelector('.rule-btn-edit')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.startEdit(rule);
+      });
+
+      card.querySelector('.rule-btn-delete')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (this.editingRuleId === rule.id) {
+          this.cancelEdit();
         }
+        this.manager.deleteRule(rule.id);
+        this.renderRules();
+        this.onShowToast(`已刪除 [${rule.board}] 追蹤規則`);
       });
 
       this.rulesList.appendChild(card);

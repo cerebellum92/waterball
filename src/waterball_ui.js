@@ -91,13 +91,12 @@ export class WaterballUI {
 
     this.btnClearChat?.addEventListener('click', () => {
       if (!this.activeContactId) return;
-      if (window.confirm(`確定要清空與 ${this.activeContactId} 的所有水球紀錄嗎？`)) {
-        this.manager.deleteConversation(this.activeContactId);
-        this.activeContactId = '';
-        this.renderContacts();
-        this.updateActiveHeader();
-        this.onShowToast('已清空對話紀錄');
-      }
+      const targetId = this.activeContactId;
+      this.manager.deleteConversation(targetId);
+      this.activeContactId = '';
+      this.renderContacts();
+      this.updateActiveHeader();
+      this.onShowToast(`已清空與 ${targetId} 的對話紀錄`);
     });
 
     this.btnExportChat?.addEventListener('click', () => {
