@@ -9,23 +9,25 @@
 
 ### 步驟 1：建立 Cloudflare Worker
 1. 登入 [Cloudflare 官網](https://dash.cloudflare.com/)（若無帳號可免費註冊）。
-2. 在左側選單點選 **Workers & Pages** ➡️ **Create application** ➡️ **Create Worker**。
-3. 名稱可自訂（例如 `waterball-tracker`），點擊 **Deploy**。
-4. 部署後點擊 **Edit code**（編輯代碼）：
-   - 清空預設代碼，將本專案的 [`cloudflare/worker.js`](worker.js) 內容**全部複製貼上**。
+2. 在左側選單點選 **Build** ➡️ **Compute** ➡️ **Workers & Pages**。
+3. 點擊 **Create application**（建立應用程式）。
+4. 在出現的選項中，點選 **「Start with Hello World!」**（最基礎的空白 Worker 範本）。
+5. 名稱可自訂（例如 `waterball-tracker`），點擊 **Deploy**。
+6. 部署完成後點擊 **Edit code**（編輯代碼）：
+   - 清空預設的示範代碼，將本專案的 [`cloudflare/worker.js`](worker.js) 內容**全部複製貼上**。
    - 點擊右上角 **Deploy** 儲存發布。
 
 ### 步驟 2：綁定免費 KV 資料庫（儲存規則與狀態）
-1. 回到 Cloudflare 控制台，左側點選 **Workers & Pages** ➡️ **KV**。
+1. 回到 Cloudflare 控制台，左側選單點選 **Build** ➡️ **Storage & Databases** ➡️ **KV**（若舊版介面則在 Workers & Pages 旁邊的 KV）。
 2. 點擊 **Create namespace**，名稱輸入 `PTT_TRACKER_KV`，點擊 **Add**。
-3. 回到您的 Worker 頁面，點選 **Settings** ➡️ **Variables**。
-4. 滾動到 **KV Namespace Bindings** 區塊，點擊 **Add binding**：
-   - Variable name（變數名稱）：填寫 `PTT_TRACKER_KV`
-   - KV namespace：選擇剛才建立的 `PTT_TRACKER_KV`
+3. 回到您剛建立的 Worker 頁面，點選 **Settings**（設定）➡️ **Variables and Secrets**（或 **Bindings**）。
+4. 找到 **KV Namespace Bindings** 區塊，點擊 **Add binding**：
+   - **Variable name（變數名稱）**：務必填寫 `PTT_TRACKER_KV`
+   - **KV namespace**：下拉選擇剛才建立的 `PTT_TRACKER_KV`
 5. 點擊 **Save and deploy**。
 
 ### 步驟 3：設定每 3 分鐘自動檢查排程 (Cron Trigger)
-1. 在該 Worker 頁面點選 **Triggers**（觸發器）分頁。
+1. 在該 Worker 頁面點選 **Triggers**（觸發器）分頁（或 **Settings** ➡️ **Triggers**）。
 2. 滾動到 **Cron Triggers**，點擊 **Add Cron Trigger**。
 3. 輸入 `*/3 * * * *`（每 3 分鐘執行一次），點擊 **Save**。
 
