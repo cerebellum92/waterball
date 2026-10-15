@@ -173,7 +173,7 @@ export class ArticleTracker {
           if (s.rules.some(r => matchArticleWithRule(a, r, isNew || Boolean(candidate)))) {
             if (!s.pending.some(j => coversArticle(j, a))) {
               if (s.pending.length >= 500) { b.fanout = progress; b.nextDueAt = this.clock() + 1000; return; }
-              s.pending.push({ id: key, article: a, epoch: s.epoch, attempts: 0, createdAt: progress.createdAt, nextAttemptAt: this.clock(), catchUpLimited: Boolean(result.catchUp?.truncated), forceDigest: Boolean(result.catchUp?.truncated || (b.lastCheckTime && this.clock() - b.lastCheckTime > 360000)) });
+              s.pending.push({ id: key, article: a, epoch: s.epoch, attempts: 0, createdAt: progress.createdAt, nextAttemptAt: this.clock(), catchUpLimited: Boolean(result.catchUp?.truncated) });
             }
             delete s.candidates[key];
           } else if (s.rules.some(r => r.minPushes > 0 && matchArticleWithRule(a, { ...r, minPushes: 0 }, true))) {

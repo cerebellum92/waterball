@@ -100,10 +100,10 @@ export async function fetchBoardPages(board, stats, request, {
     boundaryFound ||= overlap(values);
     const recent = dedupe(values).filter(a => {
       const at = articlePublishedAt(a);
-      if (at !== null && at < cutoffAt) { reason ||= 'age'; return false; }
+      if (!boundaryFound && at !== null && at < cutoffAt) { reason ||= 'age'; return false; }
       return true;
     });
-    if (recent.length > maxArticles || (recent.length === maxArticles && !boundaryFound)) reason ||= 'count';
+    if (!boundaryFound && (recent.length > maxArticles || (recent.length === maxArticles))) reason ||= 'count';
     articles = recent.slice(-maxArticles);
     while (new TextEncoder().encode(JSON.stringify(articles)).byteLength > maxBytes) { articles.shift(); reason ||= 'bytes'; }
   };
