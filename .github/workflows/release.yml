@@ -35,6 +35,17 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install NASM (Windows)
+        if: matrix.platform == 'windows-latest'
+        uses: ilammy/setup-nasm@v1
+
+      - name: Set up Strawberry Perl (Windows)
+        if: matrix.platform == 'windows-latest'
+        uses: shogo82148/actions-setup-perl@v1
+        with:
+          perl-version: '5.38'
+          distribution: strawberry
+
       - name: Rust Cache
         uses: swatinem/rust-cache@v2
         with:
@@ -52,13 +63,25 @@ jobs:
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
       - name: Install Frontend Dependencies
+        shell: bash
         run: npm ci
 
       - name: Run Frontend Tests
+        shell: bash
         run: node --test
 
       - name: Build Tauri Application
-        run: npx tauri build
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            if [ -d "/c/Strawberry/perl/bin" ]; then
+              export PATH="/c/Strawberry/perl/bin:/c/Strawberry/perl/site/bin:/c/Strawberry/c/bin:$PATH"
+            fi
+            which perl
+            perl -v | head -n 3
+            which nasm || true
+          fi
+          npx tauri build
 
       - name: Get latest tag
         id: get_tag
