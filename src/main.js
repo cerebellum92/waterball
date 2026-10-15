@@ -11,8 +11,12 @@ import { BoardSwitcherWidget } from './board_switcher.js';
 import { UpdateChecker } from './updater.js';
 import { PushHelper } from './push_helper.js';
 import { blacklistManager } from './blacklist.js';
-import { writeClipboardText } from './platform.js';
+import { writeClipboardText, isTouchDevice, isIOS } from './platform.js';
 import { isMac, isInteractiveInputElement, translateBbsKey } from './keymap.js';
+
+if (isTouchDevice() || isIOS()) {
+  document.body.classList.add('is-mobile', 'is-touch');
+}
 
 import { ConnectionController } from './connection_controller.js';
 import { ImeController } from './ime_controller.js';
@@ -128,6 +132,7 @@ const boardSwitcherWidget = new BoardSwitcherWidget((data) => connectionCtrl.sen
 const pushHelper = new PushHelper((data) => connectionCtrl.sendData(data), () => tabManager.getActiveTab());
 
 function areAnyModalsOpen() {
+  if (tabManager && tabManager.isTabSwitcherOpen && tabManager.isTabSwitcherOpen()) return true;
   if (settingsUI && settingsUI.isOpen()) return true;
   if (articleReader && articleReader.isOpen) return true;
   if (searchWidget && searchWidget.isOpen) return true;
@@ -556,6 +561,7 @@ window.addEventListener('paste', (e) => {
 
 // Comprehensive Keyboard Mapping for BBS & Multi-Tab Shortcuts
 window.addEventListener('keydown', (e) => {
+  if (document.getElementById('monitor-cloud-confirm')?.open) return;
   // Ignore bare modifier keys to not interfere with OS level HUDs (e.g., Cmd+Space input method HUD)
   if (['Meta', 'Control', 'Alt', 'Shift', 'OS'].includes(e.key)) {
     return;

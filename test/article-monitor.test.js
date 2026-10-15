@@ -403,6 +403,7 @@ test('ArticleMonitorManager syncToCloud triggers auto-sync on rule or Telegram c
     chatId: '987654321',
     silent: false,
   });
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(syncCallCount, 2);
   assert.equal(syncPayload.telegram.chatId, '987654321');
   assert.equal(syncPayload.telegram.botToken, '123456:ABC-DEF');
@@ -427,11 +428,193 @@ test('ArticleMonitorManager syncToCloud validates parameters', async () => {
   assert.equal(res1.success, false);
   assert.match(res1.message, /網址/);
 
-  // Missing Secret
+  // Missing Secret / Chat ID
   const res2 = await manager.syncToCloud({ workerUrl: 'https://test.dev', syncSecret: '' });
   assert.equal(res2.success, false);
-  assert.match(res2.message, /密鑰/);
+  assert.match(res2.message, /密鑰|綁定碼|配對碼/);
 });
 
+test('ArticleMonitorManager allows unlimited configured rules but enforces max 10 concurrently checked boards', () => {
+  const storage = new MockStorage();
+  const manager = new ArticleMonitorManager(storage, async () => []);
+
+  // Clear default initial rules
+  for (const r of manager.getRules()) {
+    manager.deleteRule(r.id);
+  }
+  assert.equal(manager.getSubscribedBoards().length, 0);
+
+  // Add 10 distinct boards (all enabled by default)
+  const addedRules = [];
+  for (let i = 1; i <= 10; i++) {
+    const added = manager.addRule({ board: `Board_${i}`, keywords: ['test'] });
+    assert.ok(added, `Should allow board #${i}`);
+    assert.equal(added.enabled, true);
+    addedRules.push(added);
+  }
+  assert.equal(manager.getSubscribedBoards().length, 10);
+
+  // Adding another rule for an ALREADY checked board should succeed as enabled: true
+  const sameBoardRule = manager.addRule({ board: 'board_1', keywords: ['second_rule'] });
+  assert.ok(sameBoardRule, 'Should allow multiple rules on an already checked board');
+  assert.equal(sameBoardRule.enabled, true);
+  assert.equal(manager.getSubscribedBoards().length, 10);
+
+  // Adding an 11th distinct board should still succeed, but automatically saved as unchecked (enabled: false)
+  const eleventh = manager.addRule({ board: 'Board_11', keywords: ['overflow'] });
+  assert.ok(eleventh, 'Should allow configuring an 11th board in the list');
+  assert.equal(eleventh.enabled, false, '11th distinct board should default to unchecked');
+  assert.match(manager.lastWarning, /10/);
+  assert.equal(manager.getSubscribedBoards().length, 10);
+
+  // Trying to check/enable the 11th board while 10 boards are still checked should be blocked
+  const toggleFail = manager.toggleRule(eleventh.id);
+  assert.equal(toggleFail, false);
+  assert.match(manager.lastError, /10/);
+
+  // Unchecking Board_2 (which only has 1 rule) reduces checked boards to 9, allowing Board_11 to be checked
+  const toggleOff = manager.toggleRule(addedRules[1].id);
+  assert.equal(toggleOff, true);
+  assert.equal(manager.getSubscribedBoards().length, 9);
+
+  const toggleOn = manager.toggleRule(eleventh.id);
+  assert.equal(toggleOn, true);
+  assert.equal(manager.getSubscribedBoards().length, 10);
+});
+
+test('ArticleMonitorManager supports Local OS Notification toggle and Official Bot test push without personal Bot Token', async () => {
+  const storage = new MockStorage();
+  let capturedSyncPayload = null;
+
+  const mockCloudSync = async (_opts, payload) => {
+    capturedSyncPayload = payload;
+    return { success: true, message: '測試推播成功' };
+  };
+
+  const manager = new ArticleMonitorManager(storage, async () => [], null, mockCloudSync);
+
+  // Default local OS notification is enabled
+  assert.equal(manager.isLocalNotifEnabled(), true);
+  manager.setLocalNotifEnabled(false);
+  assert.equal(manager.isLocalNotifEnabled(), false);
+
+  // Official Bot mode: empty botToken, only chatId pairing code + server URL
+  const res = await manager.testTelegram('', '888123456-a1b2c3', 'https://official-push.workers.dev');
+  assert.equal(res.success, true);
+  assert.ok(capturedSyncPayload);
+  assert.equal(capturedSyncPayload.sendTestPush, true);
+  assert.equal(capturedSyncPayload.telegram.chatId, '888123456-a1b2c3');
+});
+
+test('ArticleMonitorManager saves and reuses deviceToken returned by server', async () => {
+  const storage = new MockStorage();
+  let receivedAuth = '';
+
+  const mockFetch = async (_url, options) => {
+    receivedAuth = options?.headers?.Authorization || '';
+    return {
+      ok: true,
+      json: async () => ({
+        success: true,
+        token: 'dev_token_abc_123456',
+        rule_count: 1,
+      }),
+    };
+  };
+
+  const oldFetch = globalThis.fetch;
+  globalThis.fetch = mockFetch;
+
+  try {
+    const manager = new ArticleMonitorManager(storage);
+    manager.saveCloudSyncConfig({
+      enabled: true,
+      workerUrl: 'https://test-worker.dev',
+      syncSecret: 'WB2-init-pairing-code',
+      serverMode: 'selfHosted',
+      autoSync: true,
+    });
+
+    const res = await manager.syncToCloud({
+      workerUrl: 'https://test-worker.dev',
+      syncSecret: 'WB2-init-pairing-code',
+    });
+
+    assert.equal(res.success, true);
+    assert.equal(receivedAuth, 'Bearer dev_token_abc_123456'); // /pair was completed and persisted before /sync
+
+    // Token should now be persisted in cloudSyncConfig
+    const updatedConfig = manager.getCloudSyncConfig();
+    assert.equal(updatedConfig.deviceToken, 'dev_token_abc_123456');
+
+    // Next sync should automatically use the new deviceToken
+    await manager.syncToCloud({ workerUrl: 'https://test-worker.dev' });
+    assert.equal(receivedAuth, 'Bearer dev_token_abc_123456');
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
+});
+
+test('ArticleMonitorUI handles font scaling initialization and cycling', async () => {
+  const { ArticleMonitorUI } = await import('../src/article_monitor_ui.js');
+  const classList = new Set();
+  const mockContentEl = {
+    classList: {
+      add: (cls) => classList.add(cls),
+      remove: (cls) => classList.delete(cls),
+      contains: (cls) => classList.has(cls),
+    },
+  };
+  const mockModalEl = {
+    querySelector: (sel) => (sel === '.monitor-modal-content' ? mockContentEl : null),
+  };
+  const fontValEl = { textContent: '' };
+  const fontDecBtn = { disabled: false, style: {} };
+  const fontIncBtn = { disabled: false, style: {} };
+
+  const storage = new Map();
+  const originalLocalStorage = globalThis.localStorage;
+  globalThis.localStorage = {
+    getItem: (k) => storage.get(k) || null,
+    setItem: (k, v) => storage.set(k, String(v)),
+  };
+
+  try {
+    const ui = Object.create(ArticleMonitorUI.prototype);
+    ui.modalEl = mockModalEl;
+    ui.fontValEl = fontValEl;
+    ui.fontDecBtn = fontDecBtn;
+    ui.fontIncBtn = fontIncBtn;
+    ui.currentFontScaleIndex = 0;
+
+    ui.initFontScaling();
+    assert.equal(fontValEl.textContent, '標準');
+    assert.equal(mockContentEl.classList.contains('font-scale-standard'), true);
+    assert.equal(fontDecBtn.disabled, true);
+    assert.equal(fontIncBtn.disabled, false);
+
+    // Increase font
+    ui.currentFontScaleIndex = 1;
+    ui.applyFontScale();
+    assert.equal(fontValEl.textContent, '舒適');
+    assert.equal(mockContentEl.classList.contains('font-scale-medium'), true);
+    assert.equal(storage.get('waterball_monitor_font_scale'), 'medium');
+
+    // Increase again
+    ui.currentFontScaleIndex = 2;
+    ui.applyFontScale();
+    assert.equal(fontValEl.textContent, '特大');
+    assert.equal(mockContentEl.classList.contains('font-scale-large'), true);
+    assert.equal(fontIncBtn.disabled, true);
+    assert.equal(storage.get('waterball_monitor_font_scale'), 'large');
+
+    // Reload with saved 'large'
+    ui.initFontScaling();
+    assert.equal(ui.currentFontScaleIndex, 2);
+    assert.equal(fontValEl.textContent, '特大');
+  } finally {
+    globalThis.localStorage = originalLocalStorage;
+  }
+});
 
 

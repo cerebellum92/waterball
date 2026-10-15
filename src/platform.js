@@ -7,6 +7,23 @@ import {
 
 const isTauri = () => Boolean(window.__TAURI_INTERNALS__ || window.__TAURI__);
 
+export const isTouchDevice = () => {
+  if (typeof window === 'undefined') return false;
+  return (
+    'ontouchstart' in window ||
+    navigator.maxTouchPoints > 0 ||
+    /iPad|iPhone|iPod|Android/i.test(navigator.userAgent)
+  );
+};
+
+export const isIOS = () => {
+  if (typeof window === 'undefined') return false;
+  return (
+    /iPad|iPhone|iPod/i.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  );
+};
+
 export async function requestNotificationPermission() {
   if (isTauri()) {
     try {

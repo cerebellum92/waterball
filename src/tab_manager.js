@@ -42,9 +42,45 @@ export class TabManager {
     this.onSelectionChange = null;
     this.onArticleClick = null;
     this.onBoardClick = null;
+
+    // Mobile Chrome-style Tab Switcher elements
+    this.mobileTabBtn = document.getElementById('mobile-tab-btn');
+    this.mobileTabCount = document.getElementById('mobile-tab-count');
+    this.mobileTabUnreadDot = document.getElementById('mobile-tab-unread-dot');
+    this.tabSwitcherModal = document.getElementById('tab-switcher-modal');
+    this.tabSwitcherCount = document.getElementById('tab-switcher-count');
+    this.tabSwitcherCards = document.getElementById('tab-switcher-cards');
+    this.tabSwitcherNewBtn = document.getElementById('tab-switcher-new-btn');
+    this.tabSwitcherCloseBtn = document.getElementById('tab-switcher-close-btn');
   }
 
   init() {
+    // Hook up Mobile Tab Switcher events
+    this.mobileTabBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleTabSwitcher();
+    });
+
+    this.tabSwitcherCloseBtn?.addEventListener('click', () => {
+      this.closeTabSwitcher();
+    });
+
+    this.tabSwitcherModal?.addEventListener('click', (e) => {
+      if (e.target === this.tabSwitcherModal) {
+        this.closeTabSwitcher();
+      }
+    });
+
+    this.tabSwitcherNewBtn?.addEventListener('click', () => {
+      const newTab = this.createTab({
+        title: '批踢踢實業坊',
+        address: 'bbs@ptt.cc:22',
+        encoding: 'big5',
+      });
+      this.switchTab(newTab.id);
+      this.closeTabSwitcher();
+    });
+
     // Create initial first tab
     const firstTab = this.createTab({
       title: '批踢踢實業坊',
@@ -208,6 +244,11 @@ export class TabManager {
   }
 
   renderTabBar() {
+    this.updateMobileTabBadge();
+    if (this.isTabSwitcherOpen()) {
+      this.renderTabSwitcher();
+    }
+
     if (!this.tabBarEl) return;
     this.tabBarEl.innerHTML = '';
 
@@ -272,5 +313,99 @@ export class TabManager {
     tabList.appendChild(newTabBtn);
 
     this.tabBarEl.appendChild(tabList);
+  }
+
+  updateMobileTabBadge() {
+    if (this.mobileTabCount) {
+      this.mobileTabCount.textContent = this.tabs.length;
+    }
+    if (this.mobileTabUnreadDot) {
+      const hasUnread = this.tabs.some((t) => t.id !== this.activeTabId && t.unread);
+      this.mobileTabUnreadDot.classList.toggle('hidden', !hasUnread);
+    }
+  }
+
+  isTabSwitcherOpen() {
+    return Boolean(this.tabSwitcherModal && !this.tabSwitcherModal.classList.contains('hidden'));
+  }
+
+  openTabSwitcher() {
+    if (!this.tabSwitcherModal) return;
+    this.renderTabSwitcher();
+    this.tabSwitcherModal.classList.remove('hidden');
+  }
+
+  closeTabSwitcher() {
+    if (!this.tabSwitcherModal) return;
+    this.tabSwitcherModal.classList.add('hidden');
+    const activeTab = this.getActiveTab();
+    if (activeTab?.view) {
+      activeTab.view.focus();
+    }
+  }
+
+  toggleTabSwitcher() {
+    if (this.isTabSwitcherOpen()) {
+      this.closeTabSwitcher();
+    } else {
+      this.openTabSwitcher();
+    }
+  }
+
+  renderTabSwitcher() {
+    if (!this.tabSwitcherCards) return;
+    if (this.tabSwitcherCount) {
+      this.tabSwitcherCount.textContent = this.tabs.length;
+    }
+    this.tabSwitcherCards.innerHTML = '';
+
+    this.tabs.forEach((tab, index) => {
+      const isActive = tab.id === this.activeTabId;
+      const card = document.createElement('div');
+      card.className = `tab-card ${isActive ? 'active' : ''}`;
+      card.dataset.tabId = tab.id;
+
+      let statusLabel = '未連線';
+      if (tab.status === 'connected') statusLabel = '已連線';
+      else if (tab.status === 'connecting') statusLabel = '連線中...';
+
+      const titleEsc = String(tab.title || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const addrEsc = String(tab.address || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+      card.innerHTML = `
+        <div class="tab-card-header">
+          <div class="tab-card-title-wrap">
+            <span class="bbs-tab-dot ${tab.status}"></span>
+            <span class="tab-card-title">${index + 1}. ${titleEsc}</span>
+          </div>
+          <button class="tab-card-close" title="關閉分頁">&times;</button>
+        </div>
+        <div class="tab-card-body">
+          <div class="tab-card-address">${addrEsc}</div>
+          <div class="tab-card-badges">
+            <span class="tab-card-status-badge ${tab.status}">${statusLabel}</span>
+            ${isActive ? '<span class="tab-card-active-badge">使用中</span>' : ''}
+            ${tab.unread ? '<span class="tab-card-unread-badge">新訊息</span>' : ''}
+          </div>
+        </div>
+      `;
+
+      card.addEventListener('click', (e) => {
+        if (e.target.closest('.tab-card-close')) return;
+        this.switchTab(tab.id);
+        this.closeTabSwitcher();
+      });
+
+      const closeBtn = card.querySelector('.tab-card-close');
+      if (closeBtn) {
+        closeBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.closeTab(tab.id);
+          this.renderTabSwitcher();
+        });
+      }
+
+      this.tabSwitcherCards.appendChild(card);
+    });
   }
 }

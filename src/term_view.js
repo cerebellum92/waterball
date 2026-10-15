@@ -778,11 +778,20 @@ export class TermView {
 
   resize() {
     this.measureCache.clear();
-    // Keep a comfortable 4px safe margin on all 4 borders to completely eliminate edge clipping
+    // Keep a comfortable 4px safe margin on all 4 borders to completely eliminate edge clipping,
+    // plus any padding defined on the container (e.g. mobile safe area insets).
     const containerW = this.container.clientWidth || 800;
     const containerH = this.container.clientHeight || 500;
-    const availW = Math.max(100, containerW - 8);
-    const availH = Math.max(100, containerH - 8);
+    let padX = 0;
+    let padY = 0;
+    try {
+      const style = window.getComputedStyle(this.container);
+      padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+    } catch (_) {}
+
+    const availW = Math.max(100, containerW - padX - 8);
+    const availH = Math.max(100, containerH - padY - 8);
 
     const cellW_fromW = availW / 80;
     const cellH_fromW = cellW_fromW * 2;

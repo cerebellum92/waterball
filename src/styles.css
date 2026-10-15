@@ -18,6 +18,8 @@
   color-scheme: dark;
   --bg-primary: #0d1117;
   --bg-secondary: #161b22;
+  --bg-surface: #161b22;
+  --bg-surface-elevated: #1c2128;
   --bg-toolbar: #1c2128;
   --border-color: #30363d;
   --text-primary: #e6edf3;
@@ -577,6 +579,49 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
   font-size: 16px;
   font-weight: 600;
   margin: 0;
+}
+
+.modal-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.monitor-font-controls {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+
+.monitor-font-controls button {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-weight: bold;
+  padding: 3px 8px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.monitor-font-controls button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text-primary);
+}
+
+.monitor-font-controls span {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  padding: 0 4px;
+  min-width: 32px;
+  text-align: center;
+  user-select: none;
 }
 
 .close-btn {
@@ -3551,16 +3596,18 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
    Article Monitor & Notification Center Modal
    ======================================================== */
 .monitor-modal-content {
-  background: var(--bg-surface);
+  background: #161b22;
   border: 1px solid var(--border-color);
   border-radius: 10px;
-  width: 90%;
-  max-width: 780px;
+  width: 92%;
+  max-width: 840px;
+  min-height: min(580px, 85vh);
   max-height: 85vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.85);
   overflow: hidden;
+  transition: max-width 0.2s ease, font-size 0.2s ease;
 }
 
 .monitor-tabs {
@@ -3608,6 +3655,8 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
   display: flex;
   flex-direction: column;
   gap: 16px;
+  background: #161b22;
+  min-height: min(460px, 70vh);
 }
 
 .monitor-pane.hidden {
@@ -3653,6 +3702,7 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
   display: flex;
   flex-direction: column;
   gap: 10px;
+  flex: 1;
 }
 
 .monitor-history-card {
@@ -3936,78 +3986,141 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
 }
 
 .monitor-empty-box {
-  padding: 36px 20px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 20px;
   text-align: center;
   color: var(--text-secondary);
+  min-height: 280px;
 }
 
-/* Telegram Forwarding Styles */
+/* Telegram Forwarding Styles & Push Settings Pane */
 .tg-settings-container {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 18px;
+  font-size: 14px;
 }
 
 .tg-intro-card {
   background: rgba(41, 151, 230, 0.08);
-  border: 1px solid rgba(41, 151, 230, 0.25);
-  border-radius: 8px;
-  padding: 14px 16px;
+  border: 1px solid rgba(41, 151, 230, 0.3);
+  border-radius: 10px;
+  padding: 16px 20px;
 }
 
 .tg-intro-title {
-  margin: 0 0 6px 0;
-  font-size: 15px;
-  font-weight: 600;
-  color: #2997e6;
+  margin: 0 0 8px 0;
+  font-size: 16.5px;
+  font-weight: 700;
+  color: #38bdf8;
+  letter-spacing: 0.2px;
 }
 
 .tg-intro-desc {
-  margin: 0 0 10px 0;
-  font-size: 13px;
-  line-height: 1.5;
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  line-height: 1.6;
   color: var(--text-secondary);
 }
 
 .tg-steps-box {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  background: var(--bg-surface-elevated, rgba(0, 0, 0, 0.2));
-  padding: 10px 12px;
-  border-radius: 6px;
+  gap: 10px;
+  background: rgba(0, 0, 0, 0.28);
+  padding: 14px 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 .tg-step-item {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
-  font-size: 12.5px;
-  line-height: 1.45;
+  gap: 10px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text-primary);
 }
 
 .tg-step-item .step-num {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
-  background: #2997e6;
+  width: 22px;
+  height: 22px;
+  background: #0284c7;
   color: #fff;
   border-radius: 50%;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: bold;
   flex-shrink: 0;
+  margin-top: 1px;
 }
 
 .tg-config-form {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
   background: var(--bg-surface);
   border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 20px;
+}
+
+.tg-config-form .checkbox-label {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tg-config-form .checkbox-label input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.tg-config-form .hint {
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  margin-top: 6px;
+}
+
+.tg-config-form label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+  display: block;
+}
+
+.tg-config-form input[type="text"],
+.tg-config-form input[type="password"] {
+  height: 42px;
+  font-size: 14.5px;
+  padding: 8px 14px;
   border-radius: 8px;
-  padding: 16px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.tg-config-form input[type="text"]:focus,
+.tg-config-form input[type="password"]:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+  outline: none;
 }
 
 .password-wrapper {
@@ -4018,37 +4131,127 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
 
 .password-wrapper input {
   width: 100%;
-  padding-right: 36px;
+  padding-right: 42px;
 }
 
 .token-toggle-btn {
   position: absolute;
-  right: 6px;
+  right: 8px;
   background: none;
   border: none;
   cursor: pointer;
-  padding: 4px;
-  font-size: 14px;
+  padding: 6px;
+  font-size: 16px;
   opacity: 0.7;
+  color: var(--text-secondary);
+  transition: opacity 0.15s;
 }
 
 .token-toggle-btn:hover {
   opacity: 1;
+  color: var(--text-primary);
 }
 
 .tg-form-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 10px 0 6px 0;
+}
+
+.tg-form-actions button,
+.tg-config-form button.btn-secondary,
+.tg-config-form button.btn-primary {
+  height: 42px;
+  padding: 0 20px;
+  font-size: 14.5px;
+  font-weight: 600;
+  border-radius: 8px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.tg-config-form button.btn-secondary {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+.tg-config-form button.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.3);
+  transform: translateY(-1px);
+}
+
+/* Primary prominent button (e.g. 💾 更新雲端啟用／暫停狀態 / 🔑 配對並讀取雲端設定) */
+#monitor-tg-save-btn {
+  height: 44px;
+  padding: 0 24px;
+  font-size: 15px;
+  font-weight: 700;
+  background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);
+  color: #fff;
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  box-shadow: 0 2px 10px rgba(2, 132, 199, 0.35);
+  letter-spacing: 0.3px;
+}
+
+#monitor-tg-save-btn:hover {
+  background: linear-gradient(135deg, #0369a1 0%, #075985 100%);
+  border-color: #38bdf8;
+  box-shadow: 0 4px 14px rgba(2, 132, 199, 0.5);
+  transform: translateY(-1px);
+}
+
+#monitor-open-bot-btn {
+  height: 42px;
+  padding: 0 16px;
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+
+.tg-settings-container details {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 12px 16px;
   margin-top: 4px;
 }
 
+.tg-settings-container details summary {
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  user-select: none;
+}
+
+.tg-settings-container details summary:hover {
+  color: var(--text-primary);
+}
+
+.tg-settings-container details[open] {
+  padding-bottom: 16px;
+}
+
+.tg-settings-container details button {
+  margin-top: 10px;
+}
+
 .tg-status-banner {
-  padding: 10px 14px;
-  border-radius: 6px;
-  font-size: 13px;
-  line-height: 1.4;
-  margin-top: 6px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 1.5;
+  margin-top: 10px;
 }
 
 .tg-status-banner.success {
@@ -4069,5 +4272,470 @@ body.toolbar-scale-large .export-btn-row button { height: 46px; font-size: 15.5p
   color: #3498db;
 }
 
+.tg-step-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
 
+.tg-step-badge {
+  background: #2997e6;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
 
+.tg-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.tg-step-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.tg-step-desc {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.tg-chatid-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.tg-chatid-row input {
+  flex: 1;
+  min-width: 200px;
+}
+
+.tg-advanced-details {
+  border: 1px dashed var(--border-color);
+  border-radius: 8px;
+  padding: 12px 16px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.tg-advanced-summary {
+  cursor: pointer;
+  font-size: 13.5px;
+  color: var(--text-secondary);
+  user-select: none;
+  font-weight: 600;
+}
+
+.tg-advanced-summary:hover {
+  color: var(--text-primary);
+}
+
+.tg-advanced-content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-color);
+}
+
+.tg-divider-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-color);
+}
+
+/* ========================================================
+   Font Scaling for Monitor & Notification Center Modal
+   ======================================================== */
+.monitor-modal-content.font-scale-standard {
+  /* Default base font sizes */
+}
+
+/* Medium Scale (+15%) */
+.monitor-modal-content.font-scale-medium {
+  max-width: 900px;
+}
+
+.monitor-modal-content.font-scale-medium .tg-intro-title {
+  font-size: 18.5px;
+}
+
+.monitor-modal-content.font-scale-medium .tg-intro-desc,
+.monitor-modal-content.font-scale-medium .tg-step-item,
+.monitor-modal-content.font-scale-medium .tg-config-form .hint,
+.monitor-modal-content.font-scale-medium .hint {
+  font-size: 15px;
+}
+
+.monitor-modal-content.font-scale-medium .tg-config-form .checkbox-label {
+  font-size: 16.5px;
+}
+
+.monitor-modal-content.font-scale-medium .tg-config-form label {
+  font-size: 15.5px;
+}
+
+.monitor-modal-content.font-scale-medium input[type="text"],
+.monitor-modal-content.font-scale-medium input[type="password"] {
+  height: 46px;
+  font-size: 16px;
+}
+
+.monitor-modal-content.font-scale-medium .tg-form-actions button,
+.monitor-modal-content.font-scale-medium .tg-config-form button.btn-secondary {
+  height: 46px;
+  font-size: 16px;
+  padding: 0 24px;
+}
+
+.monitor-modal-content.font-scale-medium #monitor-tg-save-btn {
+  height: 48px;
+  font-size: 16.5px;
+  padding: 0 28px;
+}
+
+.monitor-modal-content.font-scale-medium #monitor-open-bot-btn {
+  height: 46px;
+  font-size: 15px;
+}
+
+.monitor-modal-content.font-scale-medium .monitor-tab-btn {
+  font-size: 15px;
+  padding: 14px 18px;
+}
+
+/* Large Scale (+30%) */
+.monitor-modal-content.font-scale-large {
+  max-width: 960px;
+}
+
+.monitor-modal-content.font-scale-large .tg-intro-title {
+  font-size: 20.5px;
+}
+
+.monitor-modal-content.font-scale-large .tg-intro-desc,
+.monitor-modal-content.font-scale-large .tg-step-item,
+.monitor-modal-content.font-scale-large .tg-config-form .hint,
+.monitor-modal-content.font-scale-large .hint {
+  font-size: 16.5px;
+}
+
+.monitor-modal-content.font-scale-large .tg-config-form .checkbox-label {
+  font-size: 18px;
+}
+
+.monitor-modal-content.font-scale-large .tg-config-form label {
+  font-size: 17px;
+}
+
+.monitor-modal-content.font-scale-large input[type="text"],
+.monitor-modal-content.font-scale-large input[type="password"] {
+  height: 50px;
+  font-size: 17.5px;
+}
+
+.monitor-modal-content.font-scale-large .tg-form-actions button,
+.monitor-modal-content.font-scale-large .tg-config-form button.btn-secondary {
+  height: 50px;
+  font-size: 17.5px;
+  padding: 0 28px;
+}
+
+.monitor-modal-content.font-scale-large #monitor-tg-save-btn {
+  height: 52px;
+  font-size: 18px;
+  padding: 0 32px;
+}
+
+.monitor-modal-content.font-scale-large #monitor-open-bot-btn {
+  height: 50px;
+  font-size: 16.5px;
+}
+
+.monitor-modal-content.font-scale-large .monitor-tab-btn {
+  font-size: 16.5px;
+  padding: 15px 20px;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Phase 1: Mobile Chrome-Style Tab Badge & Switcher Modal
+═══════════════════════════════════════════════════════════ */
+#mobile-tab-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  width: 30px;
+  height: 30px;
+  background: var(--bg-secondary);
+  border: 1.5px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+  user-select: none;
+  margin-right: 2px;
+}
+
+#mobile-tab-btn:active {
+  background: var(--bg-primary);
+  border-color: var(--accent);
+  transform: scale(0.95);
+}
+
+#mobile-tab-count {
+  font-size: 13px;
+  font-weight: 700;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+  line-height: 1;
+  color: var(--text-primary);
+}
+
+.mobile-tab-unread-dot {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 8px;
+  height: 8px;
+  background: var(--red);
+  border-radius: 50%;
+  box-shadow: 0 0 6px rgba(248, 81, 73, 0.9);
+  animation: unreadPulse 1.2s infinite;
+}
+
+/* Tab Switcher Dialog */
+.tab-switcher-dialog {
+  max-width: 600px;
+  width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.tab-switcher-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tab-switcher-body {
+  overflow-y: auto;
+  padding: 16px;
+  flex: 1;
+}
+
+.tab-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+  width: 100%;
+}
+
+.tab-card {
+  background: var(--bg-primary);
+  border: 1.5px solid var(--border-color);
+  border-radius: 8px;
+  padding: 12px 14px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: all 0.15s ease;
+  position: relative;
+}
+
+.tab-card:hover, .tab-card:active {
+  border-color: var(--accent);
+  background: rgba(88, 166, 255, 0.05);
+}
+
+.tab-card.active {
+  border-color: var(--accent);
+  background: rgba(88, 166, 255, 0.1);
+  box-shadow: 0 0 10px rgba(88, 166, 255, 0.2);
+}
+
+.tab-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tab-card-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  flex: 1;
+}
+
+.tab-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-card-close {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  line-height: 1;
+}
+
+.tab-card-close:hover, .tab-card-close:active {
+  background: rgba(248, 81, 73, 0.2);
+  color: var(--red);
+}
+
+.tab-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tab-card-address {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: monospace;
+}
+
+.tab-card-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.tab-card-status-badge {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+}
+
+.tab-card-status-badge.connected {
+  background: rgba(63, 185, 80, 0.15);
+  color: var(--green);
+}
+
+.tab-card-status-badge.connecting {
+  background: rgba(210, 153, 34, 0.15);
+  color: var(--yellow);
+}
+
+.tab-card-active-badge {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(88, 166, 255, 0.2);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tab-card-unread-badge {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(248, 81, 73, 0.2);
+  color: var(--red);
+  font-weight: 600;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Mobile Responsive Rules (iPad / iPhone / Touch Screens)
+═══════════════════════════════════════════════════════════ */
+body.is-mobile #toolbar {
+  padding-top: calc(6px + env(safe-area-inset-top, 0px));
+  padding-bottom: 6px;
+  padding-left: max(12px, env(safe-area-inset-left, 0px));
+  padding-right: max(12px, env(safe-area-inset-right, 0px));
+  height: calc(var(--toolbar-height) + env(safe-area-inset-top, 0px));
+  box-sizing: border-box;
+}
+
+body.is-mobile #tab-bar {
+  display: none !important;
+}
+
+body.is-mobile #mobile-tab-btn {
+  display: inline-flex !important;
+}
+
+body.is-mobile #mouse-browsing-btn {
+  display: none !important;
+}
+
+body.is-mobile #terminal-container {
+  padding-top: 8px;
+  padding-bottom: max(22px, calc(env(safe-area-inset-bottom, 0px) + 8px));
+  padding-left: max(20px, env(safe-area-inset-left, 0px));
+  padding-right: max(20px, env(safe-area-inset-right, 0px));
+  box-sizing: border-box;
+}
+
+@media (pointer: coarse) {
+  #toolbar {
+    padding-top: calc(6px + env(safe-area-inset-top, 0px));
+    padding-bottom: 6px;
+    padding-left: max(12px, env(safe-area-inset-left, 0px));
+    padding-right: max(12px, env(safe-area-inset-right, 0px));
+    height: calc(var(--toolbar-height) + env(safe-area-inset-top, 0px));
+    box-sizing: border-box;
+  }
+
+  #tab-bar {
+    display: none !important;
+  }
+
+  #mobile-tab-btn {
+    display: inline-flex !important;
+  }
+
+  #mouse-browsing-btn {
+    display: none !important;
+  }
+
+  #terminal-container {
+    padding-top: 8px;
+    padding-bottom: max(22px, calc(env(safe-area-inset-bottom, 0px) + 8px));
+    padding-left: max(20px, env(safe-area-inset-left, 0px));
+    padding-right: max(20px, env(safe-area-inset-right, 0px));
+    box-sizing: border-box;
+  }
+}
+
+/* In-app confirmations work in WKWebView without browser confirm dialogs. */
+.cloud-confirm-dialog { margin: auto; width: min(420px, 90vw); padding: 24px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-primary); color: var(--text-primary); }
+.cloud-confirm-dialog::backdrop { background: rgba(0, 0, 0, 0.65); }
+.cloud-confirm-dialog p { margin: 16px 0; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 50vh; overflow-y: auto; }
+#monitor-cloud-merge-choices { max-height: 45vh; overflow: auto; }
+#monitor-cloud-merge-choices label { display: block; margin: 10px 0; overflow-wrap: anywhere; }
+#monitor-cloud-merge-choices select { display: block; width: 100%; margin-top: 6px; }

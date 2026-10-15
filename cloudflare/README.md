@@ -1,44 +1,17 @@
-# 💧 Waterball PTT 24H 雲端邊緣守護者 (Cloudflare Workers)
+# Waterball Cloudflare 邊緣爬蟲部署指南 (自架版)
 
-這是專為 **Waterball (水球 BBS)** 設計的個人專屬 24 小時 PTT 文章雲端追蹤服務。  
-完全免費運行在 Cloudflare 全球邊緣網路上，電腦關機、休眠、外出也能在手機 Telegram 第一時間收到即時通報！
+本目錄提供 Waterball 專屬的開源 Cloudflare Worker 部署代碼，讓您可以將文章追蹤與 Telegram 爬蟲推播完全架設在您自己的 Cloudflare 帳號中。
 
----
+## 獨立自架模式 (Self-Hosted)
 
-## ⚡ 2 分鐘極簡網頁部署教學（完全無需安裝任何工具）
+- **核心檔案**：[`self-hosted-worker.js`](self-hosted-worker.js)
+- **設定檔範本**：[`wrangler.self-hosted.toml`](wrangler.self-hosted.toml)
+- **完整手把手架設指南**：請參閱 [**SELF_HOSTED.md**](SELF_HOSTED.md)
 
-### 步驟 1：建立 Cloudflare Worker
-1. 登入 [Cloudflare 官網](https://dash.cloudflare.com/)（若無帳號可免費註冊）。
-2. 在左側選單點選 **Build** ➡️ **Compute** ➡️ **Workers & Pages**。
-3. 點擊 **Create application**（建立應用程式）。
-4. 在出現的選項中，點選 **「Start with Hello World!」**（最基礎的空白 Worker 範本）。
-5. 名稱可自訂（例如 `waterball-tracker`），點擊 **Deploy**。
-6. 部署完成後點擊 **Edit code**（編輯代碼）：
-   - 清空預設的示範代碼，將本專案的 [`cloudflare/worker.js`](worker.js) 內容**全部複製貼上**。
-   - 點擊右上角 **Deploy** 儲存發布。
+### 架構特色
 
-### 步驟 2：綁定免費 KV 資料庫（儲存規則與狀態）
-1. 回到 Cloudflare 控制台，左側選單點選 **Build** ➡️ **Storage & Databases** ➡️ **KV**（若舊版介面則在 Workers & Pages 旁邊的 KV）。
-2. 點擊 **Create namespace**，名稱輸入 `PTT_TRACKER_KV`，點擊 **Create**。
-3. 回到您剛建立的 Worker 頁面，點選 **Settings**（設定）➡️ **Variables and Secrets**（或 **Bindings**）。
-4. 找到 **KV Namespace Bindings** 區塊，點擊 **Add binding**：
-   - **Variable name（變數名稱）**：務必填寫 `PTT_TRACKER_KV`
-   - **KV namespace**：下拉選擇剛才建立的 `PTT_TRACKER_KV`
-5. 點擊 **Save and deploy**。
+1. **獨立自治**：使用您自己的 Telegram Bot Token 與 Chat ID，資料儲存於您自己 Cloudflare 的 SQLite Durable Object，絕不經過任何第三方或官方伺服器。
+2. **精準排程**：透過 Cloudflare Worker Alarms 自動輪詢 PTT，符合安全退避與頻率限制規範。
+3. **安全同步**：桌面客戶端可直接設定您的 Worker 網址與專屬 `SYNC_SECRET`，即時同步追蹤看板與推播規則。
 
-### 步驟 3：設定每 3 分鐘自動檢查排程 (Schedule / Cron Trigger)
-1. 在該 Worker 頁面點選 **Settings** ➡️ 找到 **Trigger Events**（觸發事件）。
-2. 點擊 **+ Add**（新增）。
-3. 選擇 **Schedule**（排程），在 **Execute worker every**（執行週期）直接選擇或填入 **3 minutes**（3 分鐘）。
-   *(若顯示進階 Cron 格式，亦可輸入 `*/3 * * * *`)*
-4. 點擊 **Save** 儲存。
-
-### 步驟 4：在 Waterball 桌面端完成同步設定
-1. 複製您的 Worker 網址（例如：`https://waterball-tracker.xxx.workers.dev`）。
-2. 開啟 Waterball 桌面端，點擊工具列「📢 追蹤」按鈕（或按 `Alt+M`）。
-3. 切換至 **「☁️ 雲端 24H 守護 (Cloudflare)」** 分頁：
-   - 勾選 **「啟用 Cloudflare 雲端 24H 守護」**。
-   - 貼上您的 **Worker 網址**。
-   - 點擊「隨機產生金鑰」或輸入您自訂的密鑰。
-   - 點擊 **「🔄 立即同步規則至雲端」**。
-4. 完成！畫面顯示同步成功後，Cloudflare 雲端將 24 小時守護為您監測，有重大情報立即推播至您的手機 Telegram！
+詳細建立 Worker、綁定 Durable Object 與部署步驟，請見 [SELF_HOSTED.md](SELF_HOSTED.md)。

@@ -39,43 +39,49 @@ impl WindowState {
         }
     }
 
-    fn apply_to(&self, window: &tauri::WebviewWindow) {
-        use tauri::{LogicalPosition, LogicalSize, Position, Size};
-        if self.is_maximized {
-            let _ = window.maximize();
-            return;
-        }
-        if self.width >= 400.0 && self.height >= 300.0 {
-            let _ = window.set_size(Size::Logical(LogicalSize {
-                width: self.width,
-                height: self.height,
-            }));
-        }
-        if let (Some(x), Some(y)) = (self.x, self.y) {
-            if x >= 0.0 && y >= 0.0 && x < 10000.0 && y < 10000.0 {
-                let _ = window.set_position(Position::Logical(LogicalPosition { x, y }));
+    fn apply_to(&self, _window: &tauri::WebviewWindow) {
+        #[cfg(desktop)]
+        {
+            use tauri::{LogicalPosition, LogicalSize, Position, Size};
+            if self.is_maximized {
+                let _ = _window.maximize();
+                return;
+            }
+            if self.width >= 400.0 && self.height >= 300.0 {
+                let _ = _window.set_size(Size::Logical(LogicalSize {
+                    width: self.width,
+                    height: self.height,
+                }));
+            }
+            if let (Some(x), Some(y)) = (self.x, self.y) {
+                if x >= 0.0 && y >= 0.0 && x < 10000.0 && y < 10000.0 {
+                    let _ = _window.set_position(Position::Logical(LogicalPosition { x, y }));
+                }
             }
         }
     }
 }
 
-fn save_current_window_state(window: &Window) {
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let size = match window.outer_size() {
-        Ok(size) => size,
-        Err(_) => return,
-    };
-    let position = window.outer_position().ok();
-    let is_maximized = window.is_maximized().unwrap_or(false);
-    let state = WindowState {
-        width: f64::from(size.width) / scale,
-        height: f64::from(size.height) / scale,
-        x: position.map(|pos| f64::from(pos.x) / scale),
-        y: position.map(|pos| f64::from(pos.y) / scale),
-        is_maximized,
-    };
-    if state.width >= 400.0 && state.height >= 300.0 {
-        state.save(&window.app_handle());
+fn save_current_window_state(_window: &Window) {
+    #[cfg(desktop)]
+    {
+        let scale = _window.scale_factor().unwrap_or(1.0);
+        let size = match _window.outer_size() {
+            Ok(size) => size,
+            Err(_) => return,
+        };
+        let position = _window.outer_position().ok();
+        let is_maximized = _window.is_maximized().unwrap_or(false);
+        let state = WindowState {
+            width: f64::from(size.width) / scale,
+            height: f64::from(size.height) / scale,
+            x: position.map(|pos| f64::from(pos.x) / scale),
+            y: position.map(|pos| f64::from(pos.y) / scale),
+            is_maximized,
+        };
+        if state.width >= 400.0 && state.height >= 300.0 {
+            state.save(&_window.app_handle());
+        }
     }
 }
 
@@ -636,7 +642,8 @@ async fn send_telegram_message(
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
 
-    if status.is_success() {
+    if status.is_success() && serde_json::from_str::<serde_json::Value>(&body)
+        .ok().and_then(|v| v["ok"].as_bool()) == Some(true) {
         Ok(TelegramSendResult {
             success: true,
             message: "訊息發送成功！".to_string(),
@@ -669,154 +676,91 @@ async fn send_telegram_message(
 pub struct CloudflareSyncResult {
     pub success: bool,
     pub message: String,
+    pub token: Option<String>,
     pub rule_count: Option<usize>,
     pub updated_at: Option<u64>,
 }
 
 #[tauri::command]
-async fn sync_to_cloudflare_worker(
+async fn cloud_push_request(
     worker_url: String,
     secret_key: String,
-    payload_json: String,
-) -> Result<CloudflareSyncResult, String> {
-    let clean_url = worker_url.trim().trim_end_matches('/').to_string();
-    let clean_secret = secret_key.trim();
-
-    if clean_url.is_empty() {
-        return Ok(CloudflareSyncResult {
-            success: false,
-            message: "請填寫 Cloudflare Worker 專屬網址".to_string(),
-            rule_count: None,
-            updated_at: None,
-        });
+    method: String,
+    payload_json: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let mut url = reqwest::Url::parse(worker_url.trim())
+        .map_err(|_| "推播網址格式不正確".to_string())?;
+    let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    if url.scheme() != "https" && !(url.scheme() == "http" && local) {
+        return Err("推播伺服器必須使用 HTTPS".to_string());
     }
-
-    if clean_secret.is_empty() {
-        return Ok(CloudflareSyncResult {
-            success: false,
-            message: "請填寫同步密鑰 (Sync Secret Key)".to_string(),
-            rule_count: None,
-            updated_at: None,
-        });
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("推播網址不可包含帳密".to_string());
     }
-
-    let target_endpoint = if clean_url.ends_with("/sync") {
-        clean_url
-    } else {
-        format!("{}/sync", clean_url)
-    };
-
+    url.set_query(None);
+    url.set_fragment(None);
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(12))
-        .build()
-        .map_err(|e| format!("無法建立 HTTP 客戶端: {}", e))?;
-
-    let resp = client
-        .post(&target_endpoint)
-        .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {}", clean_secret))
-        .body(payload_json)
-        .send()
-        .await
-        .map_err(|e| format!("連線 Cloudflare Worker 失敗: {}", e))?;
-
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-
-    if status.is_success() {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-            let msg = v["message"].as_str().unwrap_or("同步成功！").to_string();
-            let count = v["ruleCount"].as_u64().map(|c| c as usize);
-            let updated = v["updatedAt"].as_u64();
-            Ok(CloudflareSyncResult {
-                success: true,
-                message: msg,
-                rule_count: count,
-                updated_at: updated,
-            })
-        } else {
-            Ok(CloudflareSyncResult {
-                success: true,
-                message: "規則同步成功！".to_string(),
-                rule_count: None,
-                updated_at: None,
-            })
-        }
-    } else {
-        let err_msg = if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-            v["message"].as_str().unwrap_or(&body).to_string()
-        } else {
-            body
-        };
-        Ok(CloudflareSyncResult {
-            success: false,
-            message: format!("Cloudflare 回應異常 (HTTP {}): {}", status, err_msg),
-            rule_count: None,
-            updated_at: None,
-        })
+        .timeout(std::time::Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::none())
+        .build().map_err(|e| e.to_string())?;
+    let mut request = match method.as_str() {
+        "GET" => client.get(url),
+        "POST" => client.post(url).header("Content-Type", "application/json")
+            .body(payload_json.unwrap_or_else(|| "{}".to_string())),
+        _ => return Err("不支援的推播請求方法".to_string()),
+    };
+    if !secret_key.is_empty() {
+        request = request.header("Authorization", format!("Bearer {}", secret_key.trim()));
     }
+    let mut response = request.send().await.map_err(|e| e.to_string())?;
+    let status = response.status();
+    if response.content_length().unwrap_or(0) > 1024 * 1024 {
+        return Err("伺服器回應超過 1 MiB 上限".to_string());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+        if body.len() + chunk.len() > 1024 * 1024 {
+            return Err("伺服器回應超過 1 MiB 上限".to_string());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let mut value: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|_| "伺服器未回傳合法 JSON".to_string())?;
+    let object = value.as_object_mut().ok_or_else(|| "伺服器回應格式錯誤".to_string())?;
+    if !status.is_success() || object.get("success").and_then(|v| v.as_bool()) != Some(true) {
+        object.insert("success".to_string(), serde_json::Value::Bool(false));
+    }
+    object.insert("httpStatus".to_string(), serde_json::json!(status.as_u16()));
+    Ok(value)
 }
 
 #[tauri::command]
-async fn test_cloudflare_worker(
-    worker_url: String,
-    secret_key: String,
-) -> Result<CloudflareSyncResult, String> {
-    let clean_url = worker_url.trim().trim_end_matches('/').to_string();
-    let clean_secret = secret_key.trim();
+async fn sync_to_cloudflare_worker(worker_url: String, secret_key: String, payload_json: String) -> Result<CloudflareSyncResult, String> {
+    let base = worker_url.trim().trim_end_matches('/');
+    let target = if base.ends_with("/sync") { base.to_string() } else { format!("{}/sync", base) };
+    let value = cloud_push_request(target, secret_key, "POST".to_string(), Some(payload_json)).await?;
+    Ok(CloudflareSyncResult {
+        success: value["success"].as_bool() == Some(true),
+        message: value["message"].as_str().unwrap_or("同步回應未確認成功").to_string(),
+        token: value["token"].as_str().map(str::to_string),
+        rule_count: value["rule_count"].as_u64().or_else(|| value["ruleCount"].as_u64()).map(|n| n as usize),
+        updated_at: value["updated_at"].as_u64().or_else(|| value["updatedAt"].as_u64()),
+    })
+}
 
-    if clean_url.is_empty() {
-        return Ok(CloudflareSyncResult {
-            success: false,
-            message: "請填寫 Cloudflare Worker 網址".to_string(),
-            rule_count: None,
-            updated_at: None,
-        });
-    }
-
-    let target_endpoint = if clean_url.ends_with("/sync") {
-        clean_url
-    } else {
-        format!("{}/sync", clean_url)
-    };
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
-        .build()
-        .map_err(|e| format!("無法建立 HTTP 客戶端: {}", e))?;
-
-    let resp = client
-        .get(&target_endpoint)
-        .header("Authorization", format!("Bearer {}", clean_secret))
-        .send()
-        .await
-        .map_err(|e| format!("無法連線至 Worker: {}", e))?;
-
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-
-    if status.is_success() {
-        Ok(CloudflareSyncResult {
-            success: true,
-            message: "連線成功！Cloudflare Worker 運作正常且金鑰驗證通過。".to_string(),
-            rule_count: None,
-            updated_at: None,
-        })
-    } else if status.as_u16() == 401 {
-        Ok(CloudflareSyncResult {
-            success: false,
-            message: "連線失敗：同步密鑰 (Secret Key) 不正確，請確認金鑰設定。".to_string(),
-            rule_count: None,
-            updated_at: None,
-        })
-    } else {
-        Ok(CloudflareSyncResult {
-            success: false,
-            message: format!("連線失敗 (HTTP {}): {}", status, body),
-            rule_count: None,
-            updated_at: None,
-        })
-    }
+#[tauri::command]
+async fn test_cloudflare_worker(worker_url: String, secret_key: String) -> Result<CloudflareSyncResult, String> {
+    let base = worker_url.trim().trim_end_matches('/');
+    let target = if base.ends_with("/sync") { base.to_string() } else { format!("{}/sync", base) };
+    let value = cloud_push_request(target, secret_key, "GET".to_string(), None).await?;
+    let success = value["success"].as_bool() == Some(true) && value.get("config").is_some();
+    Ok(CloudflareSyncResult {
+        success,
+        message: if success { "連線與身份驗證成功".to_string() } else { value["message"].as_str().unwrap_or("連線未確認成功").to_string() },
+        token: None,
+        rule_count: None,
+        updated_at: None,
+    })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -875,7 +819,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            #[cfg(debug_assertions)]
+            #[cfg(all(desktop, debug_assertions))]
             if std::env::var_os("WATERBALL_OPEN_DEVTOOLS").is_some() {
                 if let Some(window) = app.get_webview_window("main") {
                     window.open_devtools();
@@ -905,6 +849,7 @@ pub fn run() {
             fetch_ptt_board_articles,
             send_telegram_message,
             sync_to_cloudflare_worker,
+            cloud_push_request,
             test_cloudflare_worker,
         ])
         .run(tauri::generate_context!())
