@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fetchBoardPages, canonicalBoard, matchArticleWithRule } from '../shared/push-rules.js';
+import { fetchBoardPages, canonicalBoard, matchArticleWithRule, parsePttArticlesHtml } from '../shared/push-rules.js';
 const row = id => `<div class="r-ent"><div class="title"><a href="/bbs/stock/${id}.html">test</a></div><div class="author">tester</div></div>`;
 const page = (ids, previous) => `<div class="r-list-container">${ids.map(row).join('')}</div>${previous ? `<a href="/bbs/stock/index${previous}.html">&lsaquo; 上頁</a>` : ''}`;
 const stats = () => ({ lastTopArticleId: 'M.boundary', overlapIds: ['M.boundary'] });
@@ -66,4 +66,17 @@ test('Legacy continuation cannot restart an unbounded historical scan; removed G
   let url;
   const result = await fetchBoardPages('stock', { ...stats(), backfill: { articles: [], nextUrl: 'https://www.ptt.cc/bbs/stock/index1.html' } }, async value => { url = value; return { status: 'ok', text: page(['M.new'], null) }; });
   assert.ok(url.endsWith('index.html')); assert.equal(result.status, 'complete'); assert.equal(canonicalBoard('Gossip'), 'Gossip');
+});
+test('Deleted articles are omitted during HTML parsing and cannot trigger rules', () => {
+  const html = `
+    <div class="r-list-container">
+      <div class="r-ent"><div class="title"><a href="/bbs/stock/M.1.html">[情報] 正常文章</a></div><div class="author">tester</div></div>
+      <div class="r-ent"><div class="title"><a href="/bbs/stock/M.2.html">(本文已被刪除) [bad]</a></div><div class="author">bad</div></div>
+      <div class="r-ent"><div class="title"><a href="/bbs/stock/M.3.html">(本文已被版主刪除) &lt;bad2&gt;</a></div><div class="author">bad2</div></div>
+      <div class="r-ent"><div class="title"><a href="/bbs/stock/M.4.html">本文已被刪除</a></div><div class="author">bad3</div></div>
+    </div>
+  `;
+  const parsed = parsePttArticlesHtml(html, 'stock');
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].id, 'M.1');
 });

@@ -37,8 +37,17 @@ export function validateAndSanitizeRules(rawRules) {
   }
   return { valid: true, rules };
 }
+export function isDeletedArticleTitle(title) {
+  if (!title || typeof title !== 'string') return true;
+  const clean = title.trim();
+  if (!clean || clean === '-' || clean === '批踢踢實業坊') return true;
+  if (/^[\(\[<]?(?:本文|此[篇文])?(?:已[經被]|已被|已被板主|已被版主).*刪除/i.test(clean)) return true;
+  if (clean.includes('本文已被刪除') || clean.includes('本文已經被刪除') || clean.includes('本文已被版主刪除') || clean.includes('本文已被板主刪除')) return true;
+  return false;
+}
 export function matchArticleWithRule(article, rule, isNewArticle = true) {
   if (!rule.enabled || article.board.toLowerCase() !== rule.board.toLowerCase()) return false;
+  if (isDeletedArticleTitle(article.title)) return false;
   if (rule.author && article.author.toLowerCase() !== rule.author.toLowerCase()) return false;
   if (rule.minPushes > 0 ? pushCount(article) < rule.minPushes : !isNewArticle) return false;
   return !rule.keywords?.length || rule.keywords.some(k => article.title.toLowerCase().includes(k.toLowerCase()));
@@ -58,7 +67,7 @@ export function parsePttArticlesHtml(html, board) {
     const author = block.match(/class="author">([^<]*)<\/div>/)?.[1]?.trim();
     if (!id || !author || author === '-') continue;
     const title = unescapeHtml(link[2].replace(/<[^>]*>/g, '').trim());
-    if (!title || title === '批踢踢實業坊') continue;
+    if (!title || title === '批踢踢實業坊' || isDeletedArticleTitle(title)) continue;
     articles.push({ id, board, title, author, link: link[1], date: block.match(/class="date">([^<]*)<\/div>/)?.[1]?.trim() || '', nrec: block.match(/class="nrec">([\s\S]*?)<\/div>/)?.[1]?.replace(/<[^>]*>/g, '').trim() || '' });
   }
   return articles;

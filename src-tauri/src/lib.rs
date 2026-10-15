@@ -415,7 +415,7 @@ pub fn parse_ptt_articles_html(html: &str, board: &str) -> Vec<PttArticleItem> {
         let raw_title = &after_link[title_tag_end..title_close];
         let title = unescape_html(raw_title).trim().to_string();
 
-        if title.is_empty() || title == "批踢踢實業坊" {
+        if title.is_empty() || title == "批踢踢實業坊" || is_deleted_article_title(&title) {
             continue;
         }
 
@@ -439,6 +439,31 @@ pub fn parse_ptt_articles_html(html: &str, board: &str) -> Vec<PttArticleItem> {
         });
     }
     articles
+}
+
+fn is_deleted_article_title(title: &str) -> bool {
+    let clean = title.trim();
+    if clean.is_empty() || clean == "-" || clean == "批踢踢實業坊" {
+        return true;
+    }
+    if clean.contains("本文已被刪除")
+        || clean.contains("本文已經被刪除")
+        || clean.contains("本文已被版主刪除")
+        || clean.contains("本文已被板主刪除")
+    {
+        return true;
+    }
+    let s = clean.trim_start_matches(|c| c == '(' || c == '[' || c == '<');
+    if (s.starts_with("本文") || s.starts_with("此文") || s.starts_with("此篇"))
+        && s.contains("刪除")
+        && (s.contains("已被") || s.contains("已經被"))
+    {
+        return true;
+    }
+    if (s.starts_with("已被") || s.starts_with("已經被")) && s.contains("刪除") {
+        return true;
+    }
+    false
 }
 
 fn extract_tag_content(text: &str, open: &str, close: &str) -> Option<String> {

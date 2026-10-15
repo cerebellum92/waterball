@@ -4,6 +4,7 @@ import { sendNativeNotification } from './platform.js';
 import { CloudPushClient, normalizePushServiceUrl } from './cloud_push_client.js';
 import { checkedCloudConfig, restorePreview, rulesSignature } from './cloud_restore.js';
 import { makeMergePlan, mergeRules, mergeSilent, withLocalBackups } from './cloud_merge.js';
+import { isDeletedArticleTitle } from '../shared/push-rules.js';
 
 export const MAX_MONITOR_BOARDS = 10;
 export const DEFAULT_OFFICIAL_WORKER_URL = 'https://waterball-tracker.cerebellum92.workers.dev';
@@ -190,6 +191,7 @@ export class ArticleMonitorManager {
             const strId = String(item.id || '');
             if (strLink.includes('cdn-cgi') || strId.startsWith('content?')) return false;
             if (item.title === '批踢踢實業坊' && (!item.author || item.author === '-')) return false;
+            if (isDeletedArticleTitle(item.title)) return false;
             return true;
           });
         }
@@ -772,6 +774,7 @@ export class ArticleMonitorManager {
     const strId = String(item.id || '');
     if (strLink.includes('cdn-cgi') || strId.startsWith('content?')) return;
     if (item.title === '批踢踢實業坊' && (!item.author || item.author === '-')) return;
+    if (isDeletedArticleTitle(item.title)) return;
 
     this.history.unshift(item);
     if (this.history.length > 100) {
@@ -784,6 +787,7 @@ export class ArticleMonitorManager {
 
   matchesRule(article, rule) {
     if (!rule.enabled) return false;
+    if (isDeletedArticleTitle(article.title)) return false;
     if (article.board.toLowerCase() !== rule.board.toLowerCase()) return false;
 
     // Author check
@@ -854,6 +858,7 @@ export class ArticleMonitorManager {
       if (!article.id || String(article.id).startsWith('content?')) continue;
       if (String(article.link || '').includes('cdn-cgi')) continue;
       if (article.title === '批踢踢實業坊' && (!article.author || article.author === '-')) continue;
+      if (isDeletedArticleTitle(article.title)) continue;
 
       if (!this.seenIds.has(article.id)) {
         const matchedRule = activeRules.find((rule) => this.matchesRule(article, rule));

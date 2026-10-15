@@ -1,5 +1,5 @@
 import { notificationArticles, notificationMatches, coversArticle, notificationDue, reserveNotification, coalesceNotifications, digestPayload, revalidateNotification } from '../shared/notification-policy.js';
-import { validateAndSanitizeRules, matchArticleWithRule, fetchBoardPages, canonicalBoard, cleanBotToken, positiveInteger, articleKey, pushCount, escapeHtml, MIN_BOARD_INTERVAL_MS, TIER_ROUNDS, httpError, isRecord } from '../shared/push-rules.js';
+import { validateAndSanitizeRules, matchArticleWithRule, fetchBoardPages, canonicalBoard, cleanBotToken, positiveInteger, articleKey, pushCount, escapeHtml, MIN_BOARD_INTERVAL_MS, TIER_ROUNDS, httpError, isRecord, isDeletedArticleTitle } from '../shared/push-rules.js';
 import { readBoundedBody, CORS_HEADERS } from '../shared/worker-http.js';
 
 const json = (status, data) => new Response(JSON.stringify(data), { status, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
@@ -163,6 +163,12 @@ export class ArticleTracker {
       const newIds = new Set(progress.newIds);
       for (; progress.index < progress.result.articles.length; progress.index++) {
         const a = progress.result.articles[progress.index], key = articleKey(a), isNew = newIds.has(a.id), candidate = s.candidates[key];
+        if (isDeletedArticleTitle(a.title)) {
+          seen.add(a.id);
+          delete s.candidates[key];
+          delete b.observed[a.id];
+          continue;
+        }
         if (progress.observedIndex !== progress.index) {
           if (isNew) progress.newCount++;
           const previous = b.observed[a.id] ?? candidate?.article.nrec;
