@@ -5,10 +5,9 @@
   "type": "module",
   "scripts": {
     "test": "node --test test/*.test.js",
-    "build:workers": "node scripts/build-workers.mjs",
+    "build:workers": "node scripts/build-workers.mjs --self-hosted-only",
     "dev": "vite --host 0.0.0.0 --port 1420 --strictPort",
     "build": "vite build && node scripts/check-release-bundle.mjs",
-    "release:public": "node scripts/sync-to-public.mjs",
     "tauri": "tauri"
   },
   "devDependencies": {

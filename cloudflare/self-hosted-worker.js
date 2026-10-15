@@ -235,7 +235,7 @@ export class ArticleTracker {
       const valid = this.validNotification(s, job);
       if (!valid) { await this.commit(d => { d.pending = d.pending.filter(j => j.id !== id); }); continue; }
       const due = notificationDue(s.notificationStarts, this.clock());
-      if (due > this.clock()) { await this.commit(d => { const current = d.pending.find(j => j.id === id); current.nextAttemptAt = due; current.forceDigest = true; }); continue; }
+      if (due > this.clock()) { await this.commit(d => { const current = d.pending.find(j => j.id === id); current.nextAttemptAt = due; }); continue; }
       await this.commit(d => { const current = d.pending.find(j => j.id === id); current.attempts++; current.nextAttemptAt = this.clock() + this.timeoutMs + 30000; });
       const a = job.article;
       const link = `https://www.ptt.cc/bbs/${encodeURIComponent(a.board)}/${encodeURIComponent(a.id)}.html`;

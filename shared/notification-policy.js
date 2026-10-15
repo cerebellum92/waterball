@@ -14,8 +14,9 @@ export function revalidateNotification(job, rules) {
   // Configuration edits cancel the old snapshot and create a new identity. Ordinary
   // retries still never change membership. Keep attempts/TTL/budget conservative.
   const originalId = job.originalId || job.id, generation = (job.generation || 0) + 1;
+  const isDigest = remaining.length >= 4;
   return { ...job, id: `${originalId}:v${generation}`, originalId, generation,
-    article: remaining[0], articles: remaining, digest: true, forceDigest: true };
+    article: remaining[0], articles: isDigest ? remaining : undefined, digest: isDigest };
 }
 export function notificationDue(starts, now) {
   const recent = (starts || []).filter(at => Number.isFinite(at) && at > now - NOTIFICATION_WINDOW_MS).sort((a, b) => a - b);
@@ -36,18 +37,48 @@ export function coalesceNotifications(jobs, now, ownerFor, valid) {
   }
   const removed = new Set(), replacements = [];
   for (const group of groups.values()) {
-    const all = [...new Map(group.flatMap(notificationArticles).map(a => [articleKey(a), a])).values()];
-    if (all.length <= 3 && !group.some(j => j.digest || j.forceDigest) && notificationDue(ownerFor(group[0])?.notificationStarts, now) <= now) continue;
-    // Split large groups into bounded snapshots; the same rolling budget applies to every chunk.
+    const owner = ownerFor(group[0]);
+    const isUndelivered = a => !owner?.delivered?.[articleKey(a)];
+    for (const j of group) {
+      const remainingArticles = notificationArticles(j).filter(isUndelivered);
+      if (remainingArticles.length === 0) removed.add(j.id);
+    }
+    const all = [...new Map(group.flatMap(notificationArticles).filter(isUndelivered).map(a => [articleKey(a), a])).values()];
+    if (all.length === 0) continue;
+
+    if (all.length <= 3) {
+      if (!group.some(j => j.digest || removed.has(j.id))) continue;
+      for (const j of group) removed.add(j.id);
+      for (const a of all) {
+        const id = `${group[0].userKey || 'owner'}:${group[0].epoch}:${articleKey(a)}`;
+        const original = group.find(j => coversArticle(j, a)) || group[0];
+        replacements.push({
+          ...original,
+          id,
+          article: a,
+          articles: undefined,
+          digest: false,
+          attempts: 0,
+        });
+      }
+      continue;
+    }
+    // Only coalesce into a digest if there are 4 or more unpushed articles.
     for (const j of group) removed.add(j.id);
     let offset = 0;
     for (let i = 0; offset < all.length; i++) {
       const members = all.slice(offset, offset + MAX_DIGEST_ARTICLES); offset += members.length;
-      const first = group[i]; // Number of chunks cannot exceed the number of source jobs.
-      replacements.push({ ...first, article: members[0], articles: members, digest: true,
+      const first = group[i] || group[0];
+      replacements.push({
+        ...first,
+        article: members[0],
+        articles: members,
+        digest: true,
         catchUpLimited: group.some(j => j.catchUpLimited),
         createdAt: Math.min(...group.map(j => j.createdAt)),
-        nextAttemptAt: Math.max(now, Math.min(...group.map(j => j.nextAttemptAt))), attempts: 0 });
+        nextAttemptAt: Math.max(now, Math.min(...group.map(j => j.nextAttemptAt))),
+        attempts: 0,
+      });
     }
   }
   return [...jobs.filter(j => !removed.has(j.id)), ...replacements];
