@@ -197,9 +197,6 @@ export class ExportModal {
 
     // Events
     modal.querySelector('#export-close-btn')?.addEventListener('click', () => this.close());
-    modal.addEventListener('click', (e) => {
-      if (e.target === modal) this.close();
-    });
 
     // Copy PNG button
     modal.querySelector('#btn-copy-png')?.addEventListener('click', () => this.copyPngImage());

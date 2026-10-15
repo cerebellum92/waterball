@@ -65,51 +65,77 @@ export function parsePttArticlesHtml(html, board) {
 }
 
 
-// Used by both independent runtimes. Complete and partial cursor outcomes stay explicit.
-export async function fetchBoardPages(board, stats, request, { activeRequired = true } = {}) {
-    const boundaryIds = new Set([stats.lastTopArticleId, ...(stats.overlapIds || [])].filter(Boolean));
-    const dedupe = articles => [...new Map(articles.map(a => [a.id, a])).values()];
-    const knownOverlap = articles => articles.some(a => boundaryIds.has(a.id));
-    const previousUrl = html => {
-      const link = html.match(/<a\s+[^>]*href="(\/bbs\/[^"]+\/index\d+\.html)"[^>]*>[^<]*上頁[^<]*<\/a>/i)?.[1]
-        || html.match(/href="(\/bbs\/[^"]+\/index\d+\.html)"[^>]*>\s*(?:&lsaquo;|&#8249;|‹)?\s*上頁\s*<\/a>/i)?.[1];
-      if (!link) return null;
-      const url = new URL(link, 'https://www.ptt.cc');
-      return url.pathname.toLowerCase().startsWith(`/bbs/${board}/`.toLowerCase()) ? url.href : null;
-    };
-
-    let articles, url, observedHead, boundaryFound, pages;
-
-    if (stats.backfill) {
-      observedHead = stats.backfill.observedHead;
-      articles = dedupe(stats.backfill.articles || []);
-      url = stats.backfill.nextUrl;
-      boundaryFound = knownOverlap(articles);
-      pages = 0;
-    } else {
-      const latest = await request(`https://www.ptt.cc/bbs/${board}/index.html`, { board, kind: 'index', activeRequired });
-      if (latest.status !== 'ok') return { ...latest, articles: [] };
-      if (!/class=["'](?:r-ent|r-list-container)["']/.test(latest.text)) throw new Error('Invalid PTT index HTML');
-      const latestArticles = parsePttArticlesHtml(latest.text, board);
-      // Freeze the head while filling an older gap. A later scan bridges from this head
-      // to newer pages; merging a moving head here would silently skip that middle range.
-      observedHead = latestArticles.at(-1)?.id || stats.lastTopArticleId || null;
-      articles = dedupe(latestArticles);
-      boundaryFound = !boundaryIds.size || knownOverlap(articles);
-      url = previousUrl(latest.text);
-      pages = 1;
-    }
-
-    if (!url) boundaryFound = true;
-
-    while (url && pages < 5 && (!boundaryFound || articles.length < 15)) {
-      const old = await request(url, { board, kind: 'page', activeRequired });
-      if (old.status !== 'ok') return { status: 'partial', articles, observedHead, boundaryFound: false, continuation: { nextUrl: url, articles, observedHead }, dueAt: old.dueAt };
-      if (!/class=["'](?:r-ent|r-list-container)["']/.test(old.text)) throw new Error('Invalid PTT backfill HTML');
-      articles = dedupe([...parsePttArticlesHtml(old.text, board), ...articles]);
-      boundaryFound ||= knownOverlap(articles);
-      url = previousUrl(old.text); pages++;
-      if (!url) { boundaryFound = true; break; }
-    }
-    return { status: boundaryFound ? 'complete' : 'partial', articles, observedHead, boundaryFound, continuation: boundaryFound ? null : { nextUrl: url, articles, observedHead } };
+// The catch-up window is frozen across rounds/restarts. Truncation is an explicit
+// product policy, never evidence that the historical overlap was found.
+export const DEFAULT_CATCHUP_ARTICLES = 100;
+export const DEFAULT_CATCHUP_AGE_MS = 30 * 60_000;
+export const MAX_CATCHUP_BYTES = 128 * 1024;
+export const articlePublishedAt = a => {
+  const seconds = Number(a.id?.match(/^M\.(\d+)\./)?.[1]);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null;
+};
+export async function fetchBoardPages(board, stats, request, {
+  activeRequired = true, clock = Date.now, maxArticles = DEFAULT_CATCHUP_ARTICLES,
+  maxAgeMs = DEFAULT_CATCHUP_AGE_MS, maxBytes = MAX_CATCHUP_BYTES,
+} = {}) {
+  if (!Number.isSafeInteger(maxArticles) || maxArticles < 1 || maxArticles > 1000 ||
+      !Number.isSafeInteger(maxAgeMs) || maxAgeMs < 1000 || maxAgeMs > DAY ||
+      !Number.isSafeInteger(maxBytes) || maxBytes < 1024 || maxBytes > MAX_CATCHUP_BYTES) throw new Error('Invalid catch-up policy');
+  const boundaryIds = new Set([stats.lastTopArticleId, ...(stats.overlapIds || [])].filter(Boolean));
+  const dedupe = values => [...new Map(values.map(a => [a.id, a])).values()];
+  const overlap = values => values.some(a => boundaryIds.has(a.id));
+  const previousUrl = html => {
+    const link = html.match(/<a\s+[^>]*href="(\/bbs\/[^"]+\/index\d+\.html)"[^>]*>[^<]*上頁[^<]*<\/a>/i)?.[1];
+    if (!link) return null;
+    const url = new URL(link, 'https://www.ptt.cc');
+    return url.pathname.toLowerCase().startsWith(`/bbs/${board}/`.toLowerCase()) ? url.href : null;
+  };
+  let articles = [], url, observedHead, boundaryFound = false, pages = 0, reason = null;
+  // Legacy continuations have no provable time window. Start a fresh bounded scan.
+  const saved = stats.backfill;
+  const resume = saved && Number.isFinite(saved.startedAt) && Number.isFinite(saved.cutoffAt);
+  const startedAt = resume ? saved.startedAt : clock();
+  const cutoffAt = resume ? Math.max(saved.cutoffAt, startedAt - maxAgeMs) : startedAt - maxAgeMs;
+  const trim = values => {
+    boundaryFound ||= overlap(values);
+    const recent = dedupe(values).filter(a => {
+      const at = articlePublishedAt(a);
+      if (at !== null && at < cutoffAt) { reason ||= 'age'; return false; }
+      return true;
+    });
+    if (recent.length > maxArticles || (recent.length === maxArticles && !boundaryFound)) reason ||= 'count';
+    articles = recent.slice(-maxArticles);
+    while (new TextEncoder().encode(JSON.stringify(articles)).byteLength > maxBytes) { articles.shift(); reason ||= 'bytes'; }
+  };
+  if (resume) {
+    observedHead = saved.observedHead;
+    url = saved.nextUrl;
+    trim(saved.articles || []);
+    if (clock() - startedAt >= maxAgeMs) { articles = []; reason = 'deadline'; }
+  } else {
+    const latest = await request(`https://www.ptt.cc/bbs/${board}/index.html`, { board, kind: 'index', activeRequired });
+    if (latest.status !== 'ok') return { ...latest, articles: [] };
+    if (!/class=["'](?:r-ent|r-list-container)["']/.test(latest.text)) throw new Error('Invalid PTT index HTML');
+    const parsed = parsePttArticlesHtml(latest.text, board);
+    observedHead = parsed.at(-1)?.id || stats.lastTopArticleId || null;
+    boundaryFound = !boundaryIds.size;
+    trim(parsed); url = previousUrl(latest.text); pages = 1;
+  }
+  const continuation = () => ({ nextUrl: url, articles, observedHead, startedAt, cutoffAt });
+  let deferredUntil;
+  while (!reason && url && pages < 5 && (!boundaryFound || articles.length < 15)) {
+    if (clock() - startedAt >= maxAgeMs) { articles = []; reason = 'deadline'; break; }
+    const old = await request(url, { board, kind: 'page', activeRequired });
+    if (old.status !== 'ok') { deferredUntil = old.dueAt; break; }
+    if (!/class=["'](?:r-ent|r-list-container)["']/.test(old.text)) throw new Error('Invalid PTT backfill HTML');
+    trim([...parsePttArticlesHtml(old.text, board), ...articles]);
+    url = previousUrl(old.text); pages++;
+  }
+  if (clock() - startedAt >= maxAgeMs && !reason) { articles = []; reason = 'deadline'; }
+  const complete = Boolean(reason || boundaryFound || !url);
+  return {
+    status: complete ? 'complete' : 'partial', articles, observedHead,
+    boundaryFound, continuation: complete ? null : continuation(), dueAt: deferredUntil,
+    catchUp: { startedAt, cutoffAt, truncated: Boolean(reason), reason, retainedCount: articles.length },
+  };
 }

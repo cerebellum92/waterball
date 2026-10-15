@@ -62,14 +62,6 @@ export class SettingsUI {
       modalSaveBtn.addEventListener('click', () => this.save());
     }
 
-    if (settingsModal) {
-      settingsModal.addEventListener('click', (e) => {
-        if (e.target === settingsModal) {
-          this.close();
-        }
-      });
-    }
-
     // Custom Font dropdown toggle
     if (settingFontFamily && customFontGroup) {
       settingFontFamily.addEventListener('change', () => {

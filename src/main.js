@@ -687,6 +687,13 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
+  if (tabManager && tabManager.isTabSwitcherOpen?.()) {
+    if (e.key === 'Escape') {
+      tabManager.closeTabSwitcher();
+    }
+    return;
+  }
+
   if (isInteractiveInputElement(document.activeElement, imeInput)) {
     return;
   }

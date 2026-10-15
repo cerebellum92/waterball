@@ -69,12 +69,6 @@ export class WaterballUI {
 
     this.closeBtn?.addEventListener('click', () => this.close());
 
-    this.modalEl?.addEventListener('click', (e) => {
-      if (e.target === this.modalEl) {
-        this.close();
-      }
-    });
-
     this.searchInput?.addEventListener('input', (e) => {
       this.searchQuery = e.target.value.trim().toLowerCase();
       this.renderContacts();

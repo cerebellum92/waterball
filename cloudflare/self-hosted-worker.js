@@ -1,3 +1,4 @@
+import { notificationArticles, notificationMatches, coversArticle, notificationDue, reserveNotification, coalesceNotifications, digestPayload, revalidateNotification } from '../shared/notification-policy.js';
 import { validateAndSanitizeRules, matchArticleWithRule, fetchBoardPages, canonicalBoard, cleanBotToken, positiveInteger, articleKey, pushCount, escapeHtml, MIN_BOARD_INTERVAL_MS, TIER_ROUNDS, httpError, isRecord } from '../shared/push-rules.js';
 import { readBoundedBody, CORS_HEADERS } from '../shared/worker-http.js';
 
@@ -35,6 +36,10 @@ export class ArticleTracker {
     this.telegramTail = Promise.resolve();
     this.maxBoards = positiveInteger(env.MAX_BOARDS_PER_USER, 10, 1, 50);
     this.busy = false;
+    this.catchUp = { clock: () => this.clock(),
+      maxArticles: positiveInteger(env.CATCHUP_MAX_ARTICLES, 100, 1, 1000),
+      maxAgeMs: positiveInteger(env.CATCHUP_MAX_AGE_MINUTES, 30, 1, 1440) * 60000,
+    };
   }
   async read() { return await this.ctx.storage.get('state') || initial(); }
   async commit(fn) {
@@ -45,7 +50,7 @@ export class ArticleTracker {
       await tx.put('state', draft); return result;
     });
   }
-  config(s) { return { rules: s.rules, telegram: { chatId: s.telegram.chatId, enabled: s.status === 'active', silent: s.telegram.silent }, configRevision: s.configRevision, lifecycleVersion: s.lifecycleVersion, status: s.status, mode: 'selfHosted', leaseExpiresAt: null, pendingCount: s.pending.length, monitoring: Object.entries(s.boards).map(([board, b]) => ({ board, nextCheckAt: b.nextDueAt, lastError: b.lastError || null, backfilling: Boolean(b.backfill) })) }; }
+  config(s) { return { rules: s.rules, telegram: { chatId: s.telegram.chatId, enabled: s.status === 'active', silent: s.telegram.silent }, configRevision: s.configRevision, lifecycleVersion: s.lifecycleVersion, status: s.status, mode: 'selfHosted', leaseExpiresAt: null, pendingCount: s.pending.length, monitoring: Object.entries(s.boards).map(([board, b]) => ({ board, nextCheckAt: b.nextDueAt, lastError: b.lastError || null, backfilling: Boolean(b.backfill), catchUp: b.lastCatchUp || null })) }; }
   async arm() {
     const s = await this.read();
     if (s.status !== 'active' || !s.rules.some(r => r.enabled)) { await this.ctx.storage.deleteAlarm(); return; }
@@ -104,7 +109,10 @@ export class ArticleTracker {
           }
           s.lifecycleVersion++;
         } else if (pathname === '/lifecycle') throw httpError(400, '需要 action');
-        s.pending = s.pending.filter(j => j.epoch === s.epoch && s.rules.some(r => matchArticleWithRule(j.article, r, true)));
+        s.pending = s.pending.flatMap(j => {
+          const valid = j.epoch === s.epoch ? revalidateNotification(j, s.rules) : null;
+          return valid ? [valid] : [];
+        });
         for (const [key, candidate] of Object.entries(s.candidates)) if (!s.rules.some(r => r.minPushes > 0 && matchArticleWithRule(candidate.article, { ...r, minPushes: 0 }, true))) delete s.candidates[key];
         const response = { success: true, mode: 'selfHosted', status: s.status, configRevision: s.configRevision, lifecycleVersion: s.lifecycleVersion, leaseExpiresAt: null, rule_count: s.rules.length, updated_at: this.clock() };
         s.receipts[data.requestId] = { fingerprint, response };
@@ -163,9 +171,9 @@ export class ArticleTracker {
         }
         if (!progress.first && !s.delivered[key] && (isNew || candidate) && this.clock() - progress.createdAt < 1800000) {
           if (s.rules.some(r => matchArticleWithRule(a, r, isNew || Boolean(candidate)))) {
-            if (!s.pending.some(j => j.id === key)) {
+            if (!s.pending.some(j => coversArticle(j, a))) {
               if (s.pending.length >= 500) { b.fanout = progress; b.nextDueAt = this.clock() + 1000; return; }
-              s.pending.push({ id: key, article: a, epoch: s.epoch, attempts: 0, createdAt: progress.createdAt, nextAttemptAt: this.clock() });
+              s.pending.push({ id: key, article: a, epoch: s.epoch, attempts: 0, createdAt: progress.createdAt, nextAttemptAt: this.clock(), catchUpLimited: Boolean(result.catchUp?.truncated), forceDigest: Boolean(result.catchUp?.truncated || (b.lastCheckTime && this.clock() - b.lastCheckTime > 360000)) });
             }
             delete s.candidates[key];
           } else if (s.rules.some(r => r.minPushes > 0 && matchArticleWithRule(a, { ...r, minPushes: 0 }, true))) {
@@ -178,6 +186,8 @@ export class ArticleTracker {
       for (const a of progress.result.articles) seen.add(a.id);
       b.initialized = true; b.seen = [...seen].slice(-300); b.backfill = null; b.fanout = null;
       b.lastError = null;
+      b.lastCheckTime = this.clock();
+      if (progress.result.catchUp) b.lastCatchUp = progress.result.catchUp;
       b.lastTopArticleId = progress.result.observedHead; b.overlapIds = progress.result.articles.slice(-20).map(a => a.id);
       for (const key of Object.keys(b.observed).slice(0, Math.max(0, Object.keys(b.observed).length - 300))) delete b.observed[key];
       if (progress.first || progress.newCount || progress.growth) { b.tier = 1; b.quietStreak = 0; }
@@ -196,9 +206,16 @@ export class ArticleTracker {
     if (s.telegramNextAt > this.clock()) await this.sleep(s.telegramNextAt - this.clock());
     s = await this.read();
     if (!test && (s.status !== 'active' || s.epoch !== epoch)) return { ok: false, cancelled: true };
-    if (job && (!s.pending.some(j => j.id === job.id) || !s.rules.some(r => matchArticleWithRule(job.article, r, true)))) return { ok: false, cancelled: true };
+    if (job && (!s.pending.some(j => j.id === job.id) || !notificationMatches(job, s.rules))) return { ok: false, cancelled: true };
     if (!s.telegram.chatId || !s.telegram.botToken) return { ok: false, permanent: true, error: '尚未設定個人 Bot Token／Chat ID' };
-    await this.commit(d => { d.telegramNextAt = this.clock() + 1100; });
+    if (job) {
+      const due = notificationDue(s.notificationStarts, this.clock());
+      if (due > this.clock()) return { ok: false, throttled: true, retryAfter: Math.ceil((due - this.clock()) / 1000) };
+    }
+    await this.commit(d => {
+      d.telegramNextAt = this.clock() + 1100;
+      if (job) { reserveNotification(d, this.clock()); d.pending.find(j => j.id === job.id).sealed = true; }
+    });
     const result = await this.http(`https://api.telegram.org/bot${s.telegram.botToken}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: s.telegram.chatId, text, parse_mode: 'HTML', disable_notification: s.telegram.silent, disable_web_page_preview: true, link_preview_options: { is_disabled: true }, ...extra }) });
     let data; try { data = JSON.parse(result.text); } catch { data = {}; }
     if (result.ok && data.ok === true) return { ok: true };
@@ -206,25 +223,35 @@ export class ArticleTracker {
     if (status === 429) { const retryAfter = Number.isFinite(data.parameters?.retry_after) && data.parameters.retry_after > 0 ? Math.min(86400, data.parameters.retry_after) : 5; await this.commit(d => { d.telegramNextAt = this.clock() + retryAfter * 1000; }); return { ok: false, retryAfter }; }
     return { ok: false, permanent: [400, 401, 403, 404].includes(status), blocked: status === 403, error: data.description || `Telegram HTTP ${status}` };
   }
+  validNotification(s, job) {
+    return s.status === 'active' && job.epoch === s.epoch && job.attempts < 5 && this.clock() - job.createdAt < 1800000 && notificationMatches(job, s.rules);
+  }
   async deliver() {
+    await this.commit(s => { s.pending = coalesceNotifications(s.pending, this.clock(), () => s, j => this.validNotification(s, j)); });
     const ids = (await this.read()).pending.sort((a, b) => a.nextAttemptAt - b.nextAttemptAt).slice(0, 5).map(j => j.id);
     for (const id of ids) {
       const s = await this.read(), job = s.pending.find(j => j.id === id);
       if (!job || job.nextAttemptAt > this.clock()) continue;
-      const valid = s.status === 'active' && job.epoch === s.epoch && job.attempts < 5 && this.clock() - job.createdAt < 1800000 && s.rules.some(r => matchArticleWithRule(job.article, r, true));
+      const valid = this.validNotification(s, job);
       if (!valid) { await this.commit(d => { d.pending = d.pending.filter(j => j.id !== id); }); continue; }
+      const due = notificationDue(s.notificationStarts, this.clock());
+      if (due > this.clock()) { await this.commit(d => { const current = d.pending.find(j => j.id === id); current.nextAttemptAt = due; current.forceDigest = true; }); continue; }
       await this.commit(d => { const current = d.pending.find(j => j.id === id); current.attempts++; current.nextAttemptAt = this.clock() + this.timeoutMs + 30000; });
       const a = job.article;
       const link = `https://www.ptt.cc/bbs/${encodeURIComponent(a.board)}/${encodeURIComponent(a.id)}.html`;
       const nrec = a.nrec ? (a.nrec === '爆' ? '爆' : `${a.nrec}推`) : '0推';
-      const msg = `🚨 <b>【Waterball 新文章推播】</b>\n📌 <b>看板</b>：#${escapeHtml(a.board)}\n📝 <b>標題</b>：${escapeHtml(a.title)}\n👤 <b>作者</b>：${escapeHtml(a.author)}\n🔥 <b>推文</b>：${escapeHtml(nrec)}`;
+      let msg = `🚨 <b>【Waterball 新文章推播】</b>\n📌 <b>看板</b>：#${escapeHtml(a.board)}\n📝 <b>標題</b>：${escapeHtml(a.title)}\n👤 <b>作者</b>：${escapeHtml(a.author)}\n🔥 <b>推文</b>：${escapeHtml(nrec)}`;
+      if (job.digest) msg = digestPayload(job, s.telegram.chatId, s.telegram.silent).text;
       let response;
-      try { response = await this.send(msg, job.epoch, false, job, { reply_markup: { inline_keyboard: [[{ text: '📖 開啟 PTT', url: link }]] } }); }
+      try { response = await this.send(msg, job.epoch, false, job, job.digest ? {} : { reply_markup: { inline_keyboard: [[{ text: '📖 開啟 PTT', url: link }]] } }); }
       catch (e) { response = { ok: false, error: e.message }; }
       await this.commit(d => {
         const current = d.pending.find(j => j.id === id); if (!current) return;
         if (response.throttled) current.attempts--;
-        if (response.ok) d.delivered[id] = this.clock();
+        if (response.ok) {
+          for (const a of notificationArticles(job)) d.delivered[articleKey(a)] = this.clock();
+          d.lastDelivery = { at: this.clock(), presentation: job.digest ? 'digest' : 'article', articleCount: notificationArticles(job).length };
+        }
         if (response.blocked) { d.status = 'paused'; d.telegram.enabled = false; d.epoch++; d.lifecycleVersion++; d.pending = []; }
         else if (response.ok || response.cancelled || response.permanent || current.attempts >= 5) d.pending = d.pending.filter(j => j.id !== id);
         else current.nextAttemptAt = this.clock() + (response.retryAfter ? response.retryAfter * 1000 : Math.min(300000, 30000 * 2 ** (current.attempts - 1)));
@@ -236,6 +263,10 @@ export class ArticleTracker {
     this.busy = true;
     try {
       await this.commit(s => {
+        for (const b of Object.values(s.boards)) if ((b.backfill && !Number.isFinite(b.backfill.startedAt)) || (b.fanout && !b.fanout.result?.catchUp)) {
+          b.backfill = null; b.fanout = null; b.nextDueAt = this.clock();
+          b.lastCatchUp = { truncated: true, reason: 'legacy-reset', at: this.clock() };
+        }
         for (const [key, c] of Object.entries(s.candidates)) if (c.expiresAt <= this.clock()) delete s.candidates[key];
         for (const [key, at] of Object.entries(s.delivered)) if (this.clock() - at > 2 * 86400000) delete s.delivered[key];
         for (const [board, at] of Object.entries(s.cooldowns)) if (!s.boards[board] && this.clock() - at >= 180000) delete s.cooldowns[board];
@@ -250,7 +281,7 @@ export class ArticleTracker {
         try {
           const rawName = s.rules.find(r => r.enabled && r.board.toLowerCase() === board)?.board || board;
           const name = canonicalBoard(rawName);
-          const result = stats.fanout?.result || await fetchBoardPages(name, stats, (url, task) => this.requestPtt(url, { ...task, board }));
+          const result = stats.fanout?.result || await fetchBoardPages(name, stats, (url, task) => this.requestPtt(url, { ...task, board }), this.catchUp);
           if (result.status === 'complete' && !stats.fanout) {
             const current = await this.read();
             const candidates = Object.values(current.candidates).filter(c => c.article.board.toLowerCase() === board).sort((a, b) => (a.lastCheckedAt || 0) - (b.lastCheckedAt || 0)).slice(0, 2);

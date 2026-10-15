@@ -1,0 +1,33 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { coalesceNotifications, digestPayload, notificationDue, reserveNotification, notificationMatches } from '../shared/notification-policy.js';
+const article = n => ({ id: `M.${1800000000 + n}.A`, board: 'Stock', title: '<script> & "a"', author: 'tester', nrec: '1' });
+const job = n => ({ id: `job-${n}`, kind: 'article', article: article(n), userKey: 'one', epoch: 1, createdAt: 100, nextAttemptAt: 100, attempts: 0 });
+test('Three singles remain individual; large groups become bounded, escaped summaries of newest five', () => {
+  assert.equal(coalesceNotifications([job(1), job(2), job(3)], 100, () => ({}), () => true).some(j => j.digest), false);
+  const grouped = coalesceNotifications(Array.from({ length: 200 }, (_, i) => job(i)), 100, () => ({}), () => true);
+  assert.equal(grouped.length, 2); assert.ok(grouped.every(j => j.articles.length === 100));
+  const payload = digestPayload(grouped[0], '123', false);
+  assert.ok(payload.text.includes('100 篇')); assert.ok(payload.text.includes('95 篇'));
+  assert.ok(payload.text.includes('M.1800000099.A')); assert.equal(payload.text.includes('M.1800000000.A'), false);
+  assert.equal(payload.text.includes('<script>'), false); assert.ok(payload.text.includes('&lt;script&gt;')); assert.ok(payload.text.length < 4000);
+});
+test('Sealed retries never merge; distinct owners and epochs never mix', () => {
+  const sealed = { ...job(1), attempts: 1, sealed: true, digest: true, articles: [article(1)] };
+  const input = [sealed, ...Array.from({ length: 4 }, (_, i) => job(i + 2)), ...Array.from({ length: 4 }, (_, i) => ({ ...job(i + 10), userKey: 'two' }))];
+  const out = coalesceNotifications(input, 100, () => ({}), () => true);
+  assert.deepEqual(out.find(j => j.id === sealed.id), sealed);
+  assert.equal(out.length, 3); assert.equal(out.filter(j => j.userKey === 'two').length, 1);
+});
+test('Budget reservation is rolling, bounded, and includes attempts with an unknown delivery outcome', () => {
+  const owner = {};
+  reserveNotification(owner, 100); reserveNotification(owner, 200); reserveNotification(owner, 300);
+  assert.equal(notificationDue(owner.notificationStarts, 1000), 300100);
+  assert.equal(notificationDue(owner.notificationStarts, 300100), 300100);
+  reserveNotification(owner, 300100); assert.equal(owner.notificationStarts.length, 3);
+});
+test('A rule removed from an immutable digest invalidates the entire snapshot before delivery', () => {
+  const rules = [{ board: 'Stock', enabled: true, minPushes: 0, keywords: [] }];
+  assert.equal(notificationMatches({ articles: [article(1), article(2)] }, rules), true);
+  assert.equal(notificationMatches({ articles: [article(1), { ...article(2), board: 'NBA' }] }, rules), false);
+});

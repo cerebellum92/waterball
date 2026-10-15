@@ -144,12 +144,6 @@ export class ArticleMonitorUI {
       }
     });
 
-    this.modalEl?.addEventListener('click', (e) => {
-      if (e.target === this.modalEl) {
-        this.close();
-      }
-    });
-
     // Tab switching
     this.tabHistoryBtn?.addEventListener('click', () => {
       this.switchTab('history');

@@ -69,7 +69,7 @@ test('Self-hosted 429 schedules from finish time, stops after five sends, TTL dr
   const f = fixture(); await f.setup(); await f.queue();
   f.response(() => { f.advance(20000); return new Response('{"ok":false,"error_code":429,"parameters":{"retry_after":10}}', { status: 429 }); });
   await f.object().deliver(); assert.equal((await f.object().read()).pending[0].nextAttemptAt, f.now() + 10000);
-  for (let i = 0; i < 6; i++) { f.advance(10000); await f.object().deliver(); }
+  for (let i = 0; i < 6; i++) { f.advance(300000); await f.object().deliver(); }
   assert.equal(f.calls.length, 5); assert.equal((await f.object().read()).pending.length, 0);
   await f.queue(); await f.object().commit(s => { s.pending[0].createdAt -= 31 * 60000; });
   await f.object().deliver(); assert.equal(f.calls.length, 5);
@@ -141,3 +141,45 @@ test('Self-hosted alarm parses real PTT &lsaquo; entity and backfills without de
   assert.ok(s.pending.some(j => j.id === 'stock:M.new'));
 });
 
+
+test('Self-hosted 200-article burst becomes digests and survives restart after 429', async () => {
+  const f = fixture(); await f.setup();
+  await f.object().commit(s => {
+    for (let i = 0; i < 200; i++) { const a = article(`M.bulk.${i}`); s.pending.push({ id: `stock:${a.id}`, article: a, epoch: s.epoch, attempts: 0, createdAt: f.now(), nextAttemptAt: f.now() }); }
+  });
+  f.response(() => new Response('{"ok":false,"error_code":429,"parameters":{"retry_after":10}}', { status: 429 }));
+  await f.object().deliver();
+  const first = JSON.parse(f.calls[0].init.body).text;
+  assert.ok(first.includes('追蹤摘要')); assert.equal(Object.keys((await f.object().read()).delivered).length, 0);
+  f.restart(); f.advance(10000); f.response(() => new Response('{"ok":true}'));
+  await f.object().deliver();
+  const s = await f.object().read();
+  assert.equal(s.pending.length, 0); assert.equal(Object.keys(s.delivered).length, 200);
+  assert.equal(f.calls.length, 3); assert.equal(JSON.parse(f.calls[1].init.body).text, first);
+});
+test('Self-hosted rolling budget is persistent; pause cancels digest, test messages bypass article budget', async () => {
+  const f = fixture(); await f.setup();
+  for (let i = 0; i < 3; i++) { await f.object().commit(s => s.pending.push({ id: `job-${i}`, article: article(`M.single.${i}`), epoch: s.epoch, attempts: 0, createdAt: f.now(), nextAttemptAt: f.now() })); await f.object().deliver(); }
+  assert.equal(f.calls.length, 3);
+  f.restart(); await f.queue(); await f.object().deliver(); assert.equal(f.calls.length, 3);
+  await f.request('/notification-test', 'POST', {}); assert.equal(f.calls.length, 4);
+  f.advance(300000); await f.object().deliver(); assert.equal(f.calls.length, 5);
+  await f.queue(); await f.object().commit(s => { s.pending[0].digest = true; s.pending[0].articles = [s.pending[0].article]; });
+  await f.request('/lifecycle', 'POST', { action: 'pause', requestId: 'pause_digest', lifecycleVersion: 1 });
+  f.advance(300000); await f.object().deliver(); assert.equal(f.calls.length, 5); assert.equal((await f.object().read()).pending.length, 0);
+});
+test('Self-hosted bounded catch-up records truncation and resumes latest instead of accumulating history', async () => {
+  const f = fixture(); await f.setup(); await f.object().alarm(); f.advance(180000);
+  f.response(url => {
+    if (url.includes('telegram.org')) return new Response('{"ok":true}');
+    const n = url.endsWith('index.html') ? 100 : Number(url.match(/index(\d+)/)[1]);
+    return new Response(`<div class="r-list-container">${Array.from({ length: 20 }, (_, i) => row(article(`M.page${n}.${i}`))).join('')}</div><a href="/bbs/stock/index${n - 1}.html">&lsaquo; 上頁</a>`);
+  });
+  await f.object().alarm();
+  const s = await f.object().read();
+  assert.equal(s.boards.stock.backfill, null); assert.equal(s.boards.stock.lastCatchUp.reason, 'count'); assert.equal(s.pending.length, 100);
+  assert.equal(s.boards.stock.lastTopArticleId, 'M.page100.19');
+  await f.object().deliver(); assert.equal((await f.object().read()).pending.length, 0);
+  const telegramCalls = f.calls.filter(c => c.url.includes('telegram.org'));
+  assert.equal(telegramCalls.length, 1); assert.ok(JSON.parse(telegramCalls[0].init.body).text.includes('較早文章'));
+});

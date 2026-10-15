@@ -88,13 +88,6 @@ export class UserTagsUI {
     this.modalSaveBtn?.addEventListener('click', () => this.saveModal());
     this.modalDeleteBtn?.addEventListener('click', () => this.deleteModal());
 
-    // Close on clicking backdrop
-    this.modalEl?.addEventListener('click', (e) => {
-      if (e.target === this.modalEl) {
-        this.closeModal();
-      }
-    });
-
     // Enter key submits modal
     const handleEnter = (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
