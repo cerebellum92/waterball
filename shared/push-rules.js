@@ -21,9 +21,7 @@ export function getBoardPhaseOffset(board) {
   return hash;
 }
 export function canonicalBoard(name) {
-  const clean = String(name || '').trim();
-  if (/^gossip$/i.test(clean)) return 'Gossiping';
-  return clean;
+  return String(name || '').trim();
 }
 export function validateAndSanitizeRules(rawRules) {
   if (!Array.isArray(rawRules) || rawRules.length > 100) return { valid: false, message: 'rules 必須為陣列，雲端生效規則最多 100 條' };
@@ -35,7 +33,7 @@ export function validateAndSanitizeRules(rawRules) {
     if (r.author !== undefined && (typeof r.author !== 'string' || r.author.length > 32)) return { valid: false, message: 'author 必須為字串（最多 32 字元）' };
     if (r.keywords !== undefined && (!Array.isArray(r.keywords) || r.keywords.length > 20 || r.keywords.some(k => typeof k !== 'string' || k.length > 100))) return { valid: false, message: 'keywords 必須為字串陣列（最多 20 個、每個最多 100 字元）' };
     ids.add(r.id.trim());
-    rules.push({ id: r.id.trim(), board: r.board.trim(), enabled: r.enabled, minPushes: r.minPushes, author: (r.author || '').trim(), keywords: (r.keywords || []).map(k => k.trim()).filter(Boolean) });
+    rules.push({ id: r.id.trim(), board: canonicalBoard(r.board), enabled: r.enabled, minPushes: r.minPushes, author: (r.author || '').trim(), keywords: (r.keywords || []).map(k => k.trim()).filter(Boolean) });
   }
   return { valid: true, rules };
 }
@@ -69,13 +67,6 @@ export function parsePttArticlesHtml(html, board) {
 
 // Used by both independent runtimes. Complete and partial cursor outcomes stay explicit.
 export async function fetchBoardPages(board, stats, request, { activeRequired = true } = {}) {
-    const latest = await request(`https://www.ptt.cc/bbs/${board}/index.html`, { board, kind: 'index', activeRequired });
-    if (latest.status !== 'ok') return { ...latest, articles: [] };
-    if (!/class=["'](?:r-ent|r-list-container)["']/.test(latest.text)) throw new Error('Invalid PTT index HTML');
-    const latestArticles = parsePttArticlesHtml(latest.text, board);
-    // Freeze the head while filling an older gap. A later scan bridges from this head
-    // to newer pages; merging a moving head here would silently skip that middle range.
-    const observedHead = stats.backfill?.observedHead || latestArticles.at(-1)?.id || stats.lastTopArticleId || null;
     const boundaryIds = new Set([stats.lastTopArticleId, ...(stats.overlapIds || [])].filter(Boolean));
     const dedupe = articles => [...new Map(articles.map(a => [a.id, a])).values()];
     const knownOverlap = articles => articles.some(a => boundaryIds.has(a.id));
@@ -86,12 +77,31 @@ export async function fetchBoardPages(board, stats, request, { activeRequired = 
       const url = new URL(link, 'https://www.ptt.cc');
       return url.pathname.toLowerCase().startsWith(`/bbs/${board}/`.toLowerCase()) ? url.href : null;
     };
-    // Backfill and the moving live head are separate streams; neither discards the other.
-    let articles = stats.backfill ? dedupe([...stats.backfill.articles, ...latestArticles]) : dedupe(latestArticles);
-    let url = stats.backfill?.nextUrl || previousUrl(latest.text);
-    let boundaryFound = !boundaryIds.size || knownOverlap(articles);
+
+    let articles, url, observedHead, boundaryFound, pages;
+
+    if (stats.backfill) {
+      observedHead = stats.backfill.observedHead;
+      articles = dedupe(stats.backfill.articles || []);
+      url = stats.backfill.nextUrl;
+      boundaryFound = knownOverlap(articles);
+      pages = 0;
+    } else {
+      const latest = await request(`https://www.ptt.cc/bbs/${board}/index.html`, { board, kind: 'index', activeRequired });
+      if (latest.status !== 'ok') return { ...latest, articles: [] };
+      if (!/class=["'](?:r-ent|r-list-container)["']/.test(latest.text)) throw new Error('Invalid PTT index HTML');
+      const latestArticles = parsePttArticlesHtml(latest.text, board);
+      // Freeze the head while filling an older gap. A later scan bridges from this head
+      // to newer pages; merging a moving head here would silently skip that middle range.
+      observedHead = latestArticles.at(-1)?.id || stats.lastTopArticleId || null;
+      articles = dedupe(latestArticles);
+      boundaryFound = !boundaryIds.size || knownOverlap(articles);
+      url = previousUrl(latest.text);
+      pages = 1;
+    }
+
     if (!url) boundaryFound = true;
-    let pages = 1;
+
     while (url && pages < 5 && (!boundaryFound || articles.length < 15)) {
       const old = await request(url, { board, kind: 'page', activeRequired });
       if (old.status !== 'ok') return { status: 'partial', articles, observedHead, boundaryFound: false, continuation: { nextUrl: url, articles, observedHead }, dueAt: old.dueAt };
@@ -100,7 +110,6 @@ export async function fetchBoardPages(board, stats, request, { activeRequired = 
       boundaryFound ||= knownOverlap(articles);
       url = previousUrl(old.text); pages++;
       if (!url) { boundaryFound = true; break; }
-      if (articles.length >= 200) { boundaryFound = true; break; }
     }
     return { status: boundaryFound ? 'complete' : 'partial', articles, observedHead, boundaryFound, continuation: boundaryFound ? null : { nextUrl: url, articles, observedHead } };
 }
