@@ -22,7 +22,7 @@ test('sendNativeNotification invokes send_system_notification when in Tauri envi
     '📢 [Stock] 新文章通知',
     '台積電最新營收創歷史新高 (analyst | 爆推)',
     null,
-    { sound: true, subtitle: '[Stock]' }
+    { sound: true, subtitle: '[Stock]', url: 'https://www.ptt.cc/bbs/Stock/M.123.html' }
   );
 
   assert.equal(result, true);
@@ -30,6 +30,7 @@ test('sendNativeNotification invokes send_system_notification when in Tauri envi
   assert.equal(invokedPayload.title, '📢 [Stock] 新文章通知');
   assert.equal(invokedPayload.body, '台積電最新營收創歷史新高 (analyst | 爆推)');
   assert.equal(invokedPayload.subtitle, '[Stock]');
+  assert.equal(invokedPayload.url, 'https://www.ptt.cc/bbs/Stock/M.123.html');
   assert.equal(invokedPayload.sound, true);
 
   delete global.window;

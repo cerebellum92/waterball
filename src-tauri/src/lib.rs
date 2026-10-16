@@ -800,6 +800,7 @@ async fn send_system_notification(
     title: String,
     body: String,
     subtitle: Option<String>,
+    url: Option<String>,
     sound: Option<bool>,
     app_handle: AppHandle,
 ) -> Result<(), String> {
@@ -808,6 +809,54 @@ async fn send_system_notification(
         {
             let _ = &app_handle;
             use std::process::Command;
+
+            // 1. If terminal-notifier is available, use it (native support for -open <url> on click!)
+            let tn_path = ["/opt/homebrew/bin/terminal-notifier", "/usr/local/bin/terminal-notifier"]
+                .into_iter()
+                .find(|p| std::path::Path::new(p).exists())
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    Command::new("which")
+                        .arg("terminal-notifier")
+                        .output()
+                        .ok()
+                        .and_then(|out| {
+                            if out.status.success() {
+                                let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                                if !s.is_empty() { Some(s) } else { None }
+                            } else {
+                                None
+                            }
+                        })
+                });
+
+            if let Some(path) = tn_path {
+                let mut cmd = Command::new(path);
+                cmd.arg("-title").arg(&title);
+                if let Some(ref sub) = subtitle {
+                    let trimmed = sub.trim();
+                    if !trimmed.is_empty() {
+                        cmd.arg("-subtitle").arg(trimmed);
+                    }
+                }
+                cmd.arg("-message").arg(&body);
+                if sound.unwrap_or(true) {
+                    cmd.arg("-sound").arg("default");
+                }
+                if let Some(ref target_url) = url {
+                    let trimmed = target_url.trim();
+                    if !trimmed.is_empty() {
+                        cmd.arg("-open").arg(trimmed);
+                    }
+                }
+                if let Ok(out) = cmd.output() {
+                    if out.status.success() {
+                        return Ok(());
+                    }
+                }
+            }
+
+            // 2. Fallback to standard AppleScript display notification
             let mut script = format!(
                 r#"display notification "{}" with title "{}""#,
                 escape_applescript_string(&body),
@@ -844,6 +893,7 @@ async fn send_system_notification(
         #[cfg(not(target_os = "macos"))]
         {
             let _ = subtitle;
+            let _ = url;
             let _ = sound;
             use tauri_plugin_notification::NotificationExt;
             let mut builder = app_handle.notification().builder();
@@ -1054,4 +1104,6 @@ mod tests {
         );
     }
 }
+
+
 

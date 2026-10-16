@@ -898,13 +898,14 @@ export class ArticleMonitorManager {
           if (this.isLocalNotifEnabled()) {
             const notifTitle = `📢 [${alertItem.board}] 新文章通知`;
             const notifBody = `${alertItem.title} (${alertItem.author}${alertItem.nrec ? ` | ${alertItem.nrec}推` : ''})`;
+            const articleUrl = normalizePttArticleUrl(alertItem.link || `https://www.ptt.cc/bbs/${alertItem.board}/${alertItem.id}.html`);
             sendNativeNotification(
               notifTitle,
               notifBody,
               () => {
                 this.onNewAlert?.(alertItem);
               },
-              { sound: true, subtitle: `[${alertItem.board}]` }
+              { sound: true, subtitle: `[${alertItem.board}]`, url: articleUrl }
             ).catch(() => {});
           }
 

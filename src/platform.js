@@ -95,6 +95,7 @@ export async function sendNativeNotification(title, body, onWebClick, options = 
           title,
           body,
           subtitle: options.subtitle || null,
+          url: options.url || null,
           sound: options.sound !== false,
         });
         return true;
