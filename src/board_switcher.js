@@ -54,6 +54,7 @@ export class BoardSwitcherWidget {
           <span class="bs-search-icon">⚡</span>
           <input type="text" id="bs-search-input" placeholder="搜尋看板（中英文板名，如 八卦、Stock、Beauty...）" autocomplete="off" spellcheck="false" />
           <span class="bs-key-hint">ESC 退出</span>
+          <button id="bs-close-btn" class="close-btn" title="關閉 (ESC)">&times;</button>
         </div>
         <div class="board-switcher-list" id="bs-list"></div>
         <div class="board-switcher-footer">
@@ -68,6 +69,9 @@ export class BoardSwitcherWidget {
     this.widgetEl = widget;
     this.inputEl = widget.querySelector('#bs-search-input');
     this.listEl = widget.querySelector('#bs-list');
+
+    // Click close button
+    widget.querySelector('#bs-close-btn')?.addEventListener('click', () => this.close());
 
     // Click backdrop to close
     widget.addEventListener('click', (e) => {
