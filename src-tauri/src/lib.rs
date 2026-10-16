@@ -856,9 +856,11 @@ async fn send_system_notification(
                 }
             }
 
-            // 2. Fallback to standard AppleScript display notification
+            // 2. Fallback to standard AppleScript display notification via System Events
+            // Wrapping inside System Events prevents macOS from attributing the notification
+            // to Script Editor (which caused clicking "Show" to launch Script Editor.app).
             let mut script = format!(
-                r#"display notification "{}" with title "{}""#,
+                r#"tell application "System Events" to display notification "{}" with title "{}""#,
                 escape_applescript_string(&body),
                 escape_applescript_string(&title)
             );
