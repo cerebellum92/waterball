@@ -5,7 +5,11 @@ import {
   normalizePttArticleUrl,
   DEFAULT_OFFICIAL_WORKER_URL,
 } from './article_monitor.js';
-import { writeClipboardText } from './platform.js';
+import {
+  writeClipboardText,
+  sendNativeNotification,
+  requestNotificationPermission,
+} from './platform.js';
 import { describeRestorePreview } from './cloud_restore.js';
 import { makeMergePlan } from './cloud_merge.js';
 
@@ -65,6 +69,7 @@ export class ArticleMonitorUI {
     this.tabTelegramBtn = document.getElementById('monitor-tab-telegram-btn');
     this.paneTelegram = document.getElementById('monitor-pane-telegram');
     this.localNotifInput = document.getElementById('monitor-local-notif-enabled');
+    this.testLocalNotifBtn = document.getElementById('monitor-test-local-notif-btn');
     this.tgEnabledInput = document.getElementById('monitor-tg-enabled');
     this.tgTokenInput = document.getElementById('monitor-tg-token');
     this.tgChatIdInput = document.getElementById('monitor-tg-chatid');
@@ -166,6 +171,35 @@ export class ArticleMonitorUI {
       const enabled = Boolean(this.localNotifInput.checked);
       this.manager.setLocalNotifEnabled(enabled);
       this.onShowToast(enabled ? '💻 已啟用本地作業系統通知' : '🔕 已停用本地作業系統通知');
+    });
+
+    // Test Local OS Notification button
+    this.testLocalNotifBtn?.addEventListener('click', async () => {
+      if (this.testLocalNotifBtn) {
+        this.testLocalNotifBtn.textContent = '⏳ 發送測試通知中...';
+        this.testLocalNotifBtn.disabled = true;
+      }
+      try {
+        await requestNotificationPermission();
+        const sent = await sendNativeNotification(
+          '📢 [Waterball] 本地推播測試',
+          '這是一則測試通知，代表您的作業系統推播功能運作正常！',
+          null,
+          { sound: true }
+        );
+        if (sent) {
+          this.onShowToast('🔔 測試通知已發送，請查看螢幕右上角橫幅或通知中心');
+        } else {
+          this.onShowToast('⚠️ 無法發送通知，請確認系統或瀏覽器通知權限是否已開啟');
+        }
+      } catch (err) {
+        this.onShowToast(`發送測試通知失敗: ${err.message || err}`);
+      } finally {
+        if (this.testLocalNotifBtn) {
+          this.testLocalNotifBtn.textContent = '🔔 測試發送本地通知';
+          this.testLocalNotifBtn.disabled = false;
+        }
+      }
     });
 
     // Open Official Telegram Bot button (@WaterballAlertBot)

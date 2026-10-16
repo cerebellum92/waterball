@@ -898,9 +898,14 @@ export class ArticleMonitorManager {
           if (this.isLocalNotifEnabled()) {
             const notifTitle = `📢 [${alertItem.board}] 新文章通知`;
             const notifBody = `${alertItem.title} (${alertItem.author}${alertItem.nrec ? ` | ${alertItem.nrec}推` : ''})`;
-            sendNativeNotification(notifTitle, notifBody, () => {
-              this.onNewAlert?.(alertItem);
-            }).catch(() => {});
+            sendNativeNotification(
+              notifTitle,
+              notifBody,
+              () => {
+                this.onNewAlert?.(alertItem);
+              },
+              { sound: true, subtitle: `[${alertItem.board}]` }
+            ).catch(() => {});
           }
 
           // Forward to Telegram if enabled (when personal botToken is provided locally)

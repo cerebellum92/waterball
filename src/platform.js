@@ -81,23 +81,47 @@ export async function writeClipboardImage(blob) {
   await navigator.clipboard.write([new ClipboardItem({ [blob.type || 'image/png']: blob })]);
 }
 
-export async function sendNativeNotification(title, body, onWebClick) {
+const getInvoke = () => {
+  if (typeof window === 'undefined') return null;
+  return window.__TAURI__?.core?.invoke || window.__TAURI_INTERNALS__?.invoke || null;
+};
+
+export async function sendNativeNotification(title, body, onWebClick, options = {}) {
   if (isTauri()) {
+    const invoke = getInvoke();
+    if (typeof invoke === 'function') {
+      try {
+        await invoke('send_system_notification', {
+          title,
+          body,
+          subtitle: options.subtitle || null,
+          sound: options.sound !== false,
+        });
+        return true;
+      } catch (cmdError) {
+        console.warn('send_system_notification command error, falling back to plugin:', cmdError);
+      }
+    }
+
     try {
       const granted = await requestNotificationPermission();
       if (granted) {
-        sendNotification({ title, body, silent: true });
+        sendNotification({ title, body, silent: options.sound === false });
         return true;
       }
     } catch (error) {
-      console.warn('Native notification unavailable, using web fallback:', error);
+      console.warn('Native notification plugin unavailable, using web fallback:', error);
     }
   }
 
-  if ('Notification' in window && Notification.permission === 'granted') {
-    const notification = new Notification(title, { body, silent: true });
+  if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+    const notification = new Notification(title, {
+      body,
+      silent: options.sound === false,
+    });
     if (onWebClick) notification.onclick = onWebClick;
     return true;
   }
   return false;
 }
+

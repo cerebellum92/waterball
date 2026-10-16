@@ -788,6 +788,73 @@ async fn test_cloudflare_worker(worker_url: String, secret_key: String) -> Resul
     })
 }
 
+#[cfg(target_os = "macos")]
+fn escape_applescript_string(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\r', "")
+}
+
+#[tauri::command]
+async fn send_system_notification(
+    title: String,
+    body: String,
+    subtitle: Option<String>,
+    sound: Option<bool>,
+    app_handle: AppHandle,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        #[cfg(target_os = "macos")]
+        {
+            let _ = &app_handle;
+            use std::process::Command;
+            let mut script = format!(
+                r#"display notification "{}" with title "{}""#,
+                escape_applescript_string(&body),
+                escape_applescript_string(&title)
+            );
+            if let Some(sub) = subtitle {
+                let trimmed = sub.trim();
+                if !trimmed.is_empty() {
+                    script.push_str(&format!(
+                        r#" subtitle "{}""#,
+                        escape_applescript_string(trimmed)
+                    ));
+                }
+            }
+            if sound.unwrap_or(true) {
+                script.push_str(r#" sound name "default""#);
+            }
+
+            let output = Command::new("osascript")
+                .arg("-e")
+                .arg(&script)
+                .output();
+
+            match output {
+                Ok(out) if out.status.success() => Ok(()),
+                Ok(out) => Err(format!(
+                    "osascript failed: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                )),
+                Err(e) => Err(format!("Failed to run osascript: {}", e)),
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = subtitle;
+            let _ = sound;
+            use tauri_plugin_notification::NotificationExt;
+            let mut builder = app_handle.notification().builder();
+            builder = builder.title(title).body(body);
+            builder.show().map_err(|e| e.to_string())
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let connections = Arc::new(Mutex::new(HashMap::<String, BbsConnection>::new()));
@@ -876,6 +943,7 @@ pub fn run() {
             sync_to_cloudflare_worker,
             cloud_push_request,
             test_cloudflare_worker,
+            send_system_notification,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -971,4 +1039,19 @@ mod tests {
         assert!(json.contains("\"inline_keyboard\""));
         assert!(json.contains("開啟 PTT 好讀版"));
     }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_escape_applescript_string() {
+        use super::escape_applescript_string;
+        assert_eq!(
+            escape_applescript_string(r#"Hello "World" \ test"#),
+            r#"Hello \"World\" \\ test"#
+        );
+        assert_eq!(
+            escape_applescript_string("Line 1\r\nLine 2"),
+            "Line 1\nLine 2"
+        );
+    }
 }
+
