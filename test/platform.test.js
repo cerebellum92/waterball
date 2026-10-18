@@ -64,3 +64,44 @@ test('sendNativeNotification falls back to Web Notification when window.Notifica
   delete global.window;
   delete global.Notification;
 });
+
+test('sendNativeNotification returns false and does not pretend to succeed when send_system_notification fails', async () => {
+  let webNotifCalled = false;
+  class MockNotification {
+    constructor() {
+      webNotifCalled = true;
+    }
+    static permission = 'granted';
+  }
+
+  global.window = {
+    Notification: MockNotification,
+    __TAURI__: {
+      core: {
+        invoke: async () => {
+          throw new Error('系統推播權限遭拒絕');
+        },
+      },
+    },
+  };
+  global.Notification = MockNotification;
+
+  const result = await sendNativeNotification('標題', '內容', null, {
+    url: 'https://www.ptt.cc/bbs/Stock/M.123.html',
+  });
+  assert.equal(result, false);
+  assert.equal(webNotifCalled, false);
+
+  await assert.rejects(
+    () =>
+      sendNativeNotification('標題', '內容', null, {
+        url: 'https://www.ptt.cc/bbs/Stock/M.123.html',
+        throwOnError: true,
+      }),
+    /系統推播權限遭拒絕/
+  );
+
+  delete global.window;
+  delete global.Notification;
+});
+

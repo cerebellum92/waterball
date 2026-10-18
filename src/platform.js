@@ -100,7 +100,11 @@ export async function sendNativeNotification(title, body, onWebClick, options = 
         });
         return true;
       } catch (cmdError) {
-        console.warn('send_system_notification command error, falling back to plugin:', cmdError);
+        console.warn('send_system_notification command error:', cmdError);
+        if (options.throwOnError) {
+          throw cmdError instanceof Error ? cmdError : new Error(String(cmdError));
+        }
+        return false;
       }
     }
 
@@ -113,6 +117,7 @@ export async function sendNativeNotification(title, body, onWebClick, options = 
     } catch (error) {
       console.warn('Native notification plugin unavailable, using web fallback:', error);
     }
+    return false;
   }
 
   if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {

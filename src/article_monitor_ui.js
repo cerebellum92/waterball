@@ -185,7 +185,7 @@ export class ArticleMonitorUI {
           '📢 [Waterball] 本地推播測試',
           '這是一則測試通知，代表您的作業系統推播功能運作正常！',
           null,
-          { sound: true }
+          { sound: true, subtitle: '[測試通知]', throwOnError: true }
         );
         if (sent) {
           this.onShowToast('🔔 測試通知已發送，請查看螢幕右上角橫幅或通知中心');
@@ -193,7 +193,7 @@ export class ArticleMonitorUI {
           this.onShowToast('⚠️ 無法發送通知，請確認系統或瀏覽器通知權限是否已開啟');
         }
       } catch (err) {
-        this.onShowToast(`發送測試通知失敗: ${err.message || err}`);
+        this.onShowToast(`⚠️ 發送測試通知失敗: ${err.message || err}`);
       } finally {
         if (this.testLocalNotifBtn) {
           this.testLocalNotifBtn.textContent = '🔔 測試發送本地通知';

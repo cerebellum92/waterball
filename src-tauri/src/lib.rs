@@ -1,5 +1,7 @@
 mod telnet;
 pub mod uao;
+#[cfg(target_os = "linux")]
+mod linux_notification;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -789,10 +791,19 @@ async fn test_cloudflare_worker(worker_url: String, secret_key: String) -> Resul
 }
 
 #[cfg(target_os = "macos")]
-fn escape_applescript_string(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\r', "")
+extern "C" {
+    fn init_mac_notifications();
+    fn mac_send_notification(
+        title: *const std::os::raw::c_char,
+        body: *const std::os::raw::c_char,
+        subtitle: *const std::os::raw::c_char,
+        url: *const std::os::raw::c_char,
+        sound: bool,
+        err_buf: *mut std::os::raw::c_char,
+        err_buf_len: std::os::raw::c_int,
+    ) -> bool;
+    #[allow(dead_code)]
+    fn is_valid_ptt_article_url_c(url: *const std::os::raw::c_char) -> bool;
 }
 
 #[tauri::command]
@@ -808,99 +819,61 @@ async fn send_system_notification(
         #[cfg(target_os = "macos")]
         {
             let _ = &app_handle;
-            use std::process::Command;
+            let c_title = std::ffi::CString::new(title).map_err(|e| e.to_string())?;
+            let c_body = std::ffi::CString::new(body).map_err(|e| e.to_string())?;
+            let c_subtitle = subtitle
+                .as_ref()
+                .map(|s| std::ffi::CString::new(s.as_str()))
+                .transpose()
+                .map_err(|e| e.to_string())?;
+            let c_url = url
+                .as_ref()
+                .map(|u| std::ffi::CString::new(u.as_str()))
+                .transpose()
+                .map_err(|e| e.to_string())?;
 
-            // 1. If terminal-notifier is available, use it (native support for -open <url> on click!)
-            let tn_path = ["/opt/homebrew/bin/terminal-notifier", "/usr/local/bin/terminal-notifier"]
-                .into_iter()
-                .find(|p| std::path::Path::new(p).exists())
-                .map(|s| s.to_string())
-                .or_else(|| {
-                    Command::new("which")
-                        .arg("terminal-notifier")
-                        .output()
-                        .ok()
-                        .and_then(|out| {
-                            if out.status.success() {
-                                let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                                if !s.is_empty() { Some(s) } else { None }
-                            } else {
-                                None
-                            }
-                        })
-                });
+            let mut err_buf = vec![0u8; 512];
+            let success = unsafe {
+                mac_send_notification(
+                    c_title.as_ptr(),
+                    c_body.as_ptr(),
+                    c_subtitle.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+                    c_url.as_ref().map_or(std::ptr::null(), |u| u.as_ptr()),
+                    sound.unwrap_or(true),
+                    err_buf.as_mut_ptr() as *mut std::os::raw::c_char,
+                    err_buf.len() as std::os::raw::c_int,
+                )
+            };
 
-            if let Some(path) = tn_path {
-                let mut cmd = Command::new(path);
-                cmd.arg("-title").arg(&title);
-                if let Some(ref sub) = subtitle {
-                    let trimmed = sub.trim();
-                    if !trimmed.is_empty() {
-                        cmd.arg("-subtitle").arg(trimmed);
-                    }
-                }
-                cmd.arg("-message").arg(&body);
-                if sound.unwrap_or(true) {
-                    cmd.arg("-sound").arg("default");
-                }
-                if let Some(ref target_url) = url {
-                    let trimmed = target_url.trim();
-                    if !trimmed.is_empty() {
-                        cmd.arg("-open").arg(trimmed);
-                    }
-                }
-                if let Ok(out) = cmd.output() {
-                    if out.status.success() {
-                        return Ok(());
-                    }
-                }
-            }
-
-            // 2. Fallback to standard AppleScript display notification via System Events
-            // Wrapping inside System Events prevents macOS from attributing the notification
-            // to Script Editor (which caused clicking "Show" to launch Script Editor.app).
-            let mut script = format!(
-                r#"tell application "System Events" to display notification "{}" with title "{}""#,
-                escape_applescript_string(&body),
-                escape_applescript_string(&title)
-            );
-            if let Some(sub) = subtitle {
-                let trimmed = sub.trim();
-                if !trimmed.is_empty() {
-                    script.push_str(&format!(
-                        r#" subtitle "{}""#,
-                        escape_applescript_string(trimmed)
-                    ));
-                }
-            }
-            if sound.unwrap_or(true) {
-                script.push_str(r#" sound name "default""#);
-            }
-
-            let output = Command::new("osascript")
-                .arg("-e")
-                .arg(&script)
-                .output();
-
-            match output {
-                Ok(out) if out.status.success() => Ok(()),
-                Ok(out) => Err(format!(
-                    "osascript failed: {}",
-                    String::from_utf8_lossy(&out.stderr)
-                )),
-                Err(e) => Err(format!("Failed to run osascript: {}", e)),
+            if success {
+                Ok(())
+            } else {
+                let err_str = String::from_utf8_lossy(&err_buf)
+                    .trim_matches(char::from(0))
+                    .to_string();
+                Err(if err_str.is_empty() {
+                    "無法透過 UNUserNotificationCenter 發送通知".to_string()
+                } else {
+                    err_str
+                })
             }
         }
 
         #[cfg(not(target_os = "macos"))]
         {
             let _ = subtitle;
-            let _ = url;
             let _ = sound;
             use tauri_plugin_notification::NotificationExt;
             let mut builder = app_handle.notification().builder();
             builder = builder.title(title).body(body);
-            builder.show().map_err(|e| e.to_string())
+            #[cfg(target_os = "linux")]
+            let builder = linux_notification::attach_article_url(builder, url);
+            #[cfg(not(target_os = "linux"))]
+            let _ = url;
+            builder.show().map_err(|e| {
+                eprintln!("[notification] Failed to queue system notification: {e}");
+                e.to_string()
+            })
         }
     })
     .await
@@ -963,6 +936,9 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            #[cfg(target_os = "linux")]
+            linux_notification::register_click_handler(app.handle())?;
+
             #[cfg(all(desktop, debug_assertions))]
             if std::env::var_os("WATERBALL_OPEN_DEVTOOLS").is_some() {
                 if let Some(window) = app.get_webview_window("main") {
@@ -973,6 +949,12 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 if let Some(state) = WindowState::load(app.handle()) {
                     state.apply_to(&window);
+                }
+            }
+            #[cfg(target_os = "macos")]
+            {
+                unsafe {
+                    init_mac_notifications();
                 }
             }
             Ok(())
@@ -1094,18 +1076,51 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "macos")]
-    fn test_escape_applescript_string() {
-        use super::escape_applescript_string;
-        assert_eq!(
-            escape_applescript_string(r#"Hello "World" \ test"#),
-            r#"Hello \"World\" \\ test"#
-        );
-        assert_eq!(
-            escape_applescript_string("Line 1\r\nLine 2"),
-            "Line 1\nLine 2"
-        );
+    fn test_is_valid_ptt_article_url() {
+        use std::ffi::CString;
+        unsafe {
+            let valid1 = CString::new("https://www.ptt.cc/bbs/Stock/M.1791535001.A.2E5.html").unwrap();
+            assert!(super::is_valid_ptt_article_url_c(valid1.as_ptr()));
+
+            let valid2 = CString::new("https://ptt.cc/bbs/Gossiping/M.1234567890.A.BC1.html").unwrap();
+            assert!(super::is_valid_ptt_article_url_c(valid2.as_ptr()));
+
+            let valid_query = CString::new("https://www.ptt.cc/bbs/C_Chat/M.123.A.456.html?from=board#target").unwrap();
+            assert!(super::is_valid_ptt_article_url_c(valid_query.as_ptr()));
+
+            let http = CString::new("http://www.ptt.cc/bbs/Stock/M.123.A.456.html").unwrap();
+            assert!(!super::is_valid_ptt_article_url_c(http.as_ptr()));
+
+            let evil_host = CString::new("https://evil.com/bbs/Stock/M.123.A.456.html").unwrap();
+            assert!(!super::is_valid_ptt_article_url_c(evil_host.as_ptr()));
+
+            let traversal = CString::new("https://www.ptt.cc/bbs/Stock/../../evil.html").unwrap();
+            assert!(!super::is_valid_ptt_article_url_c(traversal.as_ptr()));
+
+            let not_article = CString::new("https://www.ptt.cc/bbs/index.html").unwrap();
+            assert!(!super::is_valid_ptt_article_url_c(not_article.as_ptr()));
+
+            let js_scheme = CString::new("javascript:alert(1)").unwrap();
+            assert!(!super::is_valid_ptt_article_url_c(js_scheme.as_ptr()));
+
+            // Verify mac_send_notification rejects invalid URLs before attempting delivery
+            let title = CString::new("Test").unwrap();
+            let body = CString::new("Body").unwrap();
+            let mut err_buf = vec![0u8; 512];
+            let ok = super::mac_send_notification(
+                title.as_ptr(),
+                body.as_ptr(),
+                std::ptr::null(),
+                evil_host.as_ptr(),
+                false,
+                err_buf.as_mut_ptr() as *mut std::os::raw::c_char,
+                err_buf.len() as std::os::raw::c_int,
+            );
+            assert!(!ok);
+            let err_msg = String::from_utf8_lossy(&err_buf).trim_matches(char::from(0)).to_string();
+            assert!(err_msg.contains("不合法的 PTT 文章網址"), "unexpected err_msg: {}", err_msg);
+        }
     }
 }
-
 
 
