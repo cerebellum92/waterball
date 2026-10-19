@@ -126,7 +126,7 @@ export class ContextMenuController {
       } else {
         ctxWaterballSend.textContent = '💧 開啟水球通話紀錄 (Alt+W)';
       }
-      ctxWaterballSend.style.display = 'flex';
+      ctxWaterballSend.style.display = 'none';
     }
 
     const ctxTagEdit = document.getElementById('ctx-tag-edit');

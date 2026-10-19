@@ -49,7 +49,7 @@
         <button id="push-helper-btn" class="tb-btn" title="長推文自動分段發送 (Cmd+Shift+X / Alt+X)">
           <span class="tb-icon">💬</span><span class="tb-label">推文</span>
         </button>
-        <button id="waterball-btn" class="tb-btn" title="水球通訊錄與對話紀錄 (Cmd+Alt+W)">
+        <button id="waterball-btn" class="tb-btn hidden" style="display: none;" title="水球通訊錄與對話紀錄 (Cmd+Alt+W)">
           <span class="tb-icon">💧</span><span class="tb-label">水球</span>
           <span id="waterball-unread-badge" class="tb-unread-badge hidden">0</span>
         </button>
@@ -385,7 +385,7 @@
             <div class="about-hero">
               <div class="about-logo">💧</div>
               <div class="about-title">Waterball (水球)</div>
-              <div class="about-ver">版本 v0.1.7 &bull; 開源授權 GPL-3.0</div>
+              <div class="about-ver">版本 v0.1.8 &bull; 開源授權 GPL-3.0</div>
               <div class="about-desc">
                 新世代跨平台 BBS 終端連線客戶端 (macOS / Windows / Linux / Chromebook)
                 <br>
@@ -612,11 +612,19 @@
               </div>
             </div>
             <div id="wb-messages-container" class="wb-messages-container"></div>
-            <div class="wb-reply-bar">
-              <input type="text" id="wb-reply-input" placeholder="輸入回覆水球訊息... (按 Enter 發送)" />
-              <button id="wb-reply-btn" class="btn-primary" title="發送水球至 PTT 終端機 (Ctrl+R)">🚀 發送 (Ctrl+R)</button>
+            <!-- Offline / Failure Banner with Mail fallback -->
+            <div id="wb-offline-banner" class="wb-offline-banner hidden">
+              <div class="wb-offline-info">
+                <span>⚠️</span>
+                <span id="wb-offline-text">對方目前不在線上，水球無法送達。</span>
+              </div>
+              <button id="wb-btn-send-mail" class="btn-primary" style="height: 24px; padding: 0 8px; font-size: 11px; white-space: nowrap;">✉️ 改轉為站內信寄出</button>
             </div>
-            <div class="wb-reply-hint">💡 提示：發送時自動使用 PTT 原生 Ctrl+R 水球回覆協定發出。</div>
+            <div class="wb-reply-bar">
+              <input type="text" id="wb-reply-input" placeholder="輸入水球訊息... (按 Enter 發送)" />
+              <button id="wb-reply-btn" class="btn-primary" title="發送水球至 PTT 終端機">🚀 發送水球</button>
+            </div>
+            <div class="wb-reply-hint">💡 提示：優先使用 PTT 原生快速回覆，必要時自動透過線上名單精準發送。</div>
           </div>
         </div>
       </div>
@@ -855,13 +863,44 @@
     </div>
   </div>
 
+  <!-- Waterball to Mail Compose Modal (水球轉寄站內信小彈窗) -->
+  <div id="wb-mail-modal" class="modal-backdrop hidden" style="z-index: 1050;">
+    <div class="modal-dialog" style="max-width: 460px; width: 90%;">
+      <div class="modal-header">
+        <h3 style="margin: 0; font-size: 15px;">✉️ 轉寄 PTT 站內信 (Mail)</h3>
+        <button id="wb-mail-close-btn" class="close-btn" title="關閉 (ESC)">&times;</button>
+      </div>
+      <div class="modal-body" style="padding: 16px; display: flex; flex-direction: column; gap: 12px;">
+        <div style="font-size: 12px; color: var(--text-secondary);">
+          對方目前不在線上，您可將訊息直接作為站內信寄達對方的 PTT 信箱。
+        </div>
+        <div class="form-group" style="display: flex; flex-direction: column; gap: 4px;">
+          <label style="font-size: 12px; font-weight: 600;">收件人：</label>
+          <input type="text" id="wb-mail-receiver" readonly style="background: var(--bg-hover); opacity: 0.8; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border-color); color: var(--text-primary);" />
+        </div>
+        <div class="form-group" style="display: flex; flex-direction: column; gap: 4px;">
+          <label style="font-size: 12px; font-weight: 600;">信件標題：</label>
+          <input type="text" id="wb-mail-title" placeholder="請輸入標題..." style="padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border-color); color: var(--text-primary); background: var(--bg-primary);" />
+        </div>
+        <div class="form-group" style="display: flex; flex-direction: column; gap: 4px;">
+          <label style="font-size: 12px; font-weight: 600;">信件內容：</label>
+          <textarea id="wb-mail-content" rows="4" style="resize: vertical; font-family: inherit; font-size: 13px; padding: 8px 10px; border-radius: 4px; border: 1px solid var(--border-color); color: var(--text-primary); background: var(--bg-primary);"></textarea>
+        </div>
+        <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px;">
+          <button id="wb-mail-cancel-btn" class="btn-secondary" style="height: 30px; font-size: 12px;">取消</button>
+          <button id="wb-mail-submit-btn" class="btn-primary" style="height: 30px; font-size: 12px;">🚀 確認寄出信件</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Global Terminal Context Menu (右鍵選單) -->
   <div id="terminal-context-menu" class="context-menu hidden">
     <div class="context-menu-item" id="ctx-copy">📋 複製選取文字 (Cmd+C)</div>
     <div class="context-menu-item" id="ctx-copy-ansi">🎨 複製含色彩 ANSI 代碼</div>
     <div class="context-menu-item" id="ctx-search-google">🔍 Google 搜尋此文字</div>
     <div class="context-menu-separator"></div>
-    <div class="context-menu-item" id="ctx-waterball-send">💧 傳送水球訊息</div>
+    <div class="context-menu-item hidden" id="ctx-waterball-send" style="display: none;">💧 傳送水球訊息</div>
     <div class="context-menu-item" id="ctx-tag-edit">🏷️ 編輯鄉民標籤 / 備註</div>
     <div class="context-menu-item" id="ctx-blacklist-toggle">🚫 加入黑名單</div>
     <div class="context-menu-item" id="ctx-quick-push">💬 快速開啟長推文小幫手 (Alt+X)</div>

@@ -43,6 +43,20 @@ export class WaterballManager {
       this.logs[contactKey] = [];
     }
 
+    // Check for fragmented packet completion (same sender within 1.5 seconds)
+    const existingIncoming = this.logs[contactKey];
+    if (existingIncoming.length > 0) {
+      const lastMsg = existingIncoming[existingIncoming.length - 1];
+      if (!lastMsg.isMine && Date.now() - lastMsg.timestamp < 1500) {
+        if (cleanMsg.startsWith(lastMsg.message) && cleanMsg.length > lastMsg.message.length) {
+          lastMsg.message = cleanMsg;
+          if (timeStr) lastMsg.time = timeStr;
+          this.saveLogs();
+          return lastMsg;
+        }
+      }
+    }
+
     const msgObj = {
       id: `wb_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       contactId: contactKey,
@@ -76,6 +90,20 @@ export class WaterballManager {
 
     if (!this.logs[contactKey]) {
       this.logs[contactKey] = [];
+    }
+
+    // Check for fragmented packet completion (same receiver within 1.5 seconds)
+    const existingOutgoing = this.logs[contactKey];
+    if (existingOutgoing.length > 0) {
+      const lastMsg = existingOutgoing[existingOutgoing.length - 1];
+      if (lastMsg.isMine && Date.now() - lastMsg.timestamp < 1500) {
+        if (cleanMsg.startsWith(lastMsg.message) && cleanMsg.length > lastMsg.message.length) {
+          lastMsg.message = cleanMsg;
+          if (timeStr) lastMsg.time = timeStr;
+          this.saveLogs();
+          return lastMsg;
+        }
+      }
     }
 
     const msgObj = {

@@ -259,3 +259,63 @@ test('disconnect purges send queue for that tab', async () => {
   invokeHook = null;
   releaseFirst();
 });
+
+test('sendWaterball locks target via Ctrl+R and sends message when caller matches', async () => {
+  const controller = createController();
+  let lineText = '★對 alice 丟水球:';
+  controller.getBottomLineText = () => lineText;
+
+  const res = await controller.sendWaterball('alice', '你好！');
+  assert.equal(res.success, true);
+  assert.ok(sent.includes('\x12')); // Sent Ctrl+R
+  assert.ok(sent.includes('你好！\r'));
+});
+
+test('sendWaterball cycles Ctrl+R and falls back to Ctrl+U macro when target not in queue', async () => {
+  const controller = createController();
+  // Simulates that bottom line has bob, not alice
+  let callCount = 0;
+  controller.getBottomLineText = () => {
+    callCount++;
+    if (callCount <= 3) return '★對 bob 丟水球:';
+    if (callCount <= 5) return '【 在線名單 】';
+    return '★對 alice 丟水球:';
+  };
+
+  const res = await controller.sendWaterball('alice', '主動密你！');
+  assert.equal(res.success, true);
+  assert.ok(sent.includes('\x15')); // Sent Ctrl+U
+  assert.ok(sent.includes('salice\r')); // Searched user
+  assert.ok(sent.includes('w主動密你！\r')); // Sent waterball
+  assert.ok(sent.includes('q')); // Exited back
+});
+
+test('sendWaterball detects offline recipient and returns failure', async () => {
+  const controller = createController();
+  let step = 0;
+  controller.getBottomLineText = () => {
+    step++;
+    if (step <= 2) return '【無人呼叫】';
+    return '【 此使用者目前不在線上 】';
+  };
+
+  const res = await controller.sendWaterball('offlineUser', '你在嗎？');
+  assert.equal(res.success, false);
+  assert.equal(res.reason, 'offline');
+  assert.ok(sent.includes('q')); // Returned to safety
+});
+
+test('sendMail sends PTT mail via Ctrl+U macro', async () => {
+  const controller = createController();
+  controller.getBottomLineText = () => '【 使用者列表 】';
+
+  const res = await controller.sendMail('bob', '[水球留言] 午餐', '要一起吃嗎？');
+  assert.equal(res.success, true);
+  assert.ok(sent.includes('\x15')); // Ctrl+U
+  assert.ok(sent.includes('sbob\r')); // Search user
+  assert.ok(sent.includes('m')); // Mail
+  assert.ok(sent.includes('[水球留言] 午餐\r')); // Title
+  assert.ok(sent.includes('要一起吃嗎？\r\x18s\r\r')); // Content and save
+  assert.ok(sent.includes('q')); // Exit
+});
+

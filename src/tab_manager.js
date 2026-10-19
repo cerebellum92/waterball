@@ -42,6 +42,7 @@ export class TabManager {
     this.onSelectionChange = null;
     this.onArticleClick = null;
     this.onBoardClick = null;
+    this.onBell = null;
 
     // Mobile Chrome-style Tab Switcher elements
     this.mobileTabBtn = document.getElementById('mobile-tab-btn');
@@ -109,6 +110,7 @@ export class TabManager {
     tab.view.onBoardClick = (row) => this.onBoardClick?.(row, tab);
     tab.view.onShortcutClick = (shortcut) => this.onShortcutClick?.(shortcut, tab);
     tab.view.onContextMenu = (info) => this.onContextMenu?.(info, tab);
+    tab.buf.onBell = () => this.onBell?.(tab);
 
     // Initial welcome banner for new tab
     tab.parser.feed('\x1b[1;36m╔═════════════════════════════════════╗\r\n\x1b[0m');

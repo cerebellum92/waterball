@@ -14,7 +14,7 @@ export class NotificationManager {
   }
 
   initPermission() {
-    if ('Notification' in window && Notification.permission === 'default') {
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
       // Defer requesting until first user interaction
     }
   }
@@ -68,53 +68,56 @@ export class NotificationManager {
   feedScreenLines(tabId, lines, tabTitle = 'BBS') {
     if (settingsManager.settings.notifyEnabled === false) return;
 
-    // Waterball messages in BBS (PTT / MapleBBS) ONLY arrive at the bottom status bar (last 1-2 rows)
-    const bottomStart = Math.max(0, lines.length - 2);
+    // Waterball messages in BBS (PTT / MapleBBS) ONLY arrive at the bottom status bar (the very last row)
+    const bottomStart = Math.max(0, lines.length - 1);
     for (let i = bottomStart; i < lines.length; i++) {
       const rawLine = lines[i] || '';
       const cleanLine = rawLine.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').trim();
       if (!cleanLine) continue;
 
+      // Filter out article lists, pinned announcements, and article titles
+      // PTT articles: □, ■, ◆, ◇, ~, !, R:, Re:, Fw:, 轉, [公告], MM/DD, etc.
+      const isArticleLine = /[□■◆◇~!]|\b(?:R:|Re:|Fw:|轉[:\s])|\d{1,2}\/\d{1,2}\s+[a-zA-Z]|\[(?:公告|問卦|新聞|情報|心得|討論|閒聊|買賣|徵求|創作)\]/i.test(cleanLine);
+      if (isArticleLine) continue;
+
       // 1. Waterball Message Detection (PTT / MapleBBS)
-      // Must start with ★ at the bottom status line and contain sender + message
-      // Example: "★abc 呼叫: 你好 [08/19 10:20]" or "★abc: 你好" or "★abc 你在嗎？"
-      // Must NOT be an article title line (no '□', 'R:', '轉:', etc.)
-      if (!/[□■◆◇]|(?:R:|Re:|轉:)\s/i.test(cleanLine)) {
-        // Outgoing waterball detection (e.g. ★對 abc 丟水球: 你好)
-        const outMatch = cleanLine.match(/^★(?:對|給)\s*([a-zA-Z0-9_-]{2,16})\s*(?:丟水球\s*[:：]?|[:：]\s*)\s*(.+)$/);
-        if (outMatch) {
-          const receiver = outMatch[1];
-          let outMessage = outMatch[2].trim();
-          outMessage = outMessage.replace(/\[\d{2}\/\d{2}\s+\d{2}:\d{2}\]$/, '').trim();
-          const outHash = `wb_out:${tabId}:${receiver}:${outMessage}`;
-          const now = Date.now();
-          if (!this.recentCache.has(outHash) || now - this.recentCache.get(outHash) >= 5000) {
-            this.recentCache.set(outHash, now);
-            waterballManager.addOutgoingMessage({
-              receiver,
-              message: outMessage,
-              tabId,
-              tabTitle,
-            });
-          }
+      // PTT username rule: must start with an alphabet letter, 2-12 alphanumeric or underscore characters: [a-zA-Z][a-zA-Z0-9_]{1,11}
+      // Article numbers (e.g. 81140) or pure numbers MUST NEVER be matched as a username!
+
+      // Outgoing waterball detection (e.g. ★對 abc 丟水球: 你好)
+      const outMatch = cleanLine.match(/^★(?:對|給)\s*([a-zA-Z][a-zA-Z0-9_]{1,11})\s*(?:丟水球\s*[:：]?|[:：]\s*)\s*(.+)$/);
+      if (outMatch) {
+        const receiver = outMatch[1];
+        let outMessage = outMatch[2].trim();
+        outMessage = outMessage.replace(/\[(?:(?:\d{2}\/)?\d{2}\s+)?\d{2}:\d{2}\]$/, '').trim();
+        const outHash = `wb_out:${tabId}:${receiver}:${outMessage}`;
+        const now = Date.now();
+        if (!this.recentCache.has(outHash) || now - this.recentCache.get(outHash) >= 5000) {
+          this.recentCache.set(outHash, now);
+          waterballManager.addOutgoingMessage({
+            receiver,
+            message: outMessage,
+            tabId,
+            tabTitle,
+          });
         }
+      }
 
-        // Incoming waterball detection
-        const wbMatch = cleanLine.match(/^★\s*([a-zA-Z0-9_-]{2,16})\s*(?:呼叫\s*[:：]?|[:：]\s*|\s+)(.+)$/);
-        if (wbMatch) {
-          const sender = wbMatch[1];
-          let message = wbMatch[2].trim();
+      // Incoming waterball detection
+      const wbMatch = cleanLine.match(/^★\s*([a-zA-Z][a-zA-Z0-9_]{1,11})\s*(?:呼叫\s*[:：]?|[:：]\s*|\s+)(.+)$/);
+      if (wbMatch) {
+        const sender = wbMatch[1];
+        let message = wbMatch[2].trim();
 
-          // Extract trailing timestamp [MM/DD HH:MM]
-          const timeMatch = message.match(/\[(\d{2}\/\d{2}\s+\d{2}:\d{2})\]$/);
-          const timeStr = timeMatch ? timeMatch[1] : '';
-          message = message.replace(/\[\d{2}\/\d{2}\s+\d{2}:\d{2}\]$/, '').trim();
+        // Extract trailing timestamp [MM/DD HH:MM] or [HH:MM]
+        const timeMatch = message.match(/\[(?:(?:\d{2}\/)?\d{2}\s+)?\d{2}:\d{2}\]$/);
+        const timeStr = timeMatch ? timeMatch[0].replace(/[\[\]]/g, '') : '';
+        message = message.replace(/\[(?:(?:\d{2}\/)?\d{2}\s+)?\d{2}:\d{2}\]$/, '').trim();
 
-          // Ignore system titles and menu headers
-          const ignoredSenders = ['BBS', '站長', '系統', '公告', '精華區', '文章選單', '主功能表', '看板列表'];
-          if (!ignoredSenders.includes(sender) && message.length > 0) {
-            this.triggerWaterballNotification(tabId, sender, message, tabTitle, timeStr);
-          }
+        // Ignore system titles and menu headers
+        const ignoredSenders = ['BBS', '站長', '系統', '公告', '精華區', '文章選單', '主功能表', '看板列表'];
+        if (!ignoredSenders.includes(sender) && !/^\d+$/.test(sender) && message.length > 0) {
+          this.triggerWaterballNotification(tabId, sender, message, tabTitle, timeStr);
         }
       }
 
@@ -147,7 +150,7 @@ export class NotificationManager {
     this.onTabBadgeTrigger?.(tabId);
 
     await sendNativeNotification(`💬 [${tabTitle} 水球] 來自 ${sender}`, message, () => {
-        window.focus();
+        if (typeof window !== 'undefined') window.focus();
         this.onFocusTab?.(tabId);
     });
   }
@@ -165,7 +168,7 @@ export class NotificationManager {
     this.onTabBadgeTrigger?.(tabId);
 
     await sendNativeNotification(`✉️ [${tabTitle} 站內信]`, '您收到了新的站內信件！', () => {
-        window.focus();
+        if (typeof window !== 'undefined') window.focus();
         this.onFocusTab?.(tabId);
     });
   }

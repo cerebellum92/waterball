@@ -269,20 +269,20 @@ const contextMenuCtrl = new ContextMenuController({
   onEditTag: (userId) => {
     userTagsUI.openModal(userId);
   },
-  onSendWaterball: (userId) => {
-    waterballUI.open(userId);
+  onSendWaterball: () => {
+    showGlobalToast('水球功能維護中，暫停使用');
   },
   onShowToast: showGlobalToast,
 });
 
-// Waterball UI Integration
-waterballUI.onSendWaterball = (contactName, message) => {
-  const activeTab = tabManager.getActiveTab();
-  if (!activeTab || !activeTab.isConnected) {
-    showGlobalToast('尚未連線至 BBS，無法發送水球');
-    return;
-  }
-  connectionCtrl.sendData(`\x12${message}\r`);
+// Waterball UI Integration (Disabled for v0.1.8 maintenance)
+waterballUI.onSendWaterball = async () => {
+  showGlobalToast('水球發送功能目前暫停使用');
+  return { success: false, reason: 'disabled', text: '水球發送功能目前暫停使用' };
+};
+waterballUI.onSendMail = async () => {
+  showGlobalToast('水球功能維護中，暫停使用');
+  return { success: false, reason: 'disabled', text: '水球功能維護中，暫停使用' };
 };
 waterballUI.onShowToast = showGlobalToast;
 waterballUI.onFocusTerminal = (force = true) => imeCtrl.focusTerminal(force);
@@ -655,7 +655,8 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
-  // Waterball Messenger Toggle (Alt+W / Cmd+Alt+W / Ctrl+Alt+W)
+  // Waterball Messenger Toggle (Alt+W / Cmd+Alt+W / Ctrl+Alt+W) - Disabled in v0.1.8
+  /*
   if (e.altKey && (e.code === 'KeyW' || e.key === 'w' || e.key === 'W')) {
     e.preventDefault();
     if (waterballUI.isOpen()) {
@@ -665,6 +666,7 @@ window.addEventListener('keydown', (e) => {
     }
     return;
   }
+  */
 
   if (waterballUI && waterballUI.isOpen()) {
     if (e.key === 'Escape') {

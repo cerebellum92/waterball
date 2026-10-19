@@ -7,11 +7,13 @@ export class WaterballUI {
   constructor({
     manager = waterballManager,
     onSendWaterball = () => {},
+    onSendMail = () => {},
     onFocusTerminal = () => {},
     onShowToast = () => {},
   } = {}) {
     this.manager = manager;
     this.onSendWaterball = onSendWaterball;
+    this.onSendMail = onSendMail;
     this.onFocusTerminal = onFocusTerminal;
     this.onShowToast = onShowToast;
 
@@ -34,6 +36,18 @@ export class WaterballUI {
     this.chatSection = document.getElementById('wb-chat-section');
     this.unreadBadge = document.getElementById('waterball-unread-badge');
     this.toolbarBtn = document.getElementById('waterball-btn');
+
+    // Offline failure banner & Mail compose modal elements
+    this.offlineBanner = document.getElementById('wb-offline-banner');
+    this.offlineText = document.getElementById('wb-offline-text');
+    this.btnSendMail = document.getElementById('wb-btn-send-mail');
+    this.mailModalEl = document.getElementById('wb-mail-modal');
+    this.mailReceiverInput = document.getElementById('wb-mail-receiver');
+    this.mailTitleInput = document.getElementById('wb-mail-title');
+    this.mailContentInput = document.getElementById('wb-mail-content');
+    this.mailCloseBtn = document.getElementById('wb-mail-close-btn');
+    this.mailCancelBtn = document.getElementById('wb-mail-cancel-btn');
+    this.mailSubmitBtn = document.getElementById('wb-mail-submit-btn');
 
     this.initEventListeners();
     this.updateToolbarBadge();
@@ -82,6 +96,11 @@ export class WaterballUI {
         this.sendReply();
       }
     });
+
+    this.btnSendMail?.addEventListener('click', () => this.openMailModal());
+    this.mailCloseBtn?.addEventListener('click', () => this.closeMailModal());
+    this.mailCancelBtn?.addEventListener('click', () => this.closeMailModal());
+    this.mailSubmitBtn?.addEventListener('click', () => this.submitMail());
 
     this.btnClearChat?.addEventListener('click', () => {
       if (!this.activeContactId) return;
@@ -219,6 +238,7 @@ export class WaterballUI {
     this.activeContactId = contactId.toLowerCase();
     this.manager.markRead(this.activeContactId);
     this.updateToolbarBadge();
+    this.hideOfflineBanner();
 
     // Highlight selected in list
     if (this.contactsListEl) {
@@ -235,6 +255,82 @@ export class WaterballUI {
 
     if (this.replyInput) {
       this.replyInput.focus();
+    }
+  }
+
+  showOfflineBanner(msg) {
+    if (this.offlineBanner) {
+      if (this.offlineText && msg) this.offlineText.textContent = msg;
+      this.offlineBanner.classList.remove('hidden');
+    }
+  }
+
+  hideOfflineBanner() {
+    if (this.offlineBanner) {
+      this.offlineBanner.classList.add('hidden');
+    }
+  }
+
+  openMailModal() {
+    if (!this.activeContactId || !this.mailModalEl) return;
+    const msgs = this.manager.getMessages(this.activeContactId);
+    const targetName = msgs[0]?.contactName || this.activeContactId;
+    const text = this.replyInput ? this.replyInput.value.trim() : '';
+    const defaultTitle = `[水球留言] ${text.slice(0, 18).trim()}${text.length > 18 ? '...' : ''}`;
+
+    if (this.mailReceiverInput) this.mailReceiverInput.value = targetName;
+    if (this.mailTitleInput) this.mailTitleInput.value = defaultTitle;
+    if (this.mailContentInput) this.mailContentInput.value = text;
+
+    this.mailModalEl.classList.remove('hidden');
+    setTimeout(() => this.mailTitleInput?.focus(), 60);
+  }
+
+  closeMailModal() {
+    if (this.mailModalEl) {
+      this.mailModalEl.classList.add('hidden');
+    }
+  }
+
+  async submitMail() {
+    if (!this.mailReceiverInput || !this.mailTitleInput || !this.mailContentInput) return;
+    const receiver = this.mailReceiverInput.value.trim();
+    const title = this.mailTitleInput.value.trim();
+    const content = this.mailContentInput.value.trim();
+    if (!receiver || !content) {
+      this.onShowToast('請輸入收件人與信件內容');
+      return;
+    }
+
+    if (this.mailSubmitBtn) {
+      this.mailSubmitBtn.disabled = true;
+      this.mailSubmitBtn.textContent = '寄送中...';
+    }
+
+    try {
+      const res = await this.onSendMail(receiver, title || '水球留言', content);
+      if (res && res.success) {
+        this.closeMailModal();
+        this.hideOfflineBanner();
+        if (this.replyInput) this.replyInput.value = '';
+        this.manager.addOutgoingMessage({
+          receiver,
+          message: `[✉️ 站內信: ${title || '水球留言'}] ${content}`,
+        });
+        this.renderMessages(this.activeContactId);
+        this.renderContacts();
+        this.onShowToast(`✉️ 已成功寄送站內信給 ${receiver}`);
+      } else {
+        this.onShowToast(`❌ 寄信失敗：${res?.text || '無法送出信件'}`);
+      }
+    } catch (err) {
+      console.error('Mail submit error:', err);
+      this.onShowToast('❌ 寄信發生錯誤');
+    } finally {
+      if (this.mailSubmitBtn) {
+        this.mailSubmitBtn.disabled = false;
+        this.mailSubmitBtn.textContent = '🚀 確認寄出信件';
+      }
     }
   }
 
@@ -299,7 +395,7 @@ export class WaterballUI {
     this.messagesContainerEl.scrollTop = this.messagesContainerEl.scrollHeight;
   }
 
-  sendReply() {
+  async sendReply() {
     if (!this.activeContactId || !this.replyInput) return;
     const text = this.replyInput.value.trim();
     if (!text) return;
@@ -307,19 +403,37 @@ export class WaterballUI {
     const msgs = this.manager.getMessages(this.activeContactId);
     const targetName = msgs[0]?.contactName || this.activeContactId;
 
-    // Send through BBS terminal connection hook
-    this.onSendWaterball(targetName, text);
+    this.hideOfflineBanner();
+    if (this.replyBtn) {
+      this.replyBtn.disabled = true;
+      this.replyBtn.textContent = '發送中...';
+    }
 
-    // Save outgoing message locally
-    this.manager.addOutgoingMessage({
-      receiver: targetName,
-      message: text,
-    });
-
-    this.replyInput.value = '';
-    this.renderMessages(this.activeContactId);
-    this.renderContacts();
-    this.onShowToast(`已發送水球給 ${targetName}`);
+    try {
+      const res = await this.onSendWaterball(targetName, text);
+      if (res && res.success) {
+        this.manager.addOutgoingMessage({
+          receiver: targetName,
+          message: text,
+        });
+        this.replyInput.value = '';
+        this.renderMessages(this.activeContactId);
+        this.renderContacts();
+        this.onShowToast(`已發送水球給 ${targetName}`);
+      } else {
+        // Keep text in replyInput to prevent losing user's draft
+        this.showOfflineBanner(res?.text || `${targetName} 目前不在線上，水球無法送達。`);
+        this.onShowToast(`❌ 發送失敗：${res?.text || '對方已離線'}`);
+      }
+    } catch (err) {
+      console.error('Send waterball error:', err);
+      this.onShowToast('❌ 發送水球發生錯誤');
+    } finally {
+      if (this.replyBtn) {
+        this.replyBtn.disabled = false;
+        this.replyBtn.textContent = '🚀 發送水球';
+      }
+    }
   }
 
   escapeHtml(str) {

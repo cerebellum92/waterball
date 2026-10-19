@@ -5,7 +5,7 @@ import {
   sendNotification,
 } from '@tauri-apps/plugin-notification';
 
-const isTauri = () => Boolean(window.__TAURI_INTERNALS__ || window.__TAURI__);
+const isTauri = () => Boolean(typeof window !== 'undefined' && (window.__TAURI_INTERNALS__ || window.__TAURI__));
 
 export const isTouchDevice = () => {
   if (typeof window === 'undefined') return false;
@@ -36,14 +36,14 @@ export async function requestNotificationPermission() {
     }
   }
 
-  if ('Notification' in window && Notification.permission !== 'granted') {
+  if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission !== 'granted') {
     try {
       return (await Notification.requestPermission()) === 'granted';
     } catch (error) {
       console.warn('Notification permission error:', error);
     }
   }
-  return 'Notification' in window && Notification.permission === 'granted';
+  return typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted';
 }
 
 export async function writeClipboardText(text) {

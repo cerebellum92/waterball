@@ -129,6 +129,7 @@ export class TermBuf {
 
     this.cursorVisible = true;
     this.onUpdate = null;
+    this.onBell = null;
     this.timerUpdate = null;
     this.delayedUpdate = false;
     this.synchronizedOutputActive = false;
@@ -257,6 +258,13 @@ export class TermBuf {
 
       switch (ch) {
         case '\x07': // Bell
+          if (typeof this.onBell === 'function') {
+            try {
+              this.onBell();
+            } catch (e) {
+              console.warn('onBell error:', e);
+            }
+          }
           continue;
         case '\b':
           this.back();

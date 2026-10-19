@@ -74,7 +74,17 @@ export class ConnectionController {
     this.sendQueue = [];
     this.isSending = false;
     this.heldScreenNavigationKeys = new Set();
-    this.notificationScrapeTimer = null;
+    this.notificationScrapeTimers = new Map();
+
+    // PCMan-style Bell (\x07) hook: immediate waterball inspection & chime
+    if (this.tabManager) {
+      this.tabManager.onBell = (tab) => {
+        if (tab) {
+          this.checkWaterballImmediate(tab.id);
+          this.notificationManager?.playChime?.();
+        }
+      };
+    }
 
     if (isDevelopment) terminalDiagnostics.install();
     this.initEventListeners();
@@ -151,6 +161,10 @@ export class ConnectionController {
           } : null;
           const parserStartedAt = isDevelopment ? performance.now() : null;
           const decodedData = this.tabManager.feedData(tab_id, data, raw_big5);
+
+          // PCMan-style synchronous inspection: immediate check of bottom line upon every data chunk
+          this.checkWaterballImmediate(tab_id);
+
           if (isDevelopment) {
             const parserMs = performance.now() - parserStartedAt;
             const tabAfter = this.tabManager.getTabById(tab_id);
@@ -211,6 +225,10 @@ export class ConnectionController {
           if (status === 'disconnected') {
             this.autoLoginManager.stopSession(tab_id);
             this.sendQueue = this.sendQueue.filter((item) => item.tabId !== tab_id);
+            if (this.notificationScrapeTimers?.has(tab_id)) {
+              clearTimeout(this.notificationScrapeTimers.get(tab_id));
+              this.notificationScrapeTimers.delete(tab_id);
+            }
           }
         }
       } catch (err) {
@@ -219,13 +237,214 @@ export class ConnectionController {
     });
   }
 
+  getBottomLineText(tabId) {
+    const tab = this.tabManager.getTabById(tabId);
+    if (!tab || !tab.buf) return '';
+    const r = tab.buf.rows - 1;
+    if (r < 0 || !tab.buf.lines || !tab.buf.lines[r]) return '';
+
+    let lineStr = '';
+    for (let c = 0; c < tab.buf.cols; c++) {
+      const cell = tab.buf.lines[r][c];
+      if (!cell || cell.isTrailByte) continue;
+      lineStr += cell.ch || ' ';
+    }
+    return lineStr.trim();
+  }
+
+  checkWaterballImmediate(tabId) {
+    const tab = this.tabManager.getTabById(tabId);
+    if (!tab || !tab.buf) return;
+
+    const trimmed = this.getBottomLineText(tabId);
+    if (trimmed.startsWith('★') || trimmed.includes('您有新信件')) {
+      this.notificationManager.feedScreenLines(tabId, [trimmed], tab.title);
+    }
+  }
+
+  async sendWaterball(targetName, message) {
+    const activeTab = this.tabManager.getActiveTab();
+    if (!activeTab || !activeTab.isConnected) {
+      return { success: false, reason: 'not_connected', text: '尚未連線至 BBS' };
+    }
+
+    const tabId = activeTab.id;
+    const cleanTarget = String(targetName || '').trim();
+    const cleanMsg = String(message || '').trim();
+    if (!cleanTarget || !cleanMsg) {
+      return { success: false, reason: 'invalid_params', text: '請輸入有效的對象與訊息' };
+    }
+
+    // Safety check: is the terminal currently inside a post editor?
+    const bottomLine = this.getBottomLineText(tabId);
+    if (/\[Ctrl-X\]|儲存離開|說明\(Ctrl-Z\)/i.test(bottomLine)) {
+      return {
+        success: false,
+        reason: 'in_editor',
+        text: '目前終端機正處於文章編輯器中，請先儲存離開後再發送水球',
+      };
+    }
+
+    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
+    // Route 1: Try Ctrl+R cycling first (0ms screen shift, ideal for active conversations)
+    const seenTargets = new Set();
+    let foundTargetInQueue = false;
+
+    this.sendDataToTab(tabId, '\x12');
+    await sleep(90);
+
+    for (let cycle = 0; cycle < 8; cycle++) {
+      const line = this.getBottomLineText(tabId);
+      const match = line.match(/^★對\s*([a-zA-Z][a-zA-Z0-9_]{1,11})\s*(?:丟水球\s*[:：]?|[:：]\s*)/i);
+      if (match) {
+        const curTarget = match[1].toLowerCase();
+        if (curTarget === cleanTarget.toLowerCase()) {
+          foundTargetInQueue = true;
+          break;
+        }
+        if (seenTargets.has(curTarget)) {
+          break; // Cycled through all available callers
+        }
+        seenTargets.add(curTarget);
+        this.sendDataToTab(tabId, '\x12');
+        await sleep(90);
+      } else {
+        break;
+      }
+    }
+
+    if (foundTargetInQueue) {
+      this.sendDataToTab(tabId, `${cleanMsg}\r`);
+      await sleep(150);
+
+      const afterLine = this.getBottomLineText(tabId);
+      if (/不在線上|離線|不收水球|關閉中|無法送出/i.test(afterLine)) {
+        return {
+          success: false,
+          reason: 'offline',
+          text: `對方目前不在線上或拒收水球`,
+        };
+      }
+      return { success: true };
+    }
+
+    // Cancel Ctrl+R prompt if still showing
+    const curLine = this.getBottomLineText(tabId);
+    if (curLine.startsWith('★對')) {
+      this.sendDataToTab(tabId, '\x03'); // Ctrl+C
+      await sleep(80);
+    }
+
+    // Route 2: Try Ctrl+U Online User List macro (targets any specific online user)
+    this.sendDataToTab(tabId, '\x15'); // Ctrl+U
+    await sleep(120);
+
+    this.sendDataToTab(tabId, `s${cleanTarget}\r`);
+    await sleep(150);
+
+    const searchLine = this.getBottomLineText(tabId);
+    if (/無此|不在線上|未上站|查無/i.test(searchLine)) {
+      this.sendDataToTab(tabId, 'q');
+      await sleep(80);
+      return {
+        success: false,
+        reason: 'offline',
+        text: `${cleanTarget} 目前不在線上`,
+      };
+    }
+
+    // Found user: send waterball via 'w'
+    this.sendDataToTab(tabId, `w${cleanMsg}\r`);
+    await sleep(150);
+
+    const resultLine = this.getBottomLineText(tabId);
+    if (/不收水球|關閉中|無法送出/i.test(resultLine)) {
+      this.sendDataToTab(tabId, 'q');
+      await sleep(80);
+      return {
+        success: false,
+        reason: 'offline',
+        text: `對方設定不收水球`,
+      };
+    }
+
+    // Return back to previous screen
+    this.sendDataToTab(tabId, 'q');
+    await sleep(80);
+    return { success: true };
+  }
+
+  async sendMail(targetName, title, content) {
+    const activeTab = this.tabManager.getActiveTab();
+    if (!activeTab || !activeTab.isConnected) {
+      return { success: false, reason: 'not_connected', text: '尚未連線至 BBS' };
+    }
+
+    const tabId = activeTab.id;
+    const cleanTarget = String(targetName || '').trim();
+    const cleanTitle = String(title || '水球留言').trim();
+    const cleanContent = String(content || '').trim();
+    if (!cleanTarget || !cleanContent) {
+      return { success: false, reason: 'invalid_params', text: '請輸入有效的收件人與信件內容' };
+    }
+
+    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
+    // Open User list Ctrl+U
+    this.sendDataToTab(tabId, '\x15');
+    await sleep(120);
+
+    // Search user
+    this.sendDataToTab(tabId, `s${cleanTarget}\r`);
+    await sleep(150);
+
+    const searchLine = this.getBottomLineText(tabId);
+    if (/無此代號|無此使用者|查無/i.test(searchLine)) {
+      this.sendDataToTab(tabId, 'q');
+      await sleep(80);
+      return {
+        success: false,
+        reason: 'user_not_found',
+        text: `查無使用者代號 [${cleanTarget}]`,
+      };
+    }
+
+    // In user list, pressing 'm' sends a mail to this user directly
+    this.sendDataToTab(tabId, 'm');
+    await sleep(150);
+
+    // Enter title
+    this.sendDataToTab(tabId, `${cleanTitle}\r`);
+    await sleep(150);
+
+    // In PTT editor: enter content, then Ctrl+X -> s -> Enter -> Enter
+    this.sendDataToTab(tabId, `${cleanContent}\r\x18s\r\r`);
+    await sleep(250);
+
+    // Return from user list back to original screen
+    this.sendDataToTab(tabId, 'q');
+    await sleep(80);
+
+    return { success: true };
+  }
+
   scheduleNotificationScrape(tabId) {
-    clearTimeout(this.notificationScrapeTimer);
-    this.notificationScrapeTimer = setTimeout(() => {
+    if (!this.notificationScrapeTimers) {
+      this.notificationScrapeTimers = new Map();
+    }
+    const existing = this.notificationScrapeTimers.get(tabId);
+    if (existing) {
+      clearTimeout(existing);
+    }
+
+    const timer = setTimeout(() => {
+      this.notificationScrapeTimers.delete(tabId);
       const tab = this.tabManager.getTabById(tabId);
       if (tab && tab.buf) {
         const lines = [];
-        const startRow = Math.max(0, tab.buf.rows - 2);
+        // PTT and MapleBBS status messages & waterball alerts ONLY appear on the bottom-most row
+        const startRow = Math.max(0, tab.buf.rows - 1);
         for (let r = startRow; r < tab.buf.rows; r++) {
           let lineStr = '';
           for (let c = 0; c < tab.buf.cols; c++) {
@@ -238,6 +457,8 @@ export class ConnectionController {
         this.notificationManager.feedScreenLines(tabId, lines, tab.title);
       }
     }, 300);
+
+    this.notificationScrapeTimers.set(tabId, timer);
   }
 
   async processSendQueue() {
@@ -406,6 +627,10 @@ export class ConnectionController {
       await invoke('disconnect', { tabId: activeTab.id });
     } catch (err) {
       console.error('Disconnect error:', err);
+    }
+    if (this.notificationScrapeTimers?.has(activeTab.id)) {
+      clearTimeout(this.notificationScrapeTimers.get(activeTab.id));
+      this.notificationScrapeTimers.delete(activeTab.id);
     }
     this.tabManager.updateTabStatus(activeTab.id, 'disconnected');
   }
