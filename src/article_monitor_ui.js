@@ -175,10 +175,22 @@ export class ArticleMonitorUI {
 
     // Test Local OS Notification button
     this.testLocalNotifBtn?.addEventListener('click', async () => {
+      const localStatusEl = document.getElementById('monitor-local-notif-status');
+      const setLocalStatus = (type, msg) => {
+        if (localStatusEl) {
+          localStatusEl.className = `tg-status-banner ${type}`;
+          localStatusEl.textContent = msg;
+          localStatusEl.classList.remove('hidden');
+          try { localStatusEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch {}
+        }
+        this.onShowToast(msg);
+      };
+
       if (this.testLocalNotifBtn) {
         this.testLocalNotifBtn.textContent = '⏳ 發送測試通知中...';
         this.testLocalNotifBtn.disabled = true;
       }
+      setLocalStatus('loading', '⏳ 正在發送本地系統推播通知...');
       try {
         await requestNotificationPermission();
         const sent = await sendNativeNotification(
@@ -188,12 +200,12 @@ export class ArticleMonitorUI {
           { sound: true, subtitle: '[測試通知]', throwOnError: true }
         );
         if (sent) {
-          this.onShowToast('🔔 測試通知已發送，請查看螢幕右上角橫幅或通知中心');
+          setLocalStatus('success', '🔔 測試通知已發送，請查看螢幕右上角橫幅或系統通知中心！');
         } else {
-          this.onShowToast('⚠️ 無法發送通知，請確認系統或瀏覽器通知權限是否已開啟');
+          setLocalStatus('error', '⚠️ 無法發送通知，請確認系統或瀏覽器通知權限是否已開啟。');
         }
       } catch (err) {
-        this.onShowToast(`⚠️ 發送測試通知失敗: ${err.message || err}`);
+        setLocalStatus('error', `⚠️ 發送測試通知失敗: ${err.message || err}`);
       } finally {
         if (this.testLocalNotifBtn) {
           this.testLocalNotifBtn.textContent = '🔔 測試發送本地通知';
@@ -808,6 +820,12 @@ export class ArticleMonitorUI {
     this.tgStatusEl.className = `tg-status-banner ${type}`;
     this.tgStatusEl.textContent = msg;
     this.tgStatusEl.classList.remove('hidden');
+    try {
+      this.tgStatusEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    } catch {}
+    if (msg && typeof this.onShowToast === 'function') {
+      this.onShowToast(msg);
+    }
   }
 
   loadCloudForm() {
@@ -825,9 +843,9 @@ export class ArticleMonitorUI {
     if (this.cloudReplaceBtn) this.cloudReplaceBtn.hidden = !official;
     if (this.cloudAutoMergeInput) { this.cloudAutoMergeInput.checked = Boolean(config.autoMerge); this.cloudAutoMergeInput.disabled = !official || !config.deviceToken; this.cloudAutoMergeInput.closest('label').hidden = !official; }
     if (this.tgSaveBtn) this.tgSaveBtn.textContent = official ? (config.deviceToken ? '💾 更新雲端啟用／暫停狀態' : '🔑 配對並讀取雲端設定') : '💾 儲存並同步推播設定';
-    if (this.cloudReadBtn) this.cloudReadBtn.hidden = !official;
-    if (this.cloudRestoreBtn) this.cloudRestoreBtn.hidden = !official || !config.restorePending;
-    if (this.cloudDraftBtn) this.cloudDraftBtn.hidden = !official || !this.manager.getLocalRulesBackup();
+    if (this.cloudReadBtn) this.cloudReadBtn.hidden = false;
+    if (this.cloudRestoreBtn) this.cloudRestoreBtn.hidden = !config.restorePending;
+    if (this.cloudDraftBtn) this.cloudDraftBtn.hidden = !this.manager.getLocalRulesBackup();
     if (this.tgChatIdInput) {
       if (official && config.deviceToken) {
         this.tgChatIdInput.readOnly = true;
@@ -855,6 +873,12 @@ export class ArticleMonitorUI {
     this.cloudStatusEl.className = `tg-status-banner ${type}`;
     this.cloudStatusEl.textContent = msg;
     this.cloudStatusEl.classList.remove('hidden');
+    try {
+      this.cloudStatusEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    } catch {}
+    if (msg && typeof this.onShowToast === 'function') {
+      this.onShowToast(msg);
+    }
   }
 
   generateRandomSecret() {
@@ -878,11 +902,12 @@ export class ArticleMonitorUI {
     if (this.historyCount) {
       this.historyCount.textContent = String(this.manager.getHistory().length);
     }
+    const subscribedBoards = this.manager.getSubscribedBoards();
     if (this.rulesCount) {
-      this.rulesCount.textContent = String(this.manager.getRules().length);
+      this.rulesCount.textContent = String(subscribedBoards.length);
     }
     if (this.boardsCount) {
-      this.boardsCount.textContent = String(this.manager.getSubscribedBoards().length);
+      this.boardsCount.textContent = String(subscribedBoards.length);
     }
     const syncNote = document.getElementById('monitor-sync-note');
     if (syncNote) {
@@ -980,14 +1005,36 @@ export class ArticleMonitorUI {
   renderRules() {
     if (!this.rulesList) return;
     this.rulesList.innerHTML = '';
+    this.updateToolbarBadge();
 
+    // Check if there is a local rules backup containing previously configured rules
+    const backup = this.manager.getLocalRulesBackup();
     const rules = this.manager.getRules();
-    if (rules.length === 0) {
-      this.rulesList.innerHTML = `
-        <div class="monitor-empty-box">
-          <div style="font-size: 13px; color: var(--text-secondary);">尚未建立任何追蹤規則，請使用上方表單新增。</div>
+    const showBackupBanner = Array.isArray(backup) && backup.length > 0 &&
+      (backup.length > rules.length || backup.some(b => !rules.some(r => String(r.board || '').trim().toLowerCase() === String(b.board || '').trim().toLowerCase())));
+
+    if (showBackupBanner) {
+      const banner = document.createElement('div');
+      banner.className = 'monitor-backup-banner';
+      banner.innerHTML = `
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span>📋 發現本機保留的看板規則備份（共 <b>${backup.length}</b> 條，包含先前設定的未勾選看板）</span>
         </div>
+        <button type="button" class="btn-primary btn-restore-draft" style="padding: 4px 12px; font-size: 12px; border-radius: 5px; cursor: pointer; flex-shrink: 0;">一鍵取回所有看板規則</button>
       `;
+      banner.querySelector('.btn-restore-draft')?.addEventListener('click', () => {
+        const res = this.manager.restoreCloudDraft();
+        this.renderRules();
+        this.updateToolbarBadge();
+        this.onShowToast(res.message);
+      });
+      this.rulesList.appendChild(banner);
+    }
+    if (rules.length === 0) {
+      const emptyBox = document.createElement('div');
+      emptyBox.className = 'monitor-empty-box';
+      emptyBox.innerHTML = '<div style="font-size: 13px; color: var(--text-secondary);">尚未建立任何追蹤規則，請使用上方表單新增。</div>';
+      this.rulesList.appendChild(emptyBox);
       return;
     }
 

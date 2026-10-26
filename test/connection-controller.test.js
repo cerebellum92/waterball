@@ -13,7 +13,7 @@ globalThis.window = {
           sent.push(args.data);
         }
         if (invokeHook) {
-          await invokeHook(command, args);
+          return await invokeHook(command, args);
         }
       },
     },
@@ -319,3 +319,152 @@ test('sendMail sends PTT mail via Ctrl+U macro', async () => {
   assert.ok(sent.includes('q')); // Exit
 });
 
+
+test('ACK send waits for transport completion and carries immutable backend session token', async () => {
+  const c=createController();let release;let captured;
+  invokeHook=(command,args)=>{captured=args;return new Promise(resolve=>{release=resolve;});};
+  let completed=false;const task=c.sendDataToTabAndWait('tab-1','hello','session-1').then(()=>{completed=true;});
+  await waitForSent(1);assert.equal(completed,false);assert.equal(captured.expectedSession,'session-1');release();await task;assert.equal(completed,true);
+});
+test('failed transport cancels queued ACK writes instead of continuing a partial stream', async () => {
+  const c=createController();let fail;invokeHook=()=>new Promise((resolve,reject)=>{fail=reject;});
+  const first=c.sendDataToTabAndWait('tab-1','first','session-1');const second=c.sendDataToTabAndWait('tab-1','second','session-1');
+  const results=Promise.allSettled([first,second]);await waitForSent(1);fail(new Error('broken stream'));
+  const settled=await results;assert.ok(settled.every(r=>r.status==='rejected'));assert.deepEqual(sent,['first']);
+});
+test('disconnect rejects unsent ACK items so paste cannot hang waiting forever', async () => {
+  const c=createController();let release;invokeHook=()=>new Promise(resolve=>{release=resolve;});
+  const first=c.sendDataToTabAndWait('tab-1','first','session-1');const second=c.sendDataToTabAndWait('tab-1','second','session-1');
+  const rejected=assert.rejects(second,/中斷/);await waitForSent(1);
+  listeners.get('connection-status')({payload:{tab_id:'tab-1',status:'disconnected'}});await rejected;release();await first;
+});
+
+test('paste session query rejects missing tokens and returns the backend identity', async () => {
+  const c=createController();invokeHook=async command=>command==='connection_session'?'backend-session':undefined;
+  assert.equal(await c.getConnectionSession('tab-1'),'backend-session');invokeHook=async()=>null;
+  await assert.rejects(c.getConnectionSession('tab-1'),/連線身分/);
+});
+
+test('slow writes on one tab do not block another connected tab', async () => {
+  const c=createController();let release;
+  invokeHook=async(command,args)=>{if(args.tabId==='tab-1')await new Promise(resolve=>{release=resolve;});};
+  const first=c.sendDataToTabAndWait('tab-1','slow','one');
+  const second=c.sendDataToTabAndWait('tab-2','fast','two');
+  await second;assert.deepEqual(sent,['slow','fast']);release();await first;
+});
+
+test('desktop WSS continues to use native IPC with native charset and session', async () => {
+  const c = createController(), commands = [];
+  c.elements.addressInput = { value: 'wss://ws.ptt.cc/bbs' };
+  c.elements.encodingSelect = { value: 'gbk' };
+  invokeHook = async (command, args) => {
+    commands.push([command, args]);
+    if (command === 'connection_session') return 'native-session';
+  };
+  await c.connect();
+  const connect = commands.find(([command]) => command === 'connect')[1];
+  assert.equal(connect.transport, 'wss');
+  assert.equal(connect.charset, 'gbk');
+  assert.equal(await c.getConnectionSession('tab-1'), 'native-session');
+  await c.disconnectTab('tab-1');
+  assert.equal(commands.at(-1)[0], 'disconnect');
+});
+
+test('native close cancels the handshake attempt and tagged old events are ignored', async () => {
+  const c = createController(), tab = c.tabManager.getActiveTab();
+  c.elements.addressInput = { value: 'wss://ws.ptt.cc/bbs' };
+  const pendingCommands = [], statuses = [], fed = [];
+  let release;
+  c.tabManager.updateTabStatus = (_id, status) => statuses.push(status);
+  c.tabManager.feedData = (_id, data) => fed.push(data);
+  invokeHook = async (command, args) => {
+    pendingCommands.push([command, args]);
+    if (command === 'connect') await new Promise(resolve => { release = resolve; });
+  };
+  const pending = c.connect();
+  const oldId = pendingCommands[0][1].attemptId;
+  assert.ok(oldId);
+  await c.disconnectTab(tab.id);
+  assert.equal(pendingCommands[1][1].attemptId, oldId);
+  const count = statuses.length;
+  listeners.get('connection-status')({ payload: { tab_id: tab.id, status: 'connected', attempt_id: oldId } });
+  listeners.get('terminal-data')({ payload: { tab_id: tab.id, data: 'late', attempt_id: oldId } });
+  release(); await pending;
+  assert.equal(statuses.length, count);
+  assert.deepEqual(fed, []);
+  c.nativeAttempts.set(tab.id, 'replacement');
+  listeners.get('connection-status')({ payload: { tab_id: tab.id, status: 'disconnected', attempt_id: oldId } });
+  assert.equal(statuses.length, count);
+  listeners.get('connection-status')({ payload: { tab_id: tab.id, status: 'connected', attempt_id: 'replacement' } });
+  assert.equal(statuses.at(-1), 'connected');
+});
+
+test('failed native attempts remain addressable for cleanup without unscoped duplicate disconnects', async () => {
+  const c = createController(), commands = [];
+  c.elements.addressInput = { value: 'wss://ws.ptt.cc/bbs' };
+  invokeHook = async (command, args) => {
+    commands.push([command, args]);
+    if (command === 'connect') throw new Error('handshake failed');
+  };
+  await c.connect();
+  const attemptId = commands[0][1].attemptId;
+  assert.equal(c.nativeAttempts.get('tab-1'), attemptId);
+  await c.disconnectTab('tab-1');
+  await c.disconnectTab('tab-1');
+  assert.deepEqual(commands.filter(([command]) => command === 'disconnect').map(([,args]) => args), [{ tabId: 'tab-1', attemptId }]);
+});
+
+test('input owner blocks legacy and acknowledged producers while owner can send to its bound session', async () => {
+  const c = createController();
+  const lease = c.acquireInputLease('tab-1'); assert.ok(lease);
+  assert.equal(c.acquireInputLease('tab-1'), null);
+  assert.equal(c.sendDataToTab('tab-1', 'unexpected navigation'), false);
+  await assert.rejects(c.sendDataToTabAndWait('tab-1', 'other producer', 'session'), /其他發送流程/);
+  await c.sendDataToTabAndWait('tab-1', 'owned', 'session', lease);
+  assert.deepEqual(sent, ['owned']);
+  c.releaseInputLease('tab-1', Symbol('wrong owner'));
+  assert.equal(c.sendDataToTab('tab-1', 'still blocked'), false);
+  c.releaseInputLease('tab-1', lease);
+  await assert.rejects(c.sendDataToTabAndWait('tab-1', 'stale producer', 'session', lease), /其他發送流程/);
+  await c.sendDataToTabAndWait('tab-1', 'normal', 'session');
+  assert.deepEqual(sent, ['owned', 'normal']);
+});
+
+test('input owner cannot be acquired while a previous write is still unresolved', async () => {
+  const c = createController(); let release;
+  invokeHook = async () => new Promise(resolve => { release = resolve; });
+  const pending = c.sendDataToTabAndWait('tab-1', 'in flight', 'session');
+  assert.equal(c.acquireInputLease('tab-1'), null);
+  release(); await pending;
+  assert.ok(c.acquireInputLease('tab-1'));
+});
+
+test('paste lease blocks mouse/macros and cancellation rejects queued URL without disconnecting', async () => {
+  const { TerminalPasteTransaction } = await import('../src/paste_transaction.js');
+  const c = createController(); let finishUpload;
+  c.getConnectionSession = async () => 'session-1';
+  const paste = new TerminalPasteTransaction({
+    getActiveTab: () => c.tabManager.getActiveTab(), getTabById: id => c.tabManager.getTabById(id),
+    getSession: id => c.getConnectionSession(id), acquireInput: id => c.acquireInputLease(id),
+    releaseInput: (id, token) => c.releaseInputLease(id, token),
+    send: (id, text, session, token, signal) => c.sendDataToTabAndWait(id, text, session, token, signal),
+  });
+  const task = paste.paste(() => new Promise(resolve => { finishUpload = resolve; }));
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  assert.equal(c.sendDataToTab('tab-1', '\x1b[6~'), false);
+  assert.equal(c.sendDataToTab('tab-1', '\r'), false);
+  finishUpload('https://host/image.png'); await task;
+  assert.deepEqual(sent, ['https://host/image.png']);
+  assert.ok(c.acquireInputLease('tab-1'));
+});
+
+test('cancelled queued URL is discarded before transport and keeps connection alive', async () => {
+  const c = createController(); let release;
+  invokeHook = () => new Promise(resolve => { release = resolve; });
+  const first = c.sendDataToTabAndWait('tab-1', 'first', 'session-1');
+  const abort = new AbortController();
+  const second = c.sendDataToTabAndWait('tab-1', 'https://host/image.png', 'session-1', null, abort.signal);
+  const rejected = assert.rejects(second, /取消/);
+  abort.abort(); release(); await first; await rejected;
+  assert.deepEqual(sent, ['first']); assert.equal(c.tabManager.getActiveTab().isConnected, true);
+});

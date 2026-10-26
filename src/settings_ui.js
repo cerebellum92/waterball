@@ -1,6 +1,6 @@
 // Settings & Blacklist UI Controller for Waterball BBS
-
-const { invoke } = window.__TAURI__.core;
+import { safeInvoke, writeClipboardText } from './platform.js';
+import { imageUploadHistory, deleteUploadedImage } from './image_uploader.js';
 
 export class SettingsUI {
   constructor({
@@ -34,6 +34,10 @@ export class SettingsUI {
   }
 
   initEventListeners() {
+    const protect = action => (...args) => {
+      try { return action(...args); }
+      catch (error) { this.onShowToast(`黑名單儲存失敗，原有規則未變更：${error.message}`); }
+    };
     const {
       settingsModal,
       settingsBtn,
@@ -41,6 +45,9 @@ export class SettingsUI {
       modalSaveBtn,
       settingFontFamily,
       customFontGroup,
+      settingImageHostProvider,
+      settingImageImgurClientGroup,
+      settingImageCustomEndpointGroup,
       btnCheckUpdate,
       updateStatusMsg,
       btnBlacklistAdd,
@@ -50,6 +57,12 @@ export class SettingsUI {
       btnBlacklistExportJson,
       btnBlacklistImport,
       fileBlacklistImport,
+      btnBlacklistKwAdd,
+      inputBlacklistKwAdd,
+      btnBlacklistKwClear,
+      btnBlacklistKwExportTxt,
+      btnBlacklistKwImport,
+      fileBlacklistKwImport,
     } = this.elements;
 
     if (settingsBtn) {
@@ -72,6 +85,33 @@ export class SettingsUI {
         }
       });
     }
+
+    // Image Host dropdown toggle
+    if (settingImageHostProvider) {
+      settingImageHostProvider.addEventListener('change', () => {
+        const val = settingImageHostProvider.value;
+        if (settingImageImgurClientGroup) {
+          settingImageImgurClientGroup.classList.toggle('hidden', val !== 'imgur');
+        }
+        if (settingImageCustomEndpointGroup) {
+          settingImageCustomEndpointGroup.classList.toggle('hidden', val !== 'custom');
+        }
+      });
+    }
+
+    const btnClearImageHistory = document.getElementById('btn-clear-image-history');
+    if (btnClearImageHistory) {
+      btnClearImageHistory.addEventListener('click', () => {
+        if (confirm('確定要清除本機的圖片上傳紀錄嗎？（不會刪除圖床上的檔案）')) {
+          imageUploadHistory.clear();
+          this.renderImageHistory();
+          this.onShowToast('已清除圖片上傳紀錄');
+        }
+      });
+    }
+    imageUploadHistory.subscribe(() => {
+      this.renderImageHistory();
+    });
 
     // Modal tabs switching
     document.querySelectorAll('.tab-btn').forEach((btn) => {
@@ -121,7 +161,7 @@ export class SettingsUI {
 
     // Blacklist Buttons
     if (btnBlacklistAdd && inputBlacklistAdd) {
-      const doAdd = () => {
+      const doAdd = protect(() => {
         const val = inputBlacklistAdd.value.trim();
         if (val) {
           if (this.blacklistManager.add(val)) {
@@ -129,11 +169,11 @@ export class SettingsUI {
             this.renderBlacklistUI();
             this.tabManager.getActiveTab()?.view?.redraw();
           } else {
-            this.onShowToast(`${val} 已在黑名單中`);
+            this.onShowToast(`${val} 已存在、格式不合法或清單已達上限`);
           }
           inputBlacklistAdd.value = '';
         }
-      };
+      });
       btnBlacklistAdd.addEventListener('click', doAdd);
       inputBlacklistAdd.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
@@ -144,14 +184,13 @@ export class SettingsUI {
     }
 
     if (btnBlacklistClear) {
-      btnBlacklistClear.addEventListener('click', () => {
+      btnBlacklistClear.addEventListener('click', protect(() => {
         if (this.blacklistManager.customList.size === 0) return;
-        this.blacklistManager.customList.clear();
-        this.blacklistManager.saveCustomList();
+        this.blacklistManager.clear();
         this.renderBlacklistUI();
         this.tabManager.getActiveTab()?.view?.redraw();
         this.onShowToast('已清空自訂黑名單');
-      });
+      }));
     }
 
     if (btnBlacklistExportTxt) {
@@ -189,19 +228,25 @@ export class SettingsUI {
       fileBlacklistImport.addEventListener('change', (e) => {
         const file = e.target.files?.[0];
         if (!file) return;
+        if (file.size > 1024 * 1024) {
+          this.onShowToast('匯入檔案不可超過 1 MiB');
+          e.target.value = '';
+          return;
+        }
         const reader = new FileReader();
         reader.onload = (evt) => {
           const content = evt.target?.result;
           if (typeof content === 'string') {
             let added = 0;
             try {
-              if (file.name.endsWith('.json')) {
-                const parsed = JSON.parse(content);
-                if (Array.isArray(parsed.blacklist)) {
-                  for (const id of parsed.blacklist) {
-                    if (this.blacklistManager.add(id)) added++;
-                  }
-                }
+              if (file.name.toLowerCase().endsWith('.json')) {
+                const result = this.blacklistManager.importFromJSON(content);
+                if (!result.success) throw new Error(result.error);
+                this.loadSettingsToUI();
+                this.onShowToast(`已合併備份：新增 ${result.addedUsers} 個帳號、${result.addedKeywords} 個關鍵字，並還原設定`);
+                this.renderBlacklistUI();
+                fileBlacklistImport.value = '';
+                return;
               } else {
                 added = this.blacklistManager.importFromText(content);
               }
@@ -217,6 +262,95 @@ export class SettingsUI {
         reader.readAsText(file);
       });
     }
+
+    // Keyword Blacklist Buttons
+    if (btnBlacklistKwAdd && inputBlacklistKwAdd) {
+      const doAddKw = protect(() => {
+        const val = inputBlacklistKwAdd.value.trim();
+        if (val) {
+          if (this.blacklistManager.addKeyword(val)) {
+            const suspended = this.blacklistManager.settings.enabled && this.blacklistManager.settings.enableKeywords && this.blacklistManager.settings.blockWaterball;
+            this.onShowToast(`已將關鍵字「${val}」加入黑名單${suspended ? '；水球通知與鈴聲暫停，終端仍接收' : ''}`);
+            this.renderBlacklistUI();
+            this.tabManager.getActiveTab()?.view?.redraw();
+          } else {
+            this.onShowToast(`關鍵字「${val}」已存在、格式不合法或清單已達上限`);
+          }
+          inputBlacklistKwAdd.value = '';
+        }
+      });
+      btnBlacklistKwAdd.addEventListener('click', doAddKw);
+      inputBlacklistKwAdd.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          doAddKw();
+        }
+      });
+    }
+
+    if (btnBlacklistKwClear) {
+      btnBlacklistKwClear.addEventListener('click', protect(() => {
+        if (this.blacklistManager.customKeywords.size === 0) return;
+        this.blacklistManager.clearKeywords();
+        this.renderBlacklistUI();
+        this.tabManager.getActiveTab()?.view?.redraw();
+        this.onShowToast('已清空關鍵字黑名單');
+      }));
+    }
+
+    if (btnBlacklistKwExportTxt) {
+      btnBlacklistKwExportTxt.addEventListener('click', () => {
+        const txt = this.blacklistManager.exportKeywordsAsText();
+        const blob = new Blob([txt], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `waterball_blacklist_keywords_${new Date().toISOString().slice(0, 10)}.txt`;
+        a.click();
+        URL.revokeObjectURL(url);
+        this.onShowToast('已匯出關鍵字黑名單 (TXT)');
+      });
+    }
+
+    if (btnBlacklistKwImport && fileBlacklistKwImport) {
+      btnBlacklistKwImport.addEventListener('click', () => {
+        fileBlacklistKwImport.click();
+      });
+      fileBlacklistKwImport.addEventListener('change', (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        if (file.size > 1024 * 1024) {
+          this.onShowToast('匯入檔案不可超過 1 MiB');
+          e.target.value = '';
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+          const content = evt.target?.result;
+          if (typeof content === 'string') {
+            let added = 0;
+            try {
+              if (file.name.toLowerCase().endsWith('.json')) {
+                const parsed = JSON.parse(content);
+                const result = this.blacklistManager.importFromJSON(Array.isArray(parsed) ? { keywords: parsed } : parsed);
+                if (!result.success) throw new Error(result.error);
+                added = result.addedKeywords;
+                this.loadSettingsToUI();
+              } else {
+                added = this.blacklistManager.importKeywordsFromText(content);
+              }
+              this.onShowToast(`成功匯入 ${added} 個關鍵字`);
+              this.renderBlacklistUI();
+              this.tabManager.getActiveTab()?.view?.redraw();
+            } catch (err) {
+              this.onShowToast('匯入失敗，請確認檔案格式是否正確');
+            }
+          }
+          fileBlacklistKwImport.value = '';
+        };
+        reader.readAsText(file);
+      });
+    }
   }
 
   isOpen() {
@@ -227,6 +361,7 @@ export class SettingsUI {
     this.loadSettingsToUI();
     this.onBookmarksRender();
     this.renderBlacklistUI();
+    this.renderImageHistory();
     this.onUserTagsRender();
     this.elements.settingsModal?.classList.remove('hidden');
 
@@ -262,6 +397,12 @@ export class SettingsUI {
       settingFontFamily,
       settingCustomFont,
       customFontGroup,
+      settingImageUpload,
+      settingImageHostProvider,
+      settingImageImgurClientId,
+      settingImageCustomEndpoint,
+      settingImageImgurClientGroup,
+      settingImageCustomEndpointGroup,
       settingBlacklistEnabled,
       settingBlacklistGreatTreasure,
     } = this.elements;
@@ -293,50 +434,148 @@ export class SettingsUI {
     }
     if (settingCustomFont) settingCustomFont.value = s.customFont || '';
 
+    // Image Upload settings
+    if (settingImageUpload) settingImageUpload.checked = s.imageUploadEnabled !== false;
+    if (settingImageHostProvider) settingImageHostProvider.value = s.imageUploadProvider || 'imgur';
+    if (settingImageImgurClientId) settingImageImgurClientId.value = s.imageUploadImgurClientId || '';
+    if (settingImageCustomEndpoint) settingImageCustomEndpoint.value = s.imageUploadCustomEndpoint || '';
+    if (settingImageImgurClientGroup) {
+      settingImageImgurClientGroup.classList.toggle('hidden', (s.imageUploadProvider || 'imgur') !== 'imgur');
+    }
+    if (settingImageCustomEndpointGroup) {
+      settingImageCustomEndpointGroup.classList.toggle('hidden', (s.imageUploadProvider || 'imgur') !== 'custom');
+    }
+
     // Blacklist settings
-    if (settingBlacklistEnabled) settingBlacklistEnabled.checked = this.blacklistManager.settings.enabled !== false;
-    if (settingBlacklistGreatTreasure) settingBlacklistGreatTreasure.checked = this.blacklistManager.settings.enableGreatTreasure !== false;
+    const bs = this.blacklistManager.settings;
+    if (settingBlacklistEnabled) settingBlacklistEnabled.checked = bs.enabled !== false;
+    if (this.elements.settingBlacklistMode) this.elements.settingBlacklistMode.value = bs.mode || 'dim';
+    if (this.elements.settingBlacklistBlockWaterball) this.elements.settingBlacklistBlockWaterball.checked = bs.blockWaterball !== false;
+    if (this.elements.settingBlacklistBlockPush) this.elements.settingBlacklistBlockPush.checked = bs.blockPushNotification !== false;
+    if (this.elements.settingBlacklistEnableKeywords) this.elements.settingBlacklistEnableKeywords.checked = bs.enableKeywords !== false;
+    if (settingBlacklistGreatTreasure) settingBlacklistGreatTreasure.checked = bs.enableGreatTreasure !== false;
   }
 
   renderBlacklistUI() {
-    const { blacklistTagsContainer, blacklistCount, greatTreasureBadge } = this.elements;
-    if (!blacklistTagsContainer) return;
-    blacklistTagsContainer.innerHTML = '';
-
-    const list = this.blacklistManager.getCustomListArray();
-    if (blacklistCount) {
-      blacklistCount.textContent = String(list.length);
+    const render = (container, count, values, keyword) => {
+      if (count) count.textContent = String(values.length);
+      if (!container) return;
+      container.replaceChildren();
+      if (!values.length) {
+        const hint = document.createElement('div');
+        hint.className = 'blacklist-empty-hint';
+        hint.textContent = keyword ? '目前尚未加入任何關鍵字。' : '目前尚未加入任何自訂黑名單帳號。';
+        container.appendChild(hint);
+      }
+      // Legacy oversized inventories remain stored; bound synchronous DOM work.
+      if (values.length > 200) {
+        const hint = document.createElement('p');
+        hint.textContent = '先顯示前 200 筆；備份包含全部規則，刪減後可繼續查看其餘項目。';
+        container.appendChild(hint);
+      }
+      for (const value of values.slice(0, 200)) {
+        const tag = document.createElement('div');
+        tag.className = keyword ? 'blacklist-tag blacklist-kw-tag' : 'blacklist-tag';
+        const label = document.createElement('span');
+        label.textContent = `${keyword ? '🔤 ' : ''}${value}`;
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'blacklist-tag-remove';
+        remove.textContent = '×';
+        remove.title = keyword ? '移出關鍵字黑名單' : '移出黑名單';
+        remove.addEventListener('click', e => {
+          e.stopPropagation();
+          try {
+            if (keyword) this.blacklistManager.removeKeyword(value);
+            else this.blacklistManager.remove(value);
+            this.renderBlacklistUI();
+          } catch (error) { this.onShowToast(`黑名單儲存失敗：${error.message}`); }
+        });
+        tag.append(label, remove);
+        container.appendChild(tag);
+      }
+    };
+    const e = this.elements;
+    render(e.blacklistTagsContainer, e.blacklistCount, this.blacklistManager.getCustomListArray(), false);
+    render(e.blacklistKwTagsContainer, e.blacklistKwCount, this.blacklistManager.getCustomKeywordsArray(), true);
+    const warnings = this.blacklistManager.getLimitWarnings();
+    if (warnings.length && e.blacklistTagsContainer) {
+      const warning = document.createElement('p');
+      warning.className = 'blacklist-limit-warning';
+      warning.textContent = `${warnings.join('；')}。原有規則仍生效；請先匯出備份再刪減，超量期間不可新增或合併匯入。`;
+      e.blacklistTagsContainer.appendChild(warning);
     }
-    if (greatTreasureBadge) {
-      greatTreasureBadge.textContent = `已收錄 ${this.blacklistManager.getGreatTreasureCount()}+ 帳號`;
-    }
+    if (e.greatTreasureBadge) e.greatTreasureBadge.textContent = `舊版名單：${this.blacklistManager.getGreatTreasureCount()} 帳號（來源未驗證）`;
+  }
 
-    if (list.length === 0) {
-      const emptyHint = document.createElement('div');
-      emptyHint.className = 'blacklist-empty-hint';
-      emptyHint.textContent = '目前尚未加入任何自訂黑名單帳號。可在上方輸入 ID 或在畫面中點擊右鍵加入。';
-      blacklistTagsContainer.appendChild(emptyHint);
+  renderImageHistory() {
+    const listEl = document.getElementById('image-upload-history-list');
+    if (!listEl) return;
+    const entries = imageUploadHistory.getEntries();
+    if (!entries.length) {
+      listEl.innerHTML = '<p style="text-align: center; color: var(--text-muted); margin: 8px 0;">尚無上傳紀錄</p>';
       return;
     }
 
-    list.forEach((userId) => {
-      const tag = document.createElement('div');
-      tag.className = 'blacklist-tag';
-      tag.innerHTML = `
-        <span>${userId}</span>
-        <span class="blacklist-tag-remove" title="移出黑名單" data-user="${userId}">&times;</span>
+    const storageWarning = imageUploadHistory.persistenceError
+      ? '<p role="alert">撤回紀錄尚未存入本機，僅保留於此視窗記憶體；請先撤回或備份後再關閉。</p>' : '';
+    listEl.innerHTML = storageWarning + entries.map((e) => {
+      const timeStr = new Date(e.timestamp).toLocaleTimeString();
+      const safeUrl = this.escapeHtml(e.url);
+      const safeProvider = this.escapeHtml(e.provider);
+      const isImgur = e.provider === 'imgur';
+      const canDelete = isImgur && e.deletehash && !e.deleted;
+      const statusHtml = e.deleted
+        ? '<span style="color:#ef4444; font-weight: 500;">(已從圖床撤回刪除)</span>'
+        : canDelete
+          ? `<button type="button" class="btn-danger btn-delete-upload" data-url="${safeUrl}" style="font-size: 11px; padding: 2px 6px; background:#dc2626; color:#fff; border:none; border-radius:3px; cursor:pointer;">🗑️ 撤回刪除</button>`
+          : '<span style="color:var(--text-muted);">(無撤回金鑰)</span>';
+
+      return `
+        <div style="display: flex; justify-content: space-between; align-items: center; padding: 5px 0; border-bottom: 1px solid var(--border-color); gap: 8px;">
+          <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">
+            <span style="color: var(--text-muted); font-size: 11px; margin-right: 4px;">[${timeStr}]</span>
+            <span style="font-weight: 500; font-size: 11px; text-transform: uppercase; margin-right: 4px; color: var(--text-secondary);">${safeProvider}</span>
+            <a href="${safeUrl}" target="_blank" style="color: var(--link-color, #38bdf8); text-decoration: underline;" title="${safeUrl}">${safeUrl}</a>
+          </div>
+          <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
+            ${statusHtml}
+            <button type="button" class="btn-secondary btn-copy-upload-url" data-url="${safeUrl}" style="font-size: 11px; padding: 2px 6px; cursor:pointer;">📋 複製</button>
+          </div>
+        </div>
       `;
-      blacklistTagsContainer.appendChild(tag);
+    }).join('');
+
+    // Bind delete buttons
+    listEl.querySelectorAll('.btn-delete-upload').forEach(btn => {
+      btn.addEventListener('click', async (evt) => {
+        const url = evt.currentTarget.dataset.url;
+        if (!url) return;
+        if (!confirm(`確定要從圖床永久撤回並刪除這張圖片嗎？\n\n網址：${url}\n（刪除後圖片將無法再被任何人存取）`)) return;
+        btn.disabled = true;
+        btn.textContent = '⏳ 刪除中...';
+        try {
+          await deleteUploadedImage({ url });
+          this.onShowToast('✅ 圖片已成功從圖床撤回並銷毀！');
+          this.renderImageHistory();
+        } catch (err) {
+          this.onShowToast(`❌ 撤回失敗：${err.message}`);
+          btn.disabled = false;
+          btn.textContent = '🗑️ 撤回刪除';
+        }
+      });
     });
 
-    blacklistTagsContainer.querySelectorAll('.blacklist-tag-remove').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const u = btn.dataset.user;
-        if (u) {
-          this.blacklistManager.remove(u);
-          this.renderBlacklistUI();
-          this.tabManager.getActiveTab()?.view?.redraw();
+    // Bind copy buttons
+    listEl.querySelectorAll('.btn-copy-upload-url').forEach(btn => {
+      btn.addEventListener('click', async (evt) => {
+        const url = evt.currentTarget.dataset.url;
+        if (!url) return;
+        try {
+          await writeClipboardText(url);
+          this.onShowToast('✅ 已複製圖片網址');
+        } catch {
+          this.onShowToast('❌ 複製失敗');
         }
       });
     });
@@ -369,6 +608,10 @@ export class SettingsUI {
       settingToolbarScale,
       settingFontFamily,
       settingCustomFont,
+      settingImageUpload,
+      settingImageHostProvider,
+      settingImageImgurClientId,
+      settingImageCustomEndpoint,
       settingBlacklistEnabled,
       settingBlacklistGreatTreasure,
     } = this.elements;
@@ -400,13 +643,21 @@ export class SettingsUI {
     const antiIdleInterval = settingAntiIdleInterval ? parseInt(settingAntiIdleInterval.value, 10) : 60;
 
     // Sync with native Rust background anti-idle system (24/7 background protected)
-    invoke('set_anti_idle', { enabled: antiIdleEnabled, intervalSecs: antiIdleInterval }).catch(() => {});
+    safeInvoke('set_anti_idle', { enabled: antiIdleEnabled, intervalSecs: antiIdleInterval }).catch(() => {});
 
     // Save Blacklist settings
     const blacklistEnabled = settingBlacklistEnabled ? settingBlacklistEnabled.checked : true;
+    const blacklistMode = this.elements.settingBlacklistMode ? this.elements.settingBlacklistMode.value : 'dim';
+    const blockWaterball = this.elements.settingBlacklistBlockWaterball ? this.elements.settingBlacklistBlockWaterball.checked : true;
+    const blockPush = this.elements.settingBlacklistBlockPush ? this.elements.settingBlacklistBlockPush.checked : true;
+    const enableKeywords = this.elements.settingBlacklistEnableKeywords ? this.elements.settingBlacklistEnableKeywords.checked : true;
     const greatTreasureEnabled = settingBlacklistGreatTreasure ? settingBlacklistGreatTreasure.checked : true;
     this.blacklistManager.saveSettings({
       enabled: blacklistEnabled,
+      mode: blacklistMode,
+      blockWaterball,
+      blockPushNotification: blockPush,
+      enableKeywords,
       enableGreatTreasure: greatTreasureEnabled,
     });
     this.tabManager.getActiveTab()?.view?.redraw();
@@ -420,6 +671,10 @@ export class SettingsUI {
       mouseBrowsingEnabled: settingMouseBrowsing ? settingMouseBrowsing.checked : true,
       wheelScrollPage: settingWheelScroll ? settingWheelScroll.checked : true,
       autoCopySelection: settingAutoCopy ? settingAutoCopy.checked : false,
+      imageUploadEnabled: settingImageUpload ? settingImageUpload.checked : true,
+      imageUploadProvider: settingImageHostProvider ? settingImageHostProvider.value : 'imgur',
+      imageUploadImgurClientId: settingImageImgurClientId ? settingImageImgurClientId.value.trim() : '',
+      imageUploadCustomEndpoint: settingImageCustomEndpoint ? settingImageCustomEndpoint.value.trim() : '',
       theme: settingTheme ? settingTheme.value : 'pcman',
       cursorStyle,
       cursorBlinkRate: settingBlinkRate ? parseInt(settingBlinkRate.value, 10) : 500,
@@ -429,11 +684,21 @@ export class SettingsUI {
       fontFamily,
       customFont,
     });
-    invoke('set_remember_window_state', {
+    safeInvoke('set_remember_window_state', {
       enabled: settingRememberWindow ? settingRememberWindow.checked : true,
     }).catch(() => {});
     this.onMouseBrowsingChange(settingMouseBrowsing ? settingMouseBrowsing.checked : true);
 
     this.close();
+  }
+
+  escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
   }
 }

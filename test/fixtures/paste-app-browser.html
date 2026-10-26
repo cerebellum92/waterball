@@ -1,0 +1,37 @@
+<!doctype html><html lang="zh-Hant"><meta charset="UTF-8"><title>Waterball 貼上實際介面驗收</title>
+<style>body{font:16px system-ui;background:#111827;color:#eee;padding:16px}iframe{width:100%;height:650px;border:1px solid #777}.pass{color:#86efac}.fail{color:#fca5a5}</style>
+<h1>貼上實際介面驗收（原生傳輸以測試替身取代）</h1><p id="status">執行中</p><iframe title="Waterball 測試 App"></iframe>
+<script type="module">
+const status=document.querySelector('#status');
+const assert=(condition,message)=>{if(!condition)throw new Error(message);};
+const wait=async predicate=>{for(let n=0;n<100;n++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,20));}throw new Error('等待 UI 逾時');};
+try {
+ const source=await (await fetch('/')).text();
+ const mock=`<script>
+ window.testWrites=[];window.testErrors=[];const events={};
+ window.addEventListener('error',event=>window.testErrors.push(event.message));
+ window.__TAURI__={core:{invoke:async(command,args)=>{
+   if(command==='connect'){events['connection-status']?.({payload:{tab_id:args.tabId,status:'connected'}});return;}
+   if(command==='connection_session')return 'test-session';
+   if(command==='send_input'){window.testWrites.push(args);if(window.testWrites.length===2)throw new Error('test partial transport failure');return;}
+ }},event:{listen:(event,fn)=>{events[event]=fn;return Promise.resolve(()=>{});}}};
+ <\/script>`;
+ const frame=document.querySelector('iframe');frame.srcdoc=source.replace(/<script type="module" src="\/src\/main\.js[^"]*"><\/script>/,mock+'<script type="module" src="/src/main.js"></'+'script>');
+ await wait(()=>frame.contentWindow?.testErrors && frame.contentDocument?.querySelector('#tab-bar button'));
+ await new Promise(resolve=>setTimeout(resolve,400));
+ const win=frame.contentWindow,doc=frame.contentDocument;
+ assert(!win.testErrors.length,win.testErrors.join(';'));
+ doc.querySelector('#connect-btn').click();await wait(()=>doc.querySelector('#status-text').textContent.includes('已連線'));
+ const ime=doc.querySelector('#ime-input');ime.focus();
+ const data=new win.DataTransfer();data.setData('text/plain','first\nsecond\nthird');
+ win.dispatchEvent(new win.ClipboardEvent('paste',{clipboardData:data,cancelable:true}));
+ await wait(()=>doc.querySelector('#paste-recovery-dialog').open);
+ assert(win.testWrites.length===2,'不應發送第三行');
+ assert(win.testWrites.every(write=>write.expectedSession==='test-session'),'每個寫入應綁定後端 session');
+ assert(doc.querySelector('#paste-recovery-text').value==='second\nthird','保全視窗應保存不確定區塊與後續文字');
+ assert(doc.querySelector('#paste-recovery-text').readOnly,'保全區應為獨立唯讀文字區');
+ assert(!ime.value,'失敗文字不應回填自動發送的 IME');
+ assert(!win.testErrors.length,win.testErrors.join(';'));
+ status.className='pass';status.textContent='通過：App 初始化、原生 paste、session 綁定、第二行失敗停送、獨立文字保全、IME 不自動重送。';
+} catch(error) {status.className='fail';status.textContent='失敗：'+error.message;}
+</script></html>

@@ -1,11 +1,14 @@
 mod telnet;
+mod connection_lifecycle;
+mod image_upload;
+use connection_lifecycle::{ConnectionAttempt, ConnectionEvents};
 pub mod uao;
 #[cfg(target_os = "linux")]
 mod linux_notification;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Manager, State, Window, WindowEvent};
+use tauri::{AppHandle, Manager, State, Window, WindowEvent};
 use telnet::{BbsCharset, BbsConnection, ConnectionStatusPayload};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -94,6 +97,8 @@ pub struct AntiIdleSettings {
 
 pub struct AppState {
     pub connections: Arc<Mutex<HashMap<String, BbsConnection>>>,
+    pub connection_attempts: Mutex<HashMap<String, Arc<ConnectionAttempt>>>,
+    pub cancelled_before_start: Mutex<HashSet<(String, String)>>,
     pub anti_idle: Arc<Mutex<AntiIdleSettings>>,
     pub remember_window_state: Arc<Mutex<bool>>,
 }
@@ -107,83 +112,50 @@ async fn connect(
     port: u16,
     charset: Option<String>,
     transport: Option<String>,
+    attempt_id: String,
 ) -> Result<String, String> {
-    // Disconnect existing connection for this tab if any
+    let attempt = ConnectionAttempt::new(attempt_id);
     {
-        let mut map = state.connections.lock().map_err(|e| e.to_string())?;
-        if let Some(old) = map.remove(&tab_id) {
-            old.disconnect();
+        // Always lock attempts before connections, including the final commit.
+        let mut attempts = state.connection_attempts.lock().map_err(|e| e.to_string())?;
+        if state.cancelled_before_start.lock().map_err(|e| e.to_string())?.remove(&(tab_id.clone(), attempt.id.clone())) {
+            attempt.cancel();
+            return Err("CONNECTION_CANCELLED".into());
         }
+        if let Some(old) = attempts.insert(tab_id.clone(), attempt.clone()) { old.cancel(); }
+        if let Some(old) = state.connections.lock().map_err(|e| e.to_string())?.remove(&tab_id) { old.disconnect(); }
     }
-
-    let transport = transport.unwrap_or_else(|| {
-        if port == 22 || port == 8888 { "ssh".to_string() } else { "telnet".to_string() }
-    });
-    let app_handle = app.clone();
-    let cs = charset
-        .as_deref()
-        .map(BbsCharset::from_str)
-        .unwrap_or(BbsCharset::Big5);
-
-    // Emit connecting status
-    let _ = app.emit("connection-status", ConnectionStatusPayload {
-        tab_id: tab_id.clone(),
-        status: "connecting".to_string(),
-    });
-
-    if transport == "wss" {
-        println!("[Rust] Connecting Tab {} via WSS to {} ({:?})", tab_id, address, cs);
-        match BbsConnection::connect_wss(tab_id.clone(), &address, cs, app_handle).await {
-            Ok(conn) => {
-                println!("[Rust] Tab {} WSS Connected successfully", tab_id);
-                let mut map = state.connections.lock().map_err(|e| e.to_string())?;
-                map.insert(tab_id, conn);
-                Ok("connected".to_string())
+    let events = ConnectionEvents::new(app, attempt.clone());
+    let _ = events.emit("connection-status", ConnectionStatusPayload { tab_id: tab_id.clone(), status: "connecting".into() });
+    let transport = transport.unwrap_or_else(|| if port == 22 || port == 8888 { "ssh".into() } else { "telnet".into() });
+    let charset = charset.as_deref().map(BbsCharset::from_str).unwrap_or(BbsCharset::Big5);
+    let result = tokio::select! {
+        biased;
+        _ = attempt.cancelled() => Err("CONNECTION_CANCELLED".to_string()),
+        result = async {
+            match transport.as_str() {
+                "wss" => BbsConnection::connect_wss(tab_id.clone(), &address, charset, events.clone()).await,
+                "ssh" => BbsConnection::connect_ssh(tab_id.clone(), &address, port, charset, events.clone()).await,
+                _ => BbsConnection::connect_telnet(tab_id.clone(), &address, port, charset, events.clone()).await,
             }
-            Err(e) => {
-                println!("[Rust] Tab {} WSS Connection error: {}", tab_id, e);
-                let _ = app.emit("connection-status", ConnectionStatusPayload {
-                    tab_id,
-                    status: "disconnected".to_string(),
-                });
-                Err(e)
-            }
+        } => result,
+    };
+    let attempts = state.connection_attempts.lock().map_err(|e| e.to_string())?;
+    let current = attempt.is_current(attempts.get(&tab_id));
+    match result {
+        Ok(conn) if current => {
+            state.connections.lock().map_err(|e| e.to_string())?.insert(tab_id, conn);
+            Ok("connected".into())
         }
-    } else if transport == "ssh" {
-        println!("[Rust] Connecting Tab {} via SSH to {}:{} ({:?})", tab_id, address, port, cs);
-        match BbsConnection::connect_ssh(tab_id.clone(), &address, port, cs, app_handle).await {
-            Ok(conn) => {
-                println!("[Rust] Tab {} SSH Connected successfully", tab_id);
-                let mut map = state.connections.lock().map_err(|e| e.to_string())?;
-                map.insert(tab_id, conn);
-                Ok("connected".to_string())
+        Ok(conn) => { conn.disconnect(); Err("CONNECTION_CANCELLED".into()) }
+        Err(error) => {
+            if current {
+                let _ = events.emit("connection-status", ConnectionStatusPayload { tab_id: tab_id.clone(), status: "disconnected".into() });
+                // Retain the cancelled slot until disconnect/replacement, so a
+                // delayed disconnect cannot create a never-consumed tombstone.
             }
-            Err(e) => {
-                println!("[Rust] Tab {} SSH Connection error: {}", tab_id, e);
-                let _ = app.emit("connection-status", ConnectionStatusPayload {
-                    tab_id,
-                    status: "disconnected".to_string(),
-                });
-                Err(e)
-            }
-        }
-    } else {
-        println!("[Rust] Connecting Tab {} via Telnet to {}:{} ({:?})", tab_id, address, port, cs);
-        match BbsConnection::connect_telnet(tab_id.clone(), &address, port, cs, app_handle).await {
-            Ok(conn) => {
-                println!("[Rust] Tab {} Telnet Connected successfully", tab_id);
-                let mut map = state.connections.lock().map_err(|e| e.to_string())?;
-                map.insert(tab_id, conn);
-                Ok("connected".to_string())
-            }
-            Err(e) => {
-                println!("[Rust] Tab {} Telnet Connection error: {}", tab_id, e);
-                let _ = app.emit("connection-status", ConnectionStatusPayload {
-                    tab_id,
-                    status: "disconnected".to_string(),
-                });
-                Err(e)
-            }
+            attempt.cancel();
+            Err(error)
         }
     }
 }
@@ -204,15 +176,31 @@ async fn set_charset(
 }
 
 #[tauri::command]
+fn connection_session(state: State<'_, AppState>, tab_id: String) -> Result<String, String> {
+    let map = state.connections.lock().map_err(|e| e.to_string())?;
+    map.get(&tab_id).map(|conn| conn.session_token()).ok_or_else(|| "未連線".to_string())
+}
+
+#[tauri::command]
 async fn send_input(
     state: State<'_, AppState>,
     tab_id: String,
     data: String,
+    expected_session: Option<String>,
 ) -> Result<(), String> {
-    let map = state.connections.lock().map_err(|e| e.to_string())?;
-    if let Some(conn) = map.get(&tab_id) {
-        conn.record_activity();
-        conn.send(&data).map_err(|e| e.to_string())
+    let conn = {
+        let map = state.connections.lock().map_err(|e| e.to_string())?;
+        map.get(&tab_id).cloned()
+    };
+    if let Some(conn) = conn {
+        if expected_session.as_ref().is_some_and(|expected| expected != &conn.session_token()) {
+            return Err("STALE_CONNECTION: 連線已變更，已取消舊貼上".to_string());
+        }
+        tauri::async_runtime::spawn_blocking(move || {
+            conn.record_activity();
+            conn.send(&data).map_err(|e| e.to_string())
+        })
+            .await.map_err(|e| e.to_string())?
     } else {
         Err(format!("Tab {} not connected", tab_id))
     }
@@ -224,10 +212,16 @@ async fn send_bytes(
     tab_id: String,
     bytes: Vec<u8>,
 ) -> Result<(), String> {
-    let map = state.connections.lock().map_err(|e| e.to_string())?;
-    if let Some(conn) = map.get(&tab_id) {
-        conn.record_activity();
-        conn.send_raw(&bytes).map_err(|e| e.to_string())
+    let conn = {
+        let map = state.connections.lock().map_err(|e| e.to_string())?;
+        map.get(&tab_id).cloned()
+    };
+    if let Some(conn) = conn {
+        tauri::async_runtime::spawn_blocking(move || {
+            conn.record_activity();
+            conn.send_raw(&bytes).map_err(|e| e.to_string())
+        })
+            .await.map_err(|e| e.to_string())?
     } else {
         Err(format!("Tab {} not connected", tab_id))
     }
@@ -278,15 +272,21 @@ async fn disconnect(
     app: AppHandle,
     state: State<'_, AppState>,
     tab_id: String,
+    attempt_id: String,
 ) -> Result<(), String> {
-    let mut map = state.connections.lock().map_err(|e| e.to_string())?;
-    if let Some(old) = map.remove(&tab_id) {
-        old.disconnect();
+    let mut attempts = state.connection_attempts.lock().map_err(|e| e.to_string())?;
+    if attempts.get(&tab_id).is_none_or(|current| current.id != attempt_id) {
+        // disconnect can be dispatched before the async connect command starts.
+        state.cancelled_before_start.lock().map_err(|e| e.to_string())?.insert((tab_id, attempt_id));
+        return Ok(());
     }
-    let _ = app.emit("connection-status", ConnectionStatusPayload {
-        tab_id,
-        status: "disconnected".to_string(),
-    });
+    if let Some(attempt) = attempts.remove(&tab_id) {
+        let _ = ConnectionEvents::new(app, attempt.clone()).emit("connection-status", ConnectionStatusPayload {
+            tab_id: tab_id.clone(), status: "disconnected".into(),
+        });
+        attempt.cancel();
+    }
+    if let Some(old) = state.connections.lock().map_err(|e| e.to_string())?.remove(&tab_id) { old.disconnect(); }
     Ok(())
 }
 
@@ -880,6 +880,27 @@ async fn send_system_notification(
     .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+async fn upload_image_native(
+    url: String,
+    file_field: String,
+    file_fields: Option<Vec<String>>,
+    file_name: String,
+    file_bytes: Vec<u8>,
+    fields: Vec<(String, String)>,
+    headers: Option<HashMap<String, String>>,
+) -> Result<String, String> {
+    image_upload::upload(url, file_field, file_fields, file_name, file_bytes, fields, headers).await
+}
+
+#[tauri::command]
+async fn delete_image_native(
+    url: String,
+    headers: Option<HashMap<String, String>>,
+) -> Result<String, String> {
+    image_upload::delete(url, headers).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let connections = Arc::new(Mutex::new(HashMap::<String, BbsConnection>::new()));
@@ -917,6 +938,8 @@ pub fn run() {
 
     let app_state = AppState {
         connections,
+        connection_attempts: Mutex::new(HashMap::new()),
+        cancelled_before_start: Mutex::new(HashSet::new()),
         anti_idle,
         remember_window_state: remember_window_state.clone(),
     };
@@ -963,6 +986,7 @@ pub fn run() {
             connect,
             set_charset,
             send_input,
+            connection_session,
             send_bytes,
             set_raw_terminal_capture,
             record_activity,
@@ -978,6 +1002,8 @@ pub fn run() {
             cloud_push_request,
             test_cloudflare_worker,
             send_system_notification,
+            upload_image_native,
+            delete_image_native,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

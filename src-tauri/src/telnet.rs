@@ -1,8 +1,9 @@
 use encoding_rs::{BIG5, GBK};
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+static NEXT_CONNECTION_SESSION: AtomicU64 = AtomicU64::new(1);
 use std::sync::{Arc, RwLock};
-use tauri::{AppHandle, Emitter};
+use crate::connection_lifecycle::{ConnectionAttempt, ConnectionEvents};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BbsCharset {
@@ -109,7 +110,10 @@ pub struct ConnectionStatusPayload {
     pub status: String,
 }
 
+#[derive(Clone)]
 pub struct BbsConnection {
+    session: u64,
+    attempt: Option<Arc<ConnectionAttempt>>,
     writer: Arc<std::sync::Mutex<Box<dyn Write + Send>>>,
     alive: Arc<AtomicBool>,
     charset: Arc<RwLock<BbsCharset>>,
@@ -121,13 +125,12 @@ struct SshChannelWriter<T: Write>(Arc<std::sync::Mutex<T>>);
 
 impl<T: Write> Write for SshChannelWriter<T> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let mut attempts = 0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             let mut channel = self.0.lock().map_err(|_| std::io::Error::other("Lock error"))?;
             match channel.write(buf) {
                 Ok(written) => return Ok(written),
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && attempts < 30 => {
-                    attempts += 1;
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && std::time::Instant::now() < deadline => {
                     drop(channel);
                     std::thread::sleep(std::time::Duration::from_millis(5));
                 }
@@ -169,7 +172,7 @@ impl BbsConnection {
         tab_id: String,
         address: &str,
         charset: BbsCharset,
-        app: AppHandle,
+        app: ConnectionEvents,
     ) -> Result<Self, String> {
         use futures_util::{SinkExt, StreamExt};
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -180,9 +183,13 @@ impl BbsConnection {
         let mut request = address
             .into_client_request()
             .map_err(|e| format!("WSS 位址錯誤: {}", e))?;
+        let origin = match request.uri().host() {
+            Some(host) if host.contains("ptt2.cc") => "https://term.ptt2.cc",
+            _ => "https://term.ptt.cc",
+        };
         request.headers_mut().insert(
             ORIGIN,
-            HeaderValue::from_static("https://term.ptt.cc"),
+            HeaderValue::from_static(origin),
         );
         request.headers_mut().insert(
             SEC_WEBSOCKET_PROTOCOL,
@@ -196,6 +203,7 @@ impl BbsConnection {
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<WssReady>();
         let alive = Arc::new(AtomicBool::new(true));
         let driver_alive = alive.clone();
+        let driver_attempt = app.attempt.clone();
 
         std::thread::spawn(move || {
             let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -210,7 +218,12 @@ impl BbsConnection {
             };
 
             runtime.block_on(async move {
-                let (socket, _) = match tokio_tungstenite::connect_async(request).await {
+                let handshake = tokio::select! {
+                    biased;
+                    _ = driver_attempt.cancelled() => return,
+                    result = tokio_tungstenite::connect_async(request) => result,
+                };
+                let (socket, _) = match handshake {
                     Ok(connection) => connection,
                     Err(error) => {
                         let _ = ready_tx.send(Err(format!("WSS 握手失敗: {}", error)));
@@ -227,6 +240,8 @@ impl BbsConnection {
 
                 loop {
                     tokio::select! {
+                        biased;
+                        _ = driver_attempt.cancelled() => break,
                         outgoing = out_rx.recv() => match outgoing {
                             Some(bytes) => {
                                 if sink.send(Message::Binary(bytes.into())).await.is_err() {
@@ -259,6 +274,7 @@ impl BbsConnection {
 
         let (out_tx, data_rx) = ready_rx.await
             .map_err(|_| "WSS 連線程序已結束".to_string())??;
+        app.attempt.ensure_current()?;
 
         struct WssWriter(tokio::sync::mpsc::UnboundedSender<Vec<u8>>);
         impl Write for WssWriter {
@@ -303,6 +319,8 @@ impl BbsConnection {
         });
 
         Ok(BbsConnection {
+            session: NEXT_CONNECTION_SESSION.fetch_add(1, Ordering::Relaxed),
+            attempt: Some(app.attempt.clone()),
             writer,
             alive,
             charset,
@@ -317,19 +335,20 @@ impl BbsConnection {
         address: &str,
         port: u16,
         charset: BbsCharset,
-        app: AppHandle,
+        app: ConnectionEvents,
     ) -> Result<Self, String> {
-        use std::net::ToSocketAddrs;
-        let socket_addr = format!("{}:{}", address, port)
-            .to_socket_addrs()
-            .map_err(|e| format!("DNS resolution failed: {}", e))?
-            .next()
-            .ok_or_else(|| "No addresses found".to_string())?;
-
-        let stream = std::net::TcpStream::connect_timeout(
-            &socket_addr,
-            std::time::Duration::from_secs(10),
-        ).map_err(|e| format!("Connection failed: {}", e))?;
+        let target = format!("{}:{}", address, port);
+        let attempt = app.attempt.clone();
+        let stream = tokio::task::spawn_blocking(move || -> Result<std::net::TcpStream, String> {
+            use std::net::ToSocketAddrs;
+            attempt.ensure_current()?;
+            let address = target.to_socket_addrs().map_err(|e| e.to_string())?.next().ok_or("No addresses found")?;
+            attempt.ensure_current()?;
+            let socket = std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_secs(10)).map_err(|e| e.to_string())?;
+            attempt.track_socket(&socket)?;
+            Ok(socket)
+        }).await.map_err(|e| e.to_string())??;
+        app.attempt.ensure_current()?;
 
         stream.set_nonblocking(false).ok();
         stream.set_nodelay(true).ok();
@@ -338,6 +357,7 @@ impl BbsConnection {
         let mut writer_stream = stream.try_clone()
             .map_err(|e| format!("Failed to clone stream: {}", e))?;
         writer_stream.set_nodelay(true).ok();
+        writer_stream.set_write_timeout(Some(std::time::Duration::from_secs(5))).ok();
         let reader_stream = stream;
 
         // Send initial Telnet terminal type negotiation: IAC WILL TTYPE, IAC WILL NAWS
@@ -351,6 +371,7 @@ impl BbsConnection {
 
         let writer: Box<dyn Write + Send> = Box::new(writer_stream);
         let writer = Arc::new(std::sync::Mutex::new(writer));
+        app.attempt.ensure_current()?;
         let alive = Arc::new(AtomicBool::new(true));
         let charset = Arc::new(RwLock::new(charset));
 
@@ -371,6 +392,8 @@ impl BbsConnection {
         let last_activity = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
 
         Ok(BbsConnection {
+            session: NEXT_CONNECTION_SESSION.fetch_add(1, Ordering::Relaxed),
+            attempt: Some(app.attempt.clone()),
             writer,
             alive,
             charset,
@@ -385,7 +408,7 @@ impl BbsConnection {
         address: &str,
         port: u16,
         charset: BbsCharset,
-        app: AppHandle,
+        app: ConnectionEvents,
     ) -> Result<Self, String> {
         let (user, host) = if let Some(idx) = address.find('@') {
             (&address[..idx], &address[idx + 1..])
@@ -398,12 +421,18 @@ impl BbsConnection {
         let target_port = port;
 
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let worker_attempt = app.attempt.clone();
 
         std::thread::spawn(move || {
             let res = (|| -> Result<(Arc<std::sync::Mutex<ssh2::Channel>>, Arc<std::sync::Mutex<ssh2::Session>>), String> {
                 let addr = format!("{}:{}", target_host, target_port);
-                let tcp = std::net::TcpStream::connect(&addr)
+                use std::net::ToSocketAddrs;
+                worker_attempt.ensure_current()?;
+                let address = addr.to_socket_addrs().map_err(|e| e.to_string())?.next().ok_or("No addresses found")?;
+                worker_attempt.ensure_current()?;
+                let tcp = std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_secs(10))
                     .map_err(|e| format!("無法連線到 {}: {}", addr, e))?;
+                worker_attempt.track_socket(&tcp)?;
                 tcp.set_nodelay(true).ok();
 
                 let mut sess = ssh2::Session::new()
@@ -468,6 +497,7 @@ impl BbsConnection {
         let (channel, _sess) = rx.await
             .map_err(|_| "SSH 連線被取消".to_string())??;
 
+        app.attempt.ensure_current()?;
         let alive = Arc::new(AtomicBool::new(true));
         let charset = Arc::new(RwLock::new(charset));
 
@@ -492,6 +522,8 @@ impl BbsConnection {
         let last_activity = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
 
         Ok(BbsConnection {
+            session: NEXT_CONNECTION_SESSION.fetch_add(1, Ordering::Relaxed),
+            attempt: Some(app.attempt.clone()),
             writer,
             alive,
             charset,
@@ -506,7 +538,7 @@ impl BbsConnection {
         mut reader: R,
         alive: Arc<AtomicBool>,
         charset: Arc<RwLock<BbsCharset>>,
-        app: AppHandle,
+        app: ConnectionEvents,
     ) {
         let mut buf = [0u8; 4096];
         let mut pending_iac = Vec::new();
@@ -584,6 +616,7 @@ impl BbsConnection {
                 }
             }
         }
+        app.attempt.cancel();
     }
 
     /// Read loop for pure Rust native SSH connections
@@ -592,7 +625,7 @@ impl BbsConnection {
         channel: Arc<std::sync::Mutex<ssh2::Channel>>,
         alive: Arc<AtomicBool>,
         charset: Arc<RwLock<BbsCharset>>,
-        app: AppHandle,
+        app: ConnectionEvents,
     ) {
         let mut buf = [0u8; 4096];
         let mut pending_charset = Vec::new();
@@ -674,6 +707,7 @@ impl BbsConnection {
                 }
             }
         }
+        app.attempt.cancel();
     }
 
     fn decode_terminal_stream(
@@ -984,71 +1018,94 @@ impl BbsConnection {
     }
 
     /// Send string data (UTF-8 / Big5 / GBK encoded)
+    pub fn session_token(&self) -> String { self.session.to_string() }
+
+    fn ensure_writable(&self) -> std::io::Result<()> {
+        if self.alive.load(Ordering::Relaxed) { Ok(()) }
+        else { Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "Connection retired")) }
+    }
+
     pub fn send(&self, data: &str) -> Result<(), std::io::Error> {
-        let mut writer = self.writer.lock().unwrap();
-        let cs = self.charset.read().map(|g| *g).unwrap_or(BbsCharset::Big5);
-        match cs {
-            BbsCharset::Utf8 => {
-                writer.write_all(data.as_bytes())?;
-            }
-            BbsCharset::Big5 => {
-                let mut encoded = Vec::with_capacity(data.len() * 2);
-                for ch in data.chars() {
-                    if ch.is_ascii() {
-                        encoded.push(ch as u8);
-                    } else if ch == '\u{00a0}' || ('\u{2000}'..='\u{200b}').contains(&ch) || ch == '\u{202f}' || ch == '\u{205f}' || ch == '\u{feff}' {
-                        // Normalize non-breaking and various Unicode spaces to standard ASCII space (0x20)
-                        encoded.push(b' ');
-                    } else if ch == '\u{3000}' {
-                        // Fullwidth ideographic space -> Big5 A140 (UAO encode handles this, but fallback explicitly)
-                        if let Some(bytes) = crate::uao::encode_uao_char(ch) {
+        self.ensure_writable()?;
+        let result = (|| {
+            let mut writer = self.writer.lock().map_err(|_| std::io::Error::other("Writer lock poisoned"))?;
+            self.ensure_writable()?;
+            let cs = self.charset.read().map(|g| *g).unwrap_or(BbsCharset::Big5);
+            match cs {
+                BbsCharset::Utf8 => {
+                    writer.write_all(data.as_bytes())?;
+                }
+                BbsCharset::Big5 => {
+                    let mut encoded = Vec::with_capacity(data.len() * 2);
+                    for ch in data.chars() {
+                        if ch.is_ascii() {
+                            encoded.push(ch as u8);
+                        } else if ch == '\u{00a0}' || ('\u{2000}'..='\u{200b}').contains(&ch) || ch == '\u{202f}' || ch == '\u{205f}' || ch == '\u{feff}' {
+                            // Normalize non-breaking and various Unicode spaces to standard ASCII space (0x20)
+                            encoded.push(b' ');
+                        } else if ch == '\u{3000}' {
+                            // Fullwidth ideographic space -> Big5 A140 (UAO encode handles this, but fallback explicitly)
+                            if let Some(bytes) = crate::uao::encode_uao_char(ch) {
+                                encoded.extend_from_slice(&bytes);
+                            } else {
+                                encoded.extend_from_slice(&[0xA1, 0x40]);
+                            }
+                        } else if let Some(bytes) = crate::uao::encode_uao_char(ch) {
                             encoded.extend_from_slice(&bytes);
                         } else {
-                            encoded.extend_from_slice(&[0xA1, 0x40]);
-                        }
-                    } else if let Some(bytes) = crate::uao::encode_uao_char(ch) {
-                        encoded.extend_from_slice(&bytes);
-                    } else {
-                        let ch_str = ch.to_string();
-                        let (res, _, had_errors) = BIG5.encode(&ch_str);
-                        if had_errors {
-                            // Do NOT emit &#12345; HTML NCR entities into BBS terminal! Replace with '?' (0x3F)
-                            encoded.push(b'?');
-                        } else {
-                            encoded.extend_from_slice(&res);
+                            let ch_str = ch.to_string();
+                            let (res, _, had_errors) = BIG5.encode(&ch_str);
+                            if had_errors {
+                                // Do NOT emit &#12345; HTML NCR entities into BBS terminal! Replace with '?' (0x3F)
+                                encoded.push(b'?');
+                            } else {
+                                encoded.extend_from_slice(&res);
+                            }
                         }
                     }
+                    writer.write_all(&encoded)?;
                 }
-                writer.write_all(&encoded)?;
-            }
-            BbsCharset::Gbk => {
-                let mut encoded = Vec::with_capacity(data.len() * 2);
-                for ch in data.chars() {
-                    if ch.is_ascii() {
-                        encoded.push(ch as u8);
-                    } else if ch == '\u{00a0}' || ('\u{2000}'..='\u{200b}').contains(&ch) || ch == '\u{202f}' || ch == '\u{205f}' || ch == '\u{feff}' {
-                        encoded.push(b' ');
-                    } else {
-                        let ch_str = ch.to_string();
-                        let (res, _, had_errors) = GBK.encode(&ch_str);
-                        if had_errors {
-                            encoded.push(b'?');
+                BbsCharset::Gbk => {
+                    let mut encoded = Vec::with_capacity(data.len() * 2);
+                    for ch in data.chars() {
+                        if ch.is_ascii() {
+                            encoded.push(ch as u8);
+                        } else if ch == '\u{00a0}' || ('\u{2000}'..='\u{200b}').contains(&ch) || ch == '\u{202f}' || ch == '\u{205f}' || ch == '\u{feff}' {
+                            encoded.push(b' ');
                         } else {
-                            encoded.extend_from_slice(&res);
+                            let ch_str = ch.to_string();
+                            let (res, _, had_errors) = GBK.encode(&ch_str);
+                            if had_errors {
+                                encoded.push(b'?');
+                            } else {
+                                encoded.extend_from_slice(&res);
+                            }
                         }
                     }
+                    writer.write_all(&encoded)?;
                 }
-                writer.write_all(&encoded)?;
             }
-        }
-        writer.flush()
+            writer.flush()
+        })();
+        // Any failed write may have emitted a partial multibyte/control sequence.
+        // Retire the stream; no subsequent command may continue on damaged framing.
+        if result.is_err() { self.alive.store(false, Ordering::Relaxed); }
+        result
     }
 
     /// Send raw bytes
     pub fn send_raw(&self, data: &[u8]) -> Result<(), std::io::Error> {
-        let mut writer = self.writer.lock().unwrap();
-        writer.write_all(data)?;
-        writer.flush()
+        self.ensure_writable()?;
+        let result = (|| {
+            let mut writer = self.writer.lock().map_err(|_| std::io::Error::other("Writer lock poisoned"))?;
+            self.ensure_writable()?;
+            writer.write_all(data)?;
+            writer.flush()
+        })();
+        // Any failed write may have emitted a partial multibyte/control sequence.
+        // Retire the stream; no subsequent command may continue on damaged framing.
+        if result.is_err() { self.alive.store(false, Ordering::Relaxed); }
+        result
     }
 
     /// Record user keyboard/mouse activity to reset idle timer
@@ -1086,6 +1143,7 @@ impl BbsConnection {
 
     /// Disconnect
     pub fn disconnect(self) {
+        if let Some(attempt) = &self.attempt { attempt.cancel(); }
         self.alive.store(false, Ordering::Relaxed);
     }
 }
@@ -1124,6 +1182,47 @@ mod tests {
         let channel = channel.lock().unwrap();
         assert_eq!(channel.written, b"key");
         assert!(!channel.flushed);
+    }
+
+    #[test]
+    fn ssh_writer_survives_more_than_thirty_would_block_retries() {
+        struct SlowChannel { attempts: usize }
+        impl Write for SlowChannel {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.attempts += 1;
+                if self.attempts <= 35 { return Err(std::io::ErrorKind::WouldBlock.into()); }
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let mut writer = SshChannelWriter(Arc::new(std::sync::Mutex::new(SlowChannel { attempts: 0 })));
+        writer.write_all(&[0xa4, 0x40]).unwrap();
+    }
+
+    #[test]
+    fn partial_write_failure_retires_connection_before_any_following_byte() {
+        struct PartialFailure { wire: Arc<std::sync::Mutex<Vec<u8>>>, calls: usize }
+        impl Write for PartialFailure {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.calls += 1;
+                if self.calls > 1 { return Err(std::io::ErrorKind::BrokenPipe.into()); }
+                self.wire.lock().unwrap().push(bytes[0]);
+                Ok(1)
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let conn = BbsConnection {
+            session: NEXT_CONNECTION_SESSION.fetch_add(1, Ordering::Relaxed),
+            attempt: None,
+            writer: Arc::new(std::sync::Mutex::new(Box::new(PartialFailure { wire: wire.clone(), calls: 0 }))),
+            alive: Arc::new(AtomicBool::new(true)), charset: Arc::new(RwLock::new(BbsCharset::Big5)),
+            is_ssh: true, last_activity: Arc::new(std::sync::Mutex::new(std::time::Instant::now())),
+        };
+        assert!(conn.send_raw(&[0xa4, 0x40]).is_err());
+        assert!(!conn.alive.load(Ordering::Relaxed));
+        assert!(conn.send("A").is_err());
+        assert_eq!(*wire.lock().unwrap(), vec![0xa4]);
     }
 
     #[test]

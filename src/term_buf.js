@@ -1,4 +1,6 @@
 // Complete BBS Terminal Buffer & Grid State Machine
+import { repairBrokenUrl, bbsColumns } from './url_repair.js';
+import { extractAidsFromLine, detectCurrentBoard } from './aid_helper.js';
 
 // Standard 16 ANSI colors
 const BASE_16_COLORS = [
@@ -867,14 +869,11 @@ export class TermBuf {
     for (let c = 0; c < this.cols; c++) {
       const cell = this.lines[row][c];
       if (!cell) continue;
-      if (cell.isLeadByte) {
-        lineStr += cell.ch;
-        colMap.push({ start: c, end: c + 1 });
-      } else if (cell.isTrailByte) {
-        continue;
-      } else {
-        lineStr += cell.ch || ' ';
-        colMap.push({ start: c, end: c });
+      if (cell.isTrailByte) continue;
+      const ch = cell.ch || ' ';
+      lineStr += ch;
+      for (let unit = 0; unit < ch.length; unit++) {
+        colMap.push({ start: c, end: cell.isLeadByte ? c + 1 : c });
       }
     }
 
@@ -899,7 +898,58 @@ export class TermBuf {
         row,
       });
     }
+
+    // Auto-repair broken URLs spanning across lines in BBS (80-col wrap):
+    // 1. If this row ends with a broken URL that continues onto row + 1
+    if (urls.length > 0 && row + 1 < this.rows) {
+      const lastUrl = urls[urls.length - 1];
+      const nextLineStr = this.getRowText(this.lines[row + 1]);
+      const pushAuthor = this.extractPushAuthor(lineStr);
+      const repaired = repairBrokenUrl(lineStr, nextLineStr, pushAuthor, { columns: this.cols });
+      if (repaired && repaired.urlPart1 === lastUrl.raw) {
+        lastUrl.url = repaired.repairedUrl;
+        lastUrl.repaired = true;
+        lastUrl.repairRows = [row, row + 1];
+        lastUrl.continuation = {
+          row: row + 1,
+          startCol: bbsColumns(nextLineStr.slice(0, repaired.contStartCol)),
+          endCol: bbsColumns(nextLineStr.slice(0, repaired.contEndCol + 1)) - 1,
+          token: repaired.contToken,
+        };
+      }
+    }
+
+    // 2. If this row contains the continuation token from row - 1
+    if (row > 0) {
+      const prevLineStr = this.getRowText(this.lines[row - 1]);
+      const prevPushAuthor = this.extractPushAuthor(prevLineStr);
+      const repaired = repairBrokenUrl(prevLineStr, lineStr, prevPushAuthor, { columns: this.cols });
+      if (repaired && repaired.contToken) {
+        const contStartCol = colMap[repaired.contStartCol]?.start ?? repaired.contStartCol;
+        const contEndCol = colMap[repaired.contEndCol]?.end ?? (contStartCol + repaired.contToken.length - 1);
+        const alreadyMatched = urls.some((u) => u.startCol <= contStartCol && u.endCol >= contEndCol);
+        if (!alreadyMatched) {
+          urls.push({
+            raw: repaired.contToken,
+            url: repaired.repairedUrl,
+            startCol: contStartCol,
+            endCol: contEndCol,
+            row,
+            isContinuation: true,
+            originRow: row - 1,
+            repairRows: [row - 1, row],
+          });
+        }
+      }
+    }
+
     return urls;
+  }
+
+  extractPushAuthor(lineStr) {
+    if (!lineStr) return null;
+    const match = lineStr.match(/^[推噓→]\s+([a-zA-Z0-9_-]+)\s*[:：]/);
+    return match ? match[1] : null;
   }
 
   /**
@@ -910,6 +960,61 @@ export class TermBuf {
     for (const u of urls) {
       if (col >= u.startCol && col <= u.endCol) {
         return u;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Find all Article IDs (AIDs) on a specific row
+   */
+  getAidsInRow(row) {
+    if (row < 0 || row >= this.rows) return [];
+    let lineStr = '';
+    const colMap = [];
+
+    for (let c = 0; c < this.cols; c++) {
+      const cell = this.lines[row][c];
+      if (!cell) continue;
+      if (cell.isTrailByte) continue;
+      const ch = cell.ch || ' ';
+      lineStr += ch;
+      for (let unit = 0; unit < ch.length; unit++) {
+        colMap.push({ start: c, end: cell.isLeadByte ? c + 1 : c });
+      }
+    }
+
+    const currentBoard = detectCurrentBoard(this);
+    const rawAids = extractAidsFromLine(lineStr, currentBoard);
+    const aids = [];
+
+    for (const item of rawAids) {
+      const startCol = colMap[item.startCol]?.start ?? item.startCol;
+      const endCol = colMap[item.endCol]?.end ?? item.endCol;
+      aids.push({
+        type: 'aid',
+        aid: item.aid,
+        cleanAid: item.cleanAid,
+        board: item.board,
+        url: item.url,
+        raw: item.raw,
+        startCol,
+        endCol,
+        row,
+      });
+    }
+
+    return aids;
+  }
+
+  /**
+   * Find AID at a specific (col, row) coordinate on the screen
+   */
+  findAidAt(col, row) {
+    const aids = this.getAidsInRow(row);
+    for (const a of aids) {
+      if (col >= a.startCol && col <= a.endCol) {
+        return a;
       }
     }
     return null;

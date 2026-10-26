@@ -1,12 +1,12 @@
 {
   "name": "waterball",
   "private": true,
-  "version": "0.1.8",
+  "version": "0.1.9",
   "type": "module",
   "scripts": {
     "test": "node --test test/*.test.js",
     "dev": "vite --host 0.0.0.0 --port 1420 --strictPort",
-    "build": "vite build && node scripts/check-release-bundle.mjs",
+    "build": "vite build && node scripts/check-release-bundle.mjs && node scripts/check-public-desktop.mjs",
     "tauri": "tauri"
   },
   "devDependencies": {

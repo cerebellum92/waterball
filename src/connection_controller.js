@@ -1,9 +1,9 @@
 // Connection & Send Queue Controller for Waterball BBS
 import { terminalDiagnostics } from './terminal_diagnostics.js';
+import { isTauri, getListen, safeInvoke } from './platform.js';
 
+let nativeAttemptCounter = 0;
 const isDevelopment = import.meta.env?.DEV ?? false;
-const { invoke } = window.__TAURI__.core;
-const { listen } = window.__TAURI__.event;
 const isHorizontalNavigation = (data) => data === '\x1b[C' || data === '\x1b[D';
 const isVerticalNavigation = (data) => data === '\x1bOA' || data === '\x1bOB' || data === '\x1b[A' || data === '\x1b[B';
 const isPageNavigation = (data) => data === '\x1b[5~' || data === '\x1b[6~';
@@ -11,15 +11,23 @@ const isScreenNavigation = (data) => isHorizontalNavigation(data) || isVerticalN
 
 export function parseAddress(input) {
   input = input.trim();
+  if (input.startsWith('ws.ptt.cc') || input.startsWith('ws.ptt2.cc')) {
+    input = `wss://${input}`;
+  }
   const scheme = input.match(/^([a-z][a-z0-9+.-]*):\/\//i)?.[1]?.toLowerCase() || '';
-  if (scheme === 'wss') {
+  if (scheme === 'wss' || scheme === 'ws') {
     const url = new URL(input);
+    if (url.username || url.password || url.hash) throw new Error('WebSocket 網址不能包含帳密或 fragment');
+    let pathname = url.pathname;
+    if ((url.hostname === 'ws.ptt.cc' || url.hostname === 'ws.ptt2.cc') && (pathname === '' || pathname === '/')) {
+      pathname = '/bbs';
+    }
     return {
       host: url.hostname,
-      port: Number(url.port || 443),
+      port: Number(url.port || (scheme === 'wss' ? 443 : 80)),
       userPrefix: '',
-      transport: 'wss',
-      endpoint: `${url.origin}${url.pathname}${url.search}`,
+      transport: scheme,
+      endpoint: `${url.origin}${pathname}${url.search}`,
     };
   }
   input = input.replace(/^(telnet|ssh|bbs):\/\//, '');
@@ -73,6 +81,8 @@ export class ConnectionController {
 
     this.sendQueue = [];
     this.isSending = false;
+    this.connectionAttempts = new Map();
+    this.nativeAttempts = new Map();
     this.heldScreenNavigationKeys = new Set();
     this.notificationScrapeTimers = new Map();
 
@@ -80,8 +90,9 @@ export class ConnectionController {
     if (this.tabManager) {
       this.tabManager.onBell = (tab) => {
         if (tab) {
-          this.checkWaterballImmediate(tab.id);
-          this.notificationManager?.playChime?.();
+          // Classification runs after feedData has parsed the complete delivered chunk.
+          // An unclassified Bell must never bypass notification filtering.
+          this.scheduleNotificationScrape(tab.id);
         }
       };
     }
@@ -131,17 +142,25 @@ export class ConnectionController {
         activeTab.encoding = cs;
         activeTab.parser.resetByteDecoder();
         if (activeTab.isConnected) {
-          invoke('set_charset', { tabId: activeTab.id, charset: cs }).catch((err) => {
-            console.error('Failed to change charset:', err);
-          });
+          safeInvoke('set_charset', { tabId: activeTab.id, charset: cs }).catch(console.error);
         }
       });
     }
   }
 
+  acceptNativeEvent(payload) {
+    // Untagged events are retained for legacy test fixtures. All native production
+    // events now carry an attempt_id, which must match the active request.
+    return !payload.attempt_id || this.nativeAttempts.get(payload.tab_id) === payload.attempt_id;
+  }
+
   initTauriListeners() {
+    if (!isTauri()) return;
+    const listen = getListen();
+    if (typeof listen !== 'function') return;
     if (isDevelopment) {
       listen('terminal-raw-read', (event) => {
+        if (!this.acceptNativeEvent(event.payload)) return;
         terminalDiagnostics.recordRawRead(event.payload);
       });
     }
@@ -149,6 +168,7 @@ export class ConnectionController {
     // Listen for backend terminal data per tab
     listen('terminal-data', (event) => {
       try {
+        if (!this.acceptNativeEvent(event.payload)) return;
         const { tab_id, data, raw_big5 } = event.payload;
         if (tab_id && data) {
           const receivedAtMs = isDevelopment ? Date.now() : null;
@@ -219,12 +239,13 @@ export class ConnectionController {
     // Listen for backend connection status per tab
     listen('connection-status', (event) => {
       try {
+        if (!this.acceptNativeEvent(event.payload)) return;
         const { tab_id, status } = event.payload;
         if (tab_id && status) {
           this.tabManager.updateTabStatus(tab_id, status);
           if (status === 'disconnected') {
             this.autoLoginManager.stopSession(tab_id);
-            this.sendQueue = this.sendQueue.filter((item) => item.tabId !== tab_id);
+            this.cancelQueuedSends(tab_id, new Error('連線已中斷'));
             if (this.notificationScrapeTimers?.has(tab_id)) {
               clearTimeout(this.notificationScrapeTimers.get(tab_id));
               this.notificationScrapeTimers.delete(tab_id);
@@ -461,40 +482,106 @@ export class ConnectionController {
     this.notificationScrapeTimers.set(tabId, timer);
   }
 
-  async processSendQueue() {
-    if (this.isSending || this.sendQueue.length === 0) return;
-    this.isSending = true;
+  processSendQueue() {
+    this.sendingTabs ||= new Set();
+    for (const tabId of new Set(this.sendQueue.map(item => item.tabId))) {
+      if (this.sendingTabs.has(tabId)) continue;
+      this.sendingTabs.add(tabId);
+      this.isSending = true;
+      void this.drainTabSendQueue(tabId);
+    }
+  }
 
-    while (this.sendQueue.length > 0) {
-      const item = this.sendQueue.shift();
-      if (!item) continue;
+  async drainTabSendQueue(tabId) {
+    try {
+      while (true) {
+        const index = this.sendQueue.findIndex(item => item.tabId === tabId);
+        if (index < 0) break;
+        const [item] = this.sendQueue.splice(index, 1);
 
-      const currentTabId = item.tabId;
+        if (item.signal?.aborted) {
+          item.reject?.(new Error('貼上已取消'));
+          continue;
+        }
+        const currentTabId = item.tabId;
 
-      if (item.data) {
-        try {
-          if (!this.tabManager.getTabById(currentTabId)?.isConnected) continue;
+        if (item.data) {
+          try {
+            if (!this.tabManager.getTabById(currentTabId)?.isConnected) throw new Error('連線已中斷');
 
-          if (isDevelopment) {
-            terminalDiagnostics.recordInput({
-              tabId: currentTabId,
-              data: item.data,
-              sourceKey: item.sourceKey,
-              isRepeat: item.isRepeat,
-            });
+            if (isDevelopment) {
+              terminalDiagnostics.recordInput({
+                tabId: currentTabId,
+                data: item.data,
+                sourceKey: item.sourceKey,
+                isRepeat: item.isRepeat,
+              });
+            }
+            await safeInvoke('send_input', { tabId: currentTabId, data: item.data, ...(item.expectedSession ? { expectedSession: item.expectedSession } : {}) });
+            item.resolve?.();
+          } catch (err) {
+            const error = new Error(String(err?.message || err));
+            item.reject?.(error);
+            this.cancelQueuedSends(currentTabId, error, error.message.includes('STALE_CONNECTION') ? item.expectedSession : null);
+            if (!error.message.includes('STALE_CONNECTION')) {
+              this.tabManager.updateTabStatus?.(currentTabId, 'disconnected');
+              this.onShowToast('傳送失敗，已停止此連線的待送資料；請重新連線');
+            }
+            console.error('Send error:', err);
           }
-          await invoke('send_input', { tabId: currentTabId, data: item.data });
-        } catch (err) {
-          console.error('Send error:', err);
         }
       }
+    } finally {
+      this.sendingTabs.delete(tabId);
+      this.isSending = this.sendingTabs.size > 0;
     }
+  }
 
-    this.isSending = false;
+  async getConnectionSession(tabId) {
+    if (!this.tabManager.getTabById(tabId)?.isConnected) throw new Error('連線已中斷');
+    const session = await safeInvoke('connection_session', { tabId });
+    if (typeof session !== 'string' || !session) throw new Error('無法確認連線身分');
+    return session;
+  }
+
+  cancelQueuedSends(tabId, error, session = null) {
+    this.sendQueue = this.sendQueue.filter(item => {
+      if (item.tabId !== tabId || (session && item.expectedSession !== session)) return true;
+      item.reject?.(error);
+      return false;
+    });
+  }
+
+  acquireInputLease(tabId) {
+    this.inputLeases ||= new Map();
+    if (!this.tabManager.getTabById(tabId)?.isConnected || this.inputLeases.has(tabId) ||
+        this.sendingTabs?.has(tabId) || this.sendQueue.some(item => item.tabId === tabId)) return null;
+    const token = Symbol('terminal-input-owner');
+    this.inputLeases.set(tabId, token);
+    return token;
+  }
+
+  releaseInputLease(tabId, token) {
+    if (token && this.inputLeases?.get(tabId) === token) this.inputLeases.delete(tabId);
+  }
+
+  acceptsInputLease(tabId, token = null) {
+    return (this.inputLeases?.get(tabId) || null) === token;
+  }
+
+  sendDataToTabAndWait(tabId, data, expectedSession, inputLease = null, signal = null) {
+    if (!this.acceptsInputLease(tabId, inputLease)) return Promise.reject(new Error('終端機正由其他發送流程使用'));
+    if (!expectedSession) return Promise.reject(new Error('缺少連線身分'));
+    if (!tabId || typeof data !== 'string' || !data) return Promise.reject(new Error('待送資料不可為空'));
+    return new Promise((resolve, reject) => {
+      const cleanData = data.replace(/\u00a0/g, ' ').replace(/[\u2000-\u200b\u202f\u205f\ufeff]/g, ' ');
+      this.sendQueue.push({ tabId, data: cleanData, expectedSession, signal, resolve, reject });
+      this.processSendQueue();
+    });
   }
 
   sendDataToTab(tabId, data, { sourceKey = null, isRepeat = false } = {}) {
-    if (!tabId || !data) return;
+    if (!tabId || !data || !this.acceptsInputLease(tabId)) return false;
     const cleanData = data
       .replace(/\u00a0/g, ' ')
       .replace(/[\u2000-\u200b\u202f\u205f\ufeff]/g, ' ');
@@ -544,46 +631,70 @@ export class ConnectionController {
 
     const { addressInput, encodingSelect } = this.elements;
     const raw = addressInput ? addressInput.value.trim() : '';
-    if (!raw) return;
-
-    activeTab.address = raw;
-    activeTab.encoding = encodingSelect ? encodingSelect.value : 'big5';
-    activeTab.parser.resetByteDecoder();
-
-    const { host, port, userPrefix, transport, endpoint } = parseAddress(raw);
+    const charset = encodingSelect ? encodingSelect.value : 'big5';
+    let parsed;
+    try {
+      if (!raw) throw new Error('請輸入 BBS 站台網址');
+      parsed = parseAddress(raw);
+      if (!parsed.host) throw new Error('站台網址缺少主機名稱');
+      if (!isTauri()) throw new Error('此桌面版需要 Tauri 原生連線');
+      if (isTauri() && parsed.transport === 'ws') throw new Error('桌面端 WebSocket 請使用 wss:// 安全連線');
+    } catch (error) {
+      this.onShowToast(`連線失敗：${error.message || error}`);
+      // Validation must not retire an existing socket or change its address/session.
+      return;
+    }
+    const { host, port, userPrefix, transport, endpoint } = parsed;
     const targetAddress = userPrefix ? `${userPrefix}@${host}` : endpoint;
-    const charset = activeTab.encoding;
+    const isWs = transport === 'wss' || transport === 'ws';
+    const attempt = Symbol('connection');
+    this.connectionAttempts.set(activeTab.id, attempt);
+    const isCurrent = () => this.connectionAttempts.get(activeTab.id) === attempt && Boolean(this.tabManager.getTabById(activeTab.id));
+    const nativeAttempt = this.nativeAttempts.get(activeTab.id);
+    this.nativeAttempts.delete(activeTab.id);
+    if (nativeAttempt) await safeInvoke('disconnect', { tabId: activeTab.id, attemptId: nativeAttempt }).catch(console.error);
+    if (!isCurrent()) return;
+    this.cancelQueuedSends(activeTab.id, new Error('連線已替換'));
+    this.autoLoginManager.stopSession(activeTab.id);
+    if (this.notificationScrapeTimers.has(activeTab.id)) {
+      clearTimeout(this.notificationScrapeTimers.get(activeTab.id));
+      this.notificationScrapeTimers.delete(activeTab.id);
+    }
+    activeTab.address = raw;
+    activeTab.encoding = charset;
+    activeTab.parser?.resetByteDecoder?.();
 
-    activeTab.buf.clear(2);
-    const destination = transport === 'wss' ? targetAddress : `${targetAddress}:${port}`;
-    activeTab.parser.feed(`\x1b[1;33m正在透過 ${transport.toUpperCase()} 連線到 ${destination} (${charset.toUpperCase()}) ...\r\n\x1b[0m`);
+    activeTab.buf?.clear?.(2);
+    const destination = isWs ? targetAddress : `${targetAddress}:${port}`;
+    activeTab.parser?.feed?.(`\x1b[1;33m正在透過 ${transport.toUpperCase()} 連線到 ${destination} (${charset.toUpperCase()}) ...\r\n\x1b[0m`);
     this.tabManager.updateTabStatus(activeTab.id, 'connecting');
 
     // 1. Resolve matching bookmark for auto-login
+    const bookmarkAddress = bm => { try { return parseAddress(bm.address); } catch { return {}; } };
     let matchedBm = targetBm;
     if (!matchedBm || !matchedBm.username) {
-      const credBookmarks = this.settingsManager.bookmarks.filter((b) => Boolean(b.username));
+      const credBookmarks = (this.settingsManager?.bookmarks || []).filter((b) => Boolean(b.username));
       matchedBm = credBookmarks.find((b) => b.address === raw);
       if (!matchedBm) {
         matchedBm = credBookmarks.find((b) => b.address === targetAddress);
       }
       if (!matchedBm && host) {
         matchedBm = credBookmarks.find((b) => {
-          const bInfo = parseAddress(b.address);
+          const bInfo = bookmarkAddress(b);
           return bInfo.host === host && (!port || bInfo.port === port);
         });
       }
       if (!matchedBm && host) {
         matchedBm = credBookmarks.find((b) => {
-          const bInfo = parseAddress(b.address);
+          const bInfo = bookmarkAddress(b);
           return bInfo.host === host;
         });
       }
-      if (!matchedBm && transport === 'wss' && host === 'ws.ptt.cc') {
-        matchedBm = credBookmarks.find((b) => parseAddress(b.address).host === 'ptt.cc');
+      if (!matchedBm && isWs && host === 'ws.ptt.cc') {
+        matchedBm = credBookmarks.find((b) => bookmarkAddress(b).host === 'ptt.cc');
       }
       if (!matchedBm && host) {
-        matchedBm = credBookmarks.find((b) => b.address.includes(host) || host.includes(b.address));
+        matchedBm = credBookmarks.find((b) => typeof b.address === 'string' && b.address.length > 0 && (b.address.includes(host) || host.includes(b.address)));
       }
     }
 
@@ -591,6 +702,7 @@ export class ConnectionController {
     if (matchedBm && matchedBm.username) {
       try {
         const creds = await this.settingsManager.getDecryptedCredentials(matchedBm);
+        if (!isCurrent()) return;
         if (creds && creds.username) {
           this.autoLoginManager.startSession(
             activeTab.id,
@@ -603,36 +715,50 @@ export class ConnectionController {
       }
     }
 
+    if (!isCurrent()) return;
+    const attemptId = `native-${Date.now()}-${++nativeAttemptCounter}`;
+    this.nativeAttempts.set(activeTab.id, attemptId);
     try {
-      await invoke('connect', { tabId: activeTab.id, address: targetAddress, port, charset, transport });
+      await safeInvoke('connect', { tabId: activeTab.id, address: targetAddress, port, charset, transport, attemptId });
+      if (!isCurrent()) return;
       this.tabManager.updateTabStatus(activeTab.id, 'connected');
       this.onFocusTerminal(true);
 
       if (activeTab.buf) {
         const screen = activeTab.buf.getText(0, 0, activeTab.buf.cols - 1, activeTab.buf.rows - 1);
-        this.autoLoginManager.checkScreenBuffer(activeTab.id, screen);
+        this.autoLoginManager?.checkScreenBuffer?.(activeTab.id, screen);
       }
     } catch (err) {
-      this.autoLoginManager.stopSession(activeTab.id);
-      activeTab.parser.feed(`\x1b[1;31m連線失敗: ${err}\r\n\x1b[0m`);
+      if (!isCurrent()) return;
+      // Keep the failed native attempt addressable for close/replacement cleanup.
+      this.autoLoginManager?.stopSession?.(activeTab.id);
+      activeTab.parser?.feed?.(`\x1b[1;31m連線失敗: ${err}\r\n\x1b[0m`);
       this.tabManager.updateTabStatus(activeTab.id, 'disconnected');
+    }
+  }
+
+  async disconnectTab(tabId) {
+    // Invalidate pending credential lookup and handshake continuations first.
+    this.connectionAttempts.delete(tabId);
+    const nativeAttempt = this.nativeAttempts.get(tabId);
+    this.nativeAttempts.delete(tabId);
+    this.autoLoginManager.stopSession(tabId);
+    this.cancelQueuedSends(tabId, new Error('連線已中斷'));
+    if (this.notificationScrapeTimers?.has(tabId)) {
+      clearTimeout(this.notificationScrapeTimers.get(tabId));
+      this.notificationScrapeTimers.delete(tabId);
+    }
+    this.tabManager.updateTabStatus(tabId, 'disconnected');
+    if (isTauri() && nativeAttempt) {
+      try { await safeInvoke('disconnect', { tabId, attemptId: nativeAttempt }); }
+      catch (err) { console.error('Disconnect error:', err); }
     }
   }
 
   async disconnect() {
     const activeTab = this.tabManager.getActiveTab();
     if (!activeTab) return;
-
-    try {
-      await invoke('disconnect', { tabId: activeTab.id });
-    } catch (err) {
-      console.error('Disconnect error:', err);
-    }
-    if (this.notificationScrapeTimers?.has(activeTab.id)) {
-      clearTimeout(this.notificationScrapeTimers.get(activeTab.id));
-      this.notificationScrapeTimers.delete(activeTab.id);
-    }
-    this.tabManager.updateTabStatus(activeTab.id, 'disconnected');
+    await this.disconnectTab(activeTab.id);
   }
 
   updateToolbarConnectionState(state) {

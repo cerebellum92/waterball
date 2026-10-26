@@ -1,5 +1,5 @@
 import { readBoundedBody } from '../shared/worker-http.js';
-import { checkedCloudConfig, rulesSignature } from './cloud_restore.js';
+import { checkedCloudConfig, checkedSelfHostedConfig, rulesSignature } from './cloud_restore.js';
 
 export function normalizePushServiceUrl(raw) {
   let url;
@@ -29,7 +29,7 @@ export class CloudPushClient {
       const entry = { serviceId: m.cloudSyncConfig.serviceId, bindingVersion: m.cloudSyncConfig.bindingVersion, options, payload, action, seq: m.cloudSyncConfig.dirtySeq || 0, service: options.workerUrl || m.cloudSyncConfig.workerUrl, resolvers: [resolve] };
       const tail = this.queue.at(-1);
       const autoMerge = options.operation === 'merge' && !options.userInitiated && tail?.options.operation === 'merge' && !tail.options.userInitiated;
-      if ((autoMerge || ((m.customCloudSync || m.cloudSyncConfig.serverMode === 'selfHosted') && !options.operation)) && !action && !options.testOnly && !options.sendTestPush && tail && !tail.action && !tail.options.testOnly && !tail.options.sendTestPush && tail.service === entry.service) { entry.resolvers.unshift(...tail.resolvers); this.queue[this.queue.length - 1] = entry; }
+      if ((autoMerge || ((m.customCloudSync || m.cloudSyncConfig.serverMode === 'selfHosted') && !options.operation && !tail?.options.operation)) && !action && !options.testOnly && !options.sendTestPush && tail && !tail.action && !tail.options.testOnly && !tail.options.sendTestPush && tail.service === entry.service) { entry.resolvers.unshift(...tail.resolvers); this.queue[this.queue.length - 1] = entry; }
       else this.queue.push(entry);
       this.drain();
     });
@@ -43,7 +43,13 @@ export class CloudPushClient {
         let result;
         try { result = await this.perform(entry); }
         catch (e) { result = { success: false, message: `無法同步：${e.message}` }; }
-        if (result?.success !== true && entry.service === this.manager.cloudSyncConfig.workerUrl) this.manager.saveCloudSyncConfig({ ...this.manager.cloudSyncConfig, lastError: result?.message || '同步失敗', dirty: true });
+        if (result?.success !== true && entry.service === this.manager.cloudSyncConfig.workerUrl) {
+          const c = this.manager.cloudSyncConfig;
+          const readOnly = entry.options.operation === 'read';
+          this.manager.saveCloudSyncConfig({ ...c, lastError: result?.message || '同步失敗',
+            dirty: readOnly ? c.dirty : true,
+            ...(readOnly && c.serverMode === 'selfHosted' ? { needsCloudRead: true } : {}) });
+        }
         for (const resolve of entry.resolvers) resolve(result);
       }
     } finally { this.running = false; }
@@ -105,6 +111,7 @@ export class CloudPushClient {
     if (normalizePushServiceUrl(m.cloudSyncConfig.workerUrl) !== base) return { success: false, message: '服務已切換，已取消舊操作' };
     if (!remote.success) return this.failed(remote);
     if (remote.config?.mode === 'selfHosted' || remote.mode === 'selfHosted') {
+      checkedSelfHostedConfig(remote.config);
       m.saveCloudSyncConfig({ ...m.cloudSyncConfig, serverMode: 'selfHosted' });
       return this.performLegacy(entry);
     }
@@ -219,6 +226,9 @@ export class CloudPushClient {
     if (entry.options.pairingCode?.startsWith('WB2-') && entry.options.pairingCode !== m.cloudSyncConfig.pairedCode) token = entry.options.pairingCode;
     if (!token) return { success: false, message: '請填寫同步密鑰或 Telegram 綁定碼' };
     if (m.retiredCredentials?.has(token) && m.retiredCredentials.get(token) !== base) return { success: false, message: '舊服務憑證不能送到新服務，請填入新的配對碼或自架密鑰' };
+    if (!entry.options.userInitiated && !entry.action && (m.cloudSyncConfig.restorePending || m.cloudSyncConfig.needsCloudRead) && entry.options.operation !== 'read') {
+      return { success: false, message: '請先讀取並確認雲端規則，本機草稿保留' };
+    }
     const payload = { ...entry.payload, requestId: requestId(), baseRevision: m.cloudSyncConfig.configRevision || 0, lifecycleVersion: m.cloudSyncConfig.lifecycleVersion || 0, ...(entry.action ? { action: entry.action } : {}) };
     if (m.customCloudSync) {
       const result = await m.customCloudSync(entry.options, payload);
@@ -236,6 +246,21 @@ export class CloudPushClient {
       if (!m.storage || m.cloudStorageError) throw new Error('無法持久保存裝置憑證，尚未啟用雲端；請檢查本機儲存空間');
     }
     if (entry.options.testOnly) return this.request(base, '/notification-test', 'POST', token, {});
+    if (entry.options.operation === 'read') {
+      const beforeRead = m.cloudSyncConfig;
+      const remote = await this.request(base, '/sync', 'GET', token);
+      const current = m.cloudSyncConfig;
+      if (normalizePushServiceUrl(current.workerUrl) !== base || current.serverMode !== 'selfHosted' ||
+          current.syncSecret !== beforeRead.syncSecret || current.deviceToken !== beforeRead.deviceToken || current.credentialOrigin !== beforeRead.credentialOrigin) {
+        return { success: false, message: '服務或憑證已變更，已取消舊回應' };
+      }
+      if (remote.success !== true) {
+        if (remote.httpStatus === 401) m.saveCloudSyncConfig({ ...current, requiresPairing: true });
+        return remote;
+      }
+      const restoration = m.adoptSelfHostedConfig(remote.config, base);
+      return { success: true, mode: 'selfHosted', message: restoration.message || '已成功下載自架伺服器追蹤規則', ...restoration, config: m.cloudSyncConfig.remoteConfig };
+    }
     let pending = m.cloudSyncConfig.pendingRequest;
     if (pending?.payload.action && pending.payload.action !== 'pause') {
       // A restored app may have been terminated during an unacknowledged resume.
@@ -289,6 +314,9 @@ export class CloudPushClient {
       if (c.autoMerge && c.dirty && !c.mergeBlocked && c.deviceToken && !c.requiresPairing) return this.sync({ operation: 'merge' });
       return;
     }
+    if (c.requiresPairing) return;
+    if (c.needsCloudRead && c.pendingAction !== 'pause') return this.sync({ operation: 'read' });
+    if (c.restorePending && c.pendingAction !== 'pause') return;
     if (c.conflict || c.requiresPairing || !c.dirty || !c.workerUrl || (!c.enabled && c.pendingAction !== 'pause')) return;
     return this.sync(c.pendingAction === 'pause' ? { lifecycleAction: 'pause' } : {});
   }

@@ -47,8 +47,16 @@ export function mergeSilent(base, local, remote, choices = {}) {
 }
 
 export function withLocalBackups(activeRules, localRules) {
-  const ids = new Set(activeRules.map(r => r.id));
-  return [...structuredClone(activeRules), ...structuredClone(localRules.filter(r => !r.enabled && !ids.has(r.id)))];
+  const activeIds = new Set(activeRules.map(r => r.id));
+  const retained = [...structuredClone(activeRules)];
+
+  for (const r of (localRules || [])) {
+    if (!activeIds.has(r.id)) {
+      activeIds.add(r.id);
+      retained.push({ ...structuredClone(r), enabled: false });
+    }
+  }
+  return retained;
 }
 
 export function makeMergePlan(baseline, localRules, localSilent, remote, origin, choices = {}, selectedBoards) {

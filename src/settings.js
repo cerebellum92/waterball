@@ -31,6 +31,9 @@ export const DEFAULT_BOOKMARKS = [
   },
 ];
 
+export const getDefaultBookmarks = () => DEFAULT_BOOKMARKS.map(b => ({ ...b }));
+export const getDefaultAddress = () => getDefaultBookmarks()[0].address;
+
 export const DEFAULT_SETTINGS = {
   // Keep-alive
   antiIdleEnabled: true,
@@ -46,6 +49,10 @@ export const DEFAULT_SETTINGS = {
   mouseBrowsingEnabled: true,
   wheelScrollPage: true,
   autoCopySelection: false,
+  imageUploadEnabled: true,
+  imageUploadProvider: 'imgur', // 'imgur' | 'catbox' | 'custom'
+  imageUploadImgurClientId: '',
+  imageUploadCustomEndpoint: '',
 
   // Display & Theme
   theme: 'pcman', // 'pcman' | 'welly' | 'high-contrast'
@@ -70,7 +77,7 @@ class SettingsManager {
     this.onBookmarkSelect = null;
 
     // Auto-migrate legacy plaintext passwords to AES-256-GCM
-    this.migratePasswordsToEncrypted();
+    this.ready = this.migratePasswordsToEncrypted();
   }
 
   async migratePasswordsToEncrypted() {
@@ -82,7 +89,7 @@ class SettingsManager {
       }
     }
     if (changed) {
-      this.saveBookmarks(this.bookmarks);
+      await this.saveBookmarks(this.bookmarks);
     }
   }
 
@@ -147,7 +154,7 @@ class SettingsManager {
       newBm.password = await encryptSecret(newBm.password);
     }
     this.bookmarks.push(newBm);
-    this.saveBookmarks(this.bookmarks);
+    await this.saveBookmarks(this.bookmarks);
     return newBm;
   }
 
@@ -158,17 +165,17 @@ class SettingsManager {
         updated.password = await encryptSecret(updated.password);
       }
       this.bookmarks[idx] = { ...this.bookmarks[idx], ...updated };
-      this.saveBookmarks(this.bookmarks);
+      await this.saveBookmarks(this.bookmarks);
     }
   }
 
   deleteBookmark(id) {
     this.bookmarks = this.bookmarks.filter((b) => b.id !== id);
-    this.saveBookmarks(this.bookmarks);
+    return this.saveBookmarks(this.bookmarks);
   }
 
   resetDefaultBookmarks() {
-    this.bookmarks = [...DEFAULT_BOOKMARKS];
+    this.bookmarks = getDefaultBookmarks();
     this.saveBookmarks(this.bookmarks);
     return this.bookmarks;
   }

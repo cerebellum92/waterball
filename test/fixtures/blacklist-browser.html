@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-Hant"><meta charset="UTF-8"><title>Waterball 黑名單瀏覽器回歸測試</title>
+<style>body{font:16px system-ui;background:#111827;color:#e5e7eb;padding:24px}li{margin:10px}.pass{color:#86efac}.fail{color:#fca5a5}.hidden{display:none!important}#terminal{width:800px;height:480px}button{cursor:pointer}#reader-article-content,#push-list{padding:12px;border:1px solid #555} .article-reader-modal{display:none}</style>
+<h1>Waterball 黑名單瀏覽器回歸測試</h1><p id="status">執行中</p><ul id="results"></ul>
+<div id="tags"></div><div id="keywords"></div><span id="count"></span><div id="terminal"></div>
+<script>window.__TAURI__={core:{invoke:async()=>{}},event:{listen:()=>{}}};</script>
+<script type="module">
+const results = document.querySelector('#results');
+async function check(name, run) { const li=document.createElement('li');try{await run();li.className='pass';li.textContent=`✓ ${name}`;}catch(error){li.className='fail';li.textContent=`✗ ${name}: ${error.message}`;}results.append(li); }
+const assert=(value,message='assertion failed')=>{if(!value)throw new Error(message);};
+try {
+const {BlacklistManager,blacklistManager}=await import('/src/blacklist.js');
+const {SettingsUI}=await import('/src/settings_ui.js');
+const {articleReader}=await import('/src/article_reader.js');
+const {TermView}=await import('/src/term_view.js');
+const {TermBuf}=await import('/src/term_buf.js');
+const {AnsiParser}=await import('/src/ansi_parser.js');
+// Replace singleton persistence only in this disposable test origin.
+blacklistManager.storage=null;
+blacklistManager.importFromJSON({version:'2.0',blacklist:[],keywords:[],settings:{enabled:true,mode:'mask',enableGreatTreasure:false,enableKeywords:true,blockWaterball:true,blockPushNotification:true}},{replace:true});
+const keyword='" data-proof="injected <b>proof</b>';
+const ui=Object.create(SettingsUI.prototype);ui.blacklistManager=new BlacklistManager(null);
+ui.elements={blacklistTagsContainer:document.querySelector('#tags'),blacklistKwTagsContainer:document.querySelector('#keywords'),blacklistKwCount:document.querySelector('#count')};
+await check('只有關鍵字時可顯示、引號與標籤保持純文字、按鈕可完整刪除',()=>{
+ ui.blacklistManager.addKeyword(keyword);ui.renderBlacklistUI();
+ assert(ui.elements.blacklistKwCount.textContent==='1');assert(!ui.elements.blacklistKwTagsContainer.querySelector('[data-proof],b'));
+ assert(ui.elements.blacklistKwTagsContainer.textContent.includes(keyword));
+ ui.elements.blacklistKwTagsContainer.querySelector('button').click();assert(ui.blacklistManager.customKeywords.size===0);
+});
+const article={title:`spoiler ${keyword}`,author:'normaluser',board:'test',time:'',bodyBlocks:[{text:'normal content'}],pushStats:{push:1,boo:0,arrow:0},pushList:[{user:'normaluser',tag:'推',content:`hello ${keyword}`,floor:1,time:'12:34',ip:''}]};
+blacklistManager.addKeyword(keyword);articleReader.renderArticle(article);
+await check('好讀標題先遮蔽；提示與推文沒有注入元素或屬性',()=>{
+ const title=document.querySelector('#reader-title');assert(!title.textContent.includes('spoiler'));title.querySelector('button').click();assert(title.textContent===article.title);
+ assert(!document.querySelector('#reader-article-content [data-proof], #reader-article-content b, #push-list [data-proof], #push-list b'));
+});
+await check('推文可展開／收合；封鎖按鈕只觸發一次更新並保留篩選',()=>{
+ const row=document.querySelector('.push-item');const reveal=row.querySelector('.push-mask-reveal-btn');reveal.click();assert(!row.querySelector('.push-masked-body').classList.contains('hidden'));
+ let count=0;const listener=()=>count++;blacklistManager.onChange(listener);articleReader.isOpen=true;
+ row.querySelector('.push-quick-blacklist-btn').click();assert(count===1);assert(blacklistManager.isBlacklisted('normaluser'));assert(document.querySelector('.push-masked-body')&&!document.querySelector('.push-masked-body').classList.contains('hidden'));
+ blacklistManager.removeListener(listener);articleReader.isOpen=false;
+});
+await check('推文圖片不拋例外；遮蔽中的圖片與影片延後到展開才建立',()=>{
+ const originalCard=articleReader.createYoutubeCard;
+ articleReader.createYoutubeCard=()=>{const card=document.createElement('div');card.dataset.mediaProof='video';return card;};
+ const mediaArticle={...article,pushList:[{user:'mediauser',tag:'推',content:'media',floor:1,time:'',images:[{url:location.origin+'/favicon.ico'}],youtubes:[{}]}]};
+ blacklistManager.add('mediauser');articleReader.renderArticle(mediaArticle);
+ const row=document.querySelector('.push-item');assert(!row.querySelector('img,[data-media-proof]'));
+ row.querySelector('.push-mask-reveal-btn').click();const body=row.querySelector('.push-masked-body');
+ assert(body.querySelector('img')&&body.querySelector('[data-media-proof]'));assert(row.children.length===2);
+ articleReader.createYoutubeCard=originalCard;
+});
+const {TerminalPasteTransaction}=await import('/src/paste_transaction.js');
+await check('貼上等待寫入；失敗保留剩餘文字且不重送',async()=>{
+ let writes=0;const tab={id:'paste',address:'ptt.cc',isConnected:true};
+ const paste=new TerminalPasteTransaction({getActiveTab:()=>tab,getTabById:()=>tab,getSession:async()=> 'one',confirm:async()=>true,sleep:async()=>{},send:async()=>{if(++writes===2)throw new Error('test failure');}});
+ const result=await paste.paste('first\nsecond\nthird');assert(result.status==='failed');assert(writes===2&&result.remaining==='second\rthird'&&result.uncertain);
+});
+const buffer=new TermBuf(80,24),parser=new AnsiParser(buffer);
+parser.feed('\x1b[1;1H【看板】 test\x1b[3;1H>1234 + 9/02 blockeduser □ https://example.invalid/\x1b[4;1H 1235 + 9/02 someone □ normal\x1b[24;1H文章列表');
+blacklistManager.add('blockeduser');const view=new TermView(document.querySelector('#terminal'),buffer);view.redraw();let clicks=0;view.onUrlClick=()=>clicks++;
+await check('真實 Canvas 遮蔽列先展開，第二次點擊才開啟連結',()=>{
+ assert(view.getBbsState()==='article-list');assert(view.isRowMasked(2));const url=buffer.getUrlsInRow(2)[0];assert(url,'URL fixture not parsed');
+ const rect=view.canvas.getBoundingClientRect(),x=rect.left+(url.startCol+0.5)*view.cellW,y=rect.top+2.5*view.cellH;
+ const click=()=>{view.canvas.dispatchEvent(new MouseEvent('mousedown',{button:0,clientX:x,clientY:y}));window.dispatchEvent(new MouseEvent('mouseup',{button:0,clientX:x,clientY:y}));};
+ click();assert(clicks===0);assert(!view.isRowMasked(2));click();assert(clicks===1);
+});
+await check('遮蔽列不能透過文字／ANSI 選取複製；內容改變後重新遮蔽',()=>{
+ parser.feed('\x1b[3;1H>1234 + 9/02 blockeduser □ changed');view.redraw();assert(view.isRowMasked(2));view.selection={startX:0,startY:2,endX:79,endY:2};assert(view.getSelectionText()==='');assert(view.getSelectionAnsi()==='');
+});
+await check('切換成編輯器後保留提示與原始 80×24 緩衝區',()=>{
+ parser.feed('\x1b[24;1H\x1b[2K[Ctrl-X] 儲存離開');const before=buffer.getText(0,0,79,23);view.redraw();assert(view.getBbsState()==='compose');assert(!view.isRowMasked(2));assert(buffer.getText(0,0,79,23)===before);assert(buffer.cols===80&&buffer.rows===24);
+});
+await check('修復網址先以原始區間連結，DOM 保留 & 與引號且沒有注入節點', async()=>{
+ const {repairBrokenUrl,bbsColumns}=await import('/src/url_repair.js');
+ const url='https://example.com/path?x=1&';const first=' '.repeat(80-bbsColumns(url))+url;
+ const next="name=O'Reilly&y=2", repair=repairBrokenUrl(first,next);
+ assert(repair,'margin repair not found');
+ const el=document.createElement('div');el.innerHTML=articleReader.formatLineHtml(first,repair)+articleReader.formatLineHtml(next,null,repair);
+ const links=[...el.querySelectorAll('a')];assert(links.length===2);assert(links.every(link=>link.getAttribute('href')===repair.repairedUrl));
+ assert(links[1].textContent===next);assert(!el.querySelector('[onmouseover],img,script'));
+});
+await check('修復 span 與懸停不改變 ANSI 畫面的 Canvas 像素或格位', async()=>{
+ const {bbsColumns}=await import('/src/url_repair.js');
+ const node=document.createElement('div');node.style.cssText='width:800px;height:480px';document.body.appendChild(node);
+ const b=new TermBuf(80,24);new AnsiParser(b).feed('\x1b[31;44m');
+ const url='https://example.com/path/';b.gotoPos(0,2);b.puts(' '.repeat(80-bbsColumns(url))+url);b.gotoPos(0,3);b.puts('picture.jpg');
+ const native=JSON.stringify({lines:b.lines,x:b.cur_x,y:b.cur_y});const v=new TermView(node,b);
+ try {
+  const original=v.getCachedRowUrls;v.getCachedRowUrls=()=>[];
+  // Warm up repeated readback before comparison: browser GPU-to-CPU fallback
+  // can round antialias channels differently after the first few reads.
+  for(let n=0;n<6;n++){v.redraw();v.ctx.getImageData(0,0,v.canvas.width,v.canvas.height);}
+  v.redraw();
+  const reference=v.ctx.getImageData(0,0,v.canvas.width,v.canvas.height).data;
+  v.getCachedRowUrls=original;v.redraw();
+  const rendered=v.ctx.getImageData(0,0,v.canvas.width,v.canvas.height).data;
+  assert(reference.every((value,index)=>value===rendered[index]),'修復連結改變了 Canvas 像素');
+  const rect=v.canvas.getBoundingClientRect();window.dispatchEvent(new MouseEvent('mousemove',{clientX:rect.left+0.5*v.cellW,clientY:rect.top+3.5*v.cellH}));
+  v.redraw();const hovered=v.ctx.getImageData(0,0,v.canvas.width,v.canvas.height).data;
+  const diff=reference.findIndex((value,index)=>value!==hovered[index]);assert(diff<0,'懸停改變了 ANSI 像素 '+JSON.stringify({pixel:[Math.floor(diff/4)%v.canvas.width,Math.floor(diff/4/v.canvas.width)],hover:v.hoverUrl,action:v.hoverAction,urls:b.getUrlsInRow(3),source:b.getUrlsInRow(2),cached:v.getCachedRowUrls(2),before:[...reference.slice(diff-diff%4,diff-diff%4+4)],after:[...hovered.slice(diff-diff%4,diff-diff%4+4)]}));
+  let leaves=0;v.onUrlLeave=()=>leaves++;v.isRowMasked=row=>row===2;v.redraw();
+  assert(v.hoverUrl===null&&leaves===1&&v.getAccessibleUrlAt(0,3)===null,'來源列遮蔽後未撤回跨行預覽');
+  assert(JSON.stringify({lines:b.lines,x:b.cur_x,y:b.cur_y})===native,'原始格位／ANSI／游標被更改');
+ } finally {v.destroy();node.remove();}
+});
+view.destroy();
+} catch(error) { await check('測試初始化',()=>{throw error;}); }
+const failed=results.querySelectorAll('.fail').length;document.querySelector('#status').textContent=`${results.children.length-failed}/${results.children.length} 通過；${failed} 失敗`;
+</script></html>

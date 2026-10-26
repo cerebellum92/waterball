@@ -76,6 +76,22 @@ export class TermView {
     this.lastSelection = null;
     this.lastBlinkState = true;
 
+    this.blacklistListener = () => {
+      this.rowMetadataCache.clear();
+      this.revealedBlacklistRows?.clear();
+      this.hoverUrl = null;
+      this.hoverAid = null;
+      this.hoverAction = null;
+      this.onUrlLeave?.();
+      this.onAidLeave?.();
+      this.onWordLeave?.();
+      if (this.buf?.markAllDirty) {
+        this.buf.markAllDirty();
+      }
+      this.scheduleRedraw();
+    };
+    blacklistManager.onChange(this.blacklistListener);
+
     this.onUrlClick = null;
     this.onUrlHover = null;
     this.onUrlLeave = null;
@@ -155,36 +171,73 @@ export class TermView {
           e.clientY <= rect.bottom
         ) {
           const pos = this.getGridPos(e);
-          const url = this.buf.findUrlAt(pos.col, pos.row);
+          if (this.isRowMasked(pos.row)) {
+            this.canvas.style.cursor = 'pointer';
+            this.canvas.title = '點擊展開黑名單列；再次點擊才會開啟連結';
+            this.hoverUrl = null;
+            this.hoverAction = null;
+            this.onUrlLeave?.();
+            this.onWordLeave?.();
+            return;
+          }
+          this.canvas.title = '';
+          const url = this.getAccessibleUrlAt(pos.col, pos.row);
           if (url) {
             this.canvas.style.cursor = 'pointer';
             if (this.hoverAction) {
               this.hoverAction = null;
               this.redraw();
             }
-            if (!this.hoverUrl || this.hoverUrl.raw !== url.raw || this.hoverUrl.row !== url.row) {
+            if (!this.hoverUrl || this.hoverUrl.url !== url.url || this.hoverUrl.raw !== url.raw || this.hoverUrl.row !== url.row) {
               this.hoverUrl = url;
               this.redraw();
+            }
+            if (this.hoverAid) {
+              this.hoverAid = null;
+              this.onAidLeave?.();
             }
             this.onWordLeave?.();
             this.onUrlHover?.(url.url, e.clientX, e.clientY);
           } else {
-            const action = this.getMouseActionAt(pos.col, pos.row);
-            this.canvas.style.cursor = action ? 'pointer' : 'text';
-            if (JSON.stringify(action) !== JSON.stringify(this.hoverAction)) {
-              this.hoverAction = action;
-              this.redraw();
-            }
-            if (this.hoverUrl) {
-              this.hoverUrl = null;
-              this.redraw();
-              this.onUrlLeave?.();
-            }
-            const word = this.getWordAt(pos.col, pos.row);
-            if (word) {
-              this.onWordHover?.(word, e.clientX, e.clientY);
-            } else {
+            const aid = this.getAccessibleAidAt(pos.col, pos.row);
+            if (aid) {
+              this.canvas.style.cursor = 'pointer';
+              if (this.hoverAction) {
+                this.hoverAction = null;
+                this.redraw();
+              }
+              if (this.hoverUrl) {
+                this.hoverUrl = null;
+                this.redraw();
+                this.onUrlLeave?.();
+              }
+              if (!this.hoverAid || this.hoverAid.aid !== aid.aid || this.hoverAid.row !== aid.row) {
+                this.hoverAid = aid;
+              }
               this.onWordLeave?.();
+              this.onAidHover?.(aid, e.clientX, e.clientY);
+            } else {
+              if (this.hoverAid) {
+                this.hoverAid = null;
+                this.onAidLeave?.();
+              }
+              const action = this.getMouseActionAt(pos.col, pos.row);
+              this.canvas.style.cursor = action ? 'pointer' : 'text';
+              if (JSON.stringify(action) !== JSON.stringify(this.hoverAction)) {
+                this.hoverAction = action;
+                this.redraw();
+              }
+              if (this.hoverUrl) {
+                this.hoverUrl = null;
+                this.redraw();
+                this.onUrlLeave?.();
+              }
+              const word = this.getWordAt(pos.col, pos.row);
+              if (word) {
+                this.onWordHover?.(word, e.clientX, e.clientY);
+              } else {
+                this.onWordLeave?.();
+              }
             }
           }
         } else {
@@ -211,6 +264,10 @@ export class TermView {
         this.redraw();
         this.onUrlLeave?.();
       }
+      if (this.hoverAid) {
+        this.hoverAid = null;
+        this.onAidLeave?.();
+      }
       if (this.hoverAction) {
         this.hoverAction = null;
         this.redraw();
@@ -221,13 +278,22 @@ export class TermView {
       if (this.isSelecting) {
         this.isSelecting = false;
         if (!this.isDragging && this.mouseDownPos) {
-          const url = this.buf.findUrlAt(this.mouseDownPos.col, this.mouseDownPos.row);
+          if (this.isRowMasked(this.mouseDownPos.row)) {
+            this.revealBlacklistRow(this.mouseDownPos.row);
+            this.mouseDownPixel = null;
+            return;
+          }
+          const url = this.getAccessibleUrlAt(this.mouseDownPos.col, this.mouseDownPos.row);
           if (url) {
             this.onUrlClick?.(url.url);
           } else {
-            const shortcut = this.mouseBrowsingEnabled
-              ? this.getShortcutAt(this.mouseDownPos.col, this.mouseDownPos.row)
-              : null;
+            const aid = this.getAccessibleAidAt(this.mouseDownPos.col, this.mouseDownPos.row);
+            if (aid) {
+              this.onAidClick?.(aid);
+            } else {
+              const shortcut = this.mouseBrowsingEnabled
+                ? this.getShortcutAt(this.mouseDownPos.col, this.mouseDownPos.row)
+                : null;
             if (shortcut) {
               this.onShortcutClick?.(shortcut);
             } else {
@@ -242,10 +308,11 @@ export class TermView {
             }
           }
         }
-        this.isDragging = false;
-        this.mouseDownPixel = null;
       }
-    });
+      this.isDragging = false;
+      this.mouseDownPixel = null;
+    }
+  });
 
     // Mouse wheel scrolling
     let lastWheelTime = 0;
@@ -283,6 +350,7 @@ export class TermView {
   }
 
   getWordAt(col, row) {
+    if (this.isRowMasked(row)) return '';
     const line = this.buf.lines[row];
     if (!line || col < 0 || col >= this.buf.cols) return '';
     let start = col;
@@ -303,42 +371,71 @@ export class TermView {
     return word;
   }
 
-  getRowMetadata(r) {
-    if (!this.rowMetadataCache) {
-      this.rowMetadataCache = new Map();
-    }
-    // If not dirty and cached, return cached metadata immediately
-    if (!this.buf.dirtyRows[r] && this.rowMetadataCache.has(r)) {
-      return this.rowMetadataCache.get(r);
-    }
-
-    const line = this.buf.lines[r];
-    if (!line) return { author: null, isBlacklisted: false };
-
-    let lineStr = '';
-    for (let c = 0; c < this.buf.cols; c++) {
-      const cell = line[c];
-      if (!cell || cell.isTrailByte) continue;
-      lineStr += cell.ch || ' ';
-    }
-
-    let author = null;
-    // Match PTT article row pattern: e.g. " 1234 + 9/02 username □ [標題]" or " 1234 爆 9/02 username □"
-    const match = lineStr.match(/^\s*\d+\s+([+爆M~!\d\s]+)?\s*\d{1,2}\/\d{1,2}\s+([a-zA-Z0-9_-]+)/);
-    if (match && match[2]) {
-      author = match[2];
-    } else {
-      // Also match PTT Push row pattern: "推 username: " or "噓 username: " or "→ username: "
-      const pushMatch = lineStr.match(/^([推噓→])\s+([a-zA-Z0-9_-]+)\s*[:：]/);
-      if (pushMatch && pushMatch[2]) {
-        author = pushMatch[2];
+  getRowMetadata(r, screenState = this.getBbsState()) {
+    this.rowMetadataCache ||= new Map();
+    const text = this.getRowText(r);
+    const pushContext = screenState === 'reading' ? this.getLogicalPush(r) : null;
+    const key = JSON.stringify([blacklistManager.revision, screenState, text, pushContext]);
+    const cached = this.rowMetadataCache.get(r);
+    if (cached?.key === key) return cached;
+    let author = null, isPush = false, content = '', reason = null;
+    // Only recognized content rows may be filtered. Prompts and unknown screens stay intact.
+    if (r > 0 && r < this.buf.rows - 1 && screenState === 'article-list') {
+      const match = text.match(/^\s*(?:[>●○◎☆★]\s*)?(?:\d+|[★*])\s+(?:[+爆Mm~!Xx\d\s]+)?\s*\d{1,2}\/\d{1,2}\s+([a-zA-Z][a-zA-Z0-9_]{1,11})(?=\s|$)(.*)$/);
+      if (match) { author = match[1]; content = match[2]; }
+    } else if (r > 0 && r < this.buf.rows - 1 && screenState === 'reading') {
+      if (pushContext) { author = pushContext.author; content = pushContext.content; isPush = true; }
+      else {
+        const title = text.match(/^標題(?:\s*[:：]\s*|\s+)(.*)$/);
+        if (title) content = title[1];
       }
     }
-
-    const isBlacklisted = author ? blacklistManager.isBlacklisted(author) : false;
-    const meta = { author, isBlacklisted };
+    if (author && blacklistManager.isBlacklisted(author)) reason = `帳號 ${author}`;
+    else if (content) {
+      const keyword = blacklistManager.isKeywordBlacklisted(content);
+      if (keyword) reason = `關鍵字「${keyword}」`;
+    }
+    const meta = { key, author, isBlacklisted: Boolean(reason), reason, isPush };
     this.rowMetadataCache.set(r, meta);
     return meta;
+  }
+
+  getLogicalPush(row) {
+    // Only inherit an author across visibly full, indented continuation rows.
+    const continuation = r => {
+      if (r <= 1 || r >= this.buf.rows - 1) return false;
+      const previous = this.buf.lines[r - 1];
+      const tail = previous?.[this.buf.cols - 1];
+      return Boolean(tail && (tail.isTrailByte || /\S/.test(tail.ch || '')) && /^ {2,}\S/.test(this.getRowText(r)));
+    };
+    let start = row;
+    while (continuation(start)) start--;
+    const match = this.getRowText(start).match(/^([推噓→])\s+([a-zA-Z][a-zA-Z0-9_]{1,11})\s*[:：](.*)$/);
+    if (!match) return null;
+    let content = match[3];
+    for (let next = start + 1; continuation(next); next++) content += this.getRowText(next).trimStart();
+    return { author: match[2], content };
+  }
+
+  isRowMasked(row, screenState = this.getBbsState()) {
+    const meta = this.getRowMetadata(row, screenState);
+    return meta.isBlacklisted && blacklistManager.getMode() !== 'dim' && this.revealedBlacklistRows?.get(row) !== meta.key;
+  }
+
+  revealBlacklistRow(row) {
+    const meta = this.getRowMetadata(row);
+    this.revealedBlacklistRows ||= new Map();
+    this.revealedBlacklistRows.set(row, meta.key);
+    this.redraw();
+  }
+
+  selectionContainsMaskedRows() {
+    if (!this.selection) return false;
+    const first = Math.max(0, Math.min(this.selection.startY, this.selection.endY));
+    const last = Math.min(this.buf.rows - 1, Math.max(this.selection.startY, this.selection.endY));
+    const state = this.getBbsState();
+    for (let row = first; row <= last; row++) if (this.isRowMasked(row, state)) return true;
+    return false;
   }
 
   getRowText(r) {
@@ -359,7 +456,7 @@ export class TermView {
     if (/【精華文章】|【功能鍵】/.test(text)) return false;
 
     // PTT's usual format: article number, score/status, date, author...
-    if (/^\s*\d+\s+([+爆M~!\d\s]+)?\s*\d{1,2}\/\d{1,2}\s+[a-zA-Z0-9_-]+/.test(text)) {
+    if (/^\s*(?:[>●○◎☆★]\s*)?(?:\d+|[★*])\s+([+爆Mm~!Xx\d\s]+)?\s*\d{1,2}\/\d{1,2}\s+[a-zA-Z0-9_]+/.test(text)) {
       return true;
     }
 
@@ -382,7 +479,7 @@ export class TermView {
       if (this.isArticleListRow(r)) articleRows++;
     }
 
-    if (/每行最多可容納|編輯文章|請輸入標題|請輸入密碼|\(Ctrl\+X\)|\^X\s*(?:發表|寄出|存檔)/.test(bottom)) {
+    if (/每行最多可容納|編輯文章|請輸入標題|請輸入密碼|請輸入.*密碼|請輸入推文|推文確認|確認.*[Yy/Nn]|Ctrl[-+]X|\(Ctrl\+X\)|\^X\s*(?:發表|寄出|存檔)/.test(bottom)) {
       return 'compose';
     }
     if (this.getWaitingPromptRow() >= 0) {
@@ -590,12 +687,28 @@ export class TermView {
     return this.getRowMetadata(r).isBlacklisted;
   }
 
+  getAccessibleUrlAt(col, row) {
+    if (this.isRowMasked(row)) return null;
+    const url = this.buf.findUrlAt(col, row);
+    if (url?.repairRows?.some(r => this.isRowMasked(r))) return null;
+    return url;
+  }
+
+  getAccessibleAidAt(col, row) {
+    if (this.isRowMasked(row)) return null;
+    return this.buf?.findAidAt?.(col, row) || null;
+  }
+
   getCachedRowUrls(r) {
-    if (!this.buf.dirtyRows[r] && this.rowUrlCache.has(r)) {
-      return this.rowUrlCache.get(r);
-    }
+    // Content signatures remain valid after dirty flags have been cleared, and
+    // include both neighboring rows on which repaired spans depend.
+    this.rowUrlCacheKeys ||= new Map();
+    const key = JSON.stringify([this.buf.cols, ...[r - 1, r, r + 1].map(row =>
+      row >= 0 && row < this.buf.rows ? this.buf.getRowText(this.buf.lines[row]) : null)]);
+    if (this.rowUrlCacheKeys.get(r) === key && this.rowUrlCache.has(r)) return this.rowUrlCache.get(r);
     const urls = this.buf.getUrlsInRow(r);
     this.rowUrlCache.set(r, urls);
+    this.rowUrlCacheKeys.set(r, key);
     return urls;
   }
 
@@ -614,7 +727,7 @@ export class TermView {
   }
 
   getSelectionText() {
-    if (!this.selection) return '';
+    if (!this.selection || this.selectionContainsMaskedRows()) return '';
     return this.buf.getText(
       this.selection.startX,
       this.selection.startY,
@@ -624,7 +737,7 @@ export class TermView {
   }
 
   getSelectionAnsi() {
-    if (!this.selection) return '';
+    if (!this.selection || this.selectionContainsMaskedRows()) return '';
     return this.buf.getAnsiText(
       this.selection.startX,
       this.selection.startY,
@@ -835,6 +948,14 @@ export class TermView {
     const cols = buf.cols;
     const rows = buf.rows;
 
+    if (this.hoverUrl?.repairRows) {
+      const current = this.getAccessibleUrlAt(this.hoverUrl.startCol, this.hoverUrl.row);
+      if (!current || current.url !== this.hoverUrl.url) {
+        this.hoverUrl = null;
+        this.onUrlLeave?.();
+      }
+    }
+
     if (forceFull) {
       buf.markAllDirty();
     }
@@ -881,6 +1002,8 @@ export class TermView {
     ctx.font = `${fontSize}px ${this.getRenderFontFamilyString()}`;
     ctx.textBaseline = 'middle';
 
+    ctx.globalAlpha = 1;
+    const filterScreenState = this.getBbsState();
     // 0. Clear entire canvas background to completely eliminate ghost cursors and screen residuals
     const dpr = window.devicePixelRatio || 1;
     ctx.clearRect(0, 0, this.canvas.width / dpr, this.canvas.height / dpr);
@@ -888,197 +1011,228 @@ export class TermView {
     ctx.fillRect(0, 0, this.canvas.width / dpr, this.canvas.height / dpr);
 
     for (let r = 0; r < rows; r++) {
-      const isBlacklisted = this.isRowBlacklisted(r);
-      if (isBlacklisted) {
-        ctx.globalAlpha = 0.22;
-      }
+      ctx.save();
+      try {
+        const clipY = Math.round(r * cellH);
+        const clipHeight = Math.round((r + 1) * cellH) - clipY;
+        ctx.beginPath();
+        ctx.rect(0, clipY, this.canvas.width / dpr, clipHeight);
+        ctx.clip();
+        const meta = this.getRowMetadata(r, filterScreenState);
+        const isBlacklisted = meta.isBlacklisted && this.revealedBlacklistRows?.get(r) !== meta.key;
+        const mode = blacklistManager.getMode();
 
-      const line = buf.lines[r];
-      const y1 = Math.round(r * cellH);
-      const y2 = Math.round((r + 1) * cellH);
-      const cellHeight = y2 - y1;
-      const centerY = y1 + Math.round(cellHeight * 0.52);
-
-      // 1. Draw continuous background spans (100% eliminates fractional DPI grid lines)
-      let bgStartCol = 0;
-      let curBg = line[0].getBg();
-
-      for (let c = 1; c <= cols; c++) {
-        const bg = (c < cols) ? line[c].getBg() : -1;
-        if (bg !== curBg) {
-          if (curBg !== 0) {
-            const x1 = Math.round(bgStartCol * cellW);
-            const x2 = Math.round(c * cellW);
-            ctx.fillStyle = typeof curBg === 'string' ? curBg : (TERM_COLORS[curBg] || '#000000');
-            ctx.fillRect(x1, y1, x2 - x1, cellHeight + 0.6);
-          }
-          bgStartCol = c;
-          curBg = bg;
-        }
-      }
-
-      // 2. Draw foreground characters & ANSI blocks
-      for (let c = 0; c < cols; c++) {
-        const cell = line[c];
-        // Only skip trail byte if it is actually preceded by a valid lead byte
-        if (cell.isTrailByte && c > 0 && line[c - 1].isLeadByte) continue;
-
-        // Verify that lead byte is genuinely followed by a trail byte before spanning 2 cells
-        const isLead = cell.isLeadByte && (c + 1 < cols) && !!line[c + 1].isTrailByte;
-
-        const x1 = Math.round(c * cellW);
-        const x2 = Math.round((c + (isLead ? 2 : 1)) * cellW);
-        const cellWidth = x2 - x1;
-
-        const fgVal = cell.getFg();
-        const fgCol = typeof fgVal === 'string' ? fgVal : (TERM_COLORS[fgVal] || '#ffffff');
-
-        // Draw character
-        if (cell.ch && cell.ch !== ' ') {
-          const trailCell = isLead ? line[c + 1] : null;
-          const splitGlyph = trailCell &&
-            (trailCell.getFg() !== fgVal || trailCell.blink !== cell.blink);
-          for (let half = 0; half < (splitGlyph ? 2 : 1); half++) {
-            const halfCell = half === 0 ? cell : trailCell;
-            if (halfCell.blink && !this.blinkState) continue;
-            if (splitGlyph) {
-              ctx.save();
-              ctx.beginPath();
-              const clipStart = Math.round((c + half) * cellW);
-              const clipEnd = Math.round((c + half + 1) * cellW);
-              ctx.rect(clipStart, y1, clipEnd - clipStart, cellHeight);
-              ctx.clip();
-            }
-            const halfFg = halfCell.getFg();
-            ctx.fillStyle = half === 0 ? fgCol
-              : typeof halfFg === 'string' ? halfFg : (TERM_COLORS[halfFg] || '#ffffff');
-
-            // Direct pixel-perfect solid block drawing for BBS ANSI art (zero seams)
-            if (cell.ch === '█') {
-              ctx.fillRect(x1, y1, cellWidth + 0.5, cellHeight + 0.6);
-            } else if (cell.ch === '▀') {
-              const halfH = Math.round(cellHeight / 2);
-              ctx.fillRect(x1, y1, cellWidth + 0.5, halfH + 0.3);
-            } else if (cell.ch === '▄') {
-              const halfH = Math.round(cellHeight / 2);
-              ctx.fillRect(x1, y1 + halfH, cellWidth + 0.5, cellHeight - halfH + 0.6);
-            } else if (cell.ch === '▌') {
-              const halfW = Math.round(cellWidth / 2);
-              ctx.fillRect(x1, y1, halfW, cellHeight + 0.6);
-            } else if (cell.ch === '▐') {
-              const halfW = Math.round(cellWidth / 2);
-              ctx.fillRect(x1 + halfW, y1, cellWidth - halfW + 0.5, cellHeight + 0.6);
-            } else if (cell.ch === '◢') {
-              ctx.beginPath();
-              ctx.moveTo(x2, y1);
-              ctx.lineTo(x2, y2 + 0.6);
-              ctx.lineTo(x1, y2 + 0.6);
-              ctx.closePath();
-              ctx.fill();
-            } else if (cell.ch === '◣') {
-              ctx.beginPath();
-              ctx.moveTo(x1, y1);
-              ctx.lineTo(x2, y2 + 0.6);
-              ctx.lineTo(x1, y2 + 0.6);
-              ctx.closePath();
-              ctx.fill();
-            } else if (cell.ch === '◥') {
-              ctx.beginPath();
-              ctx.moveTo(x1, y1);
-              ctx.lineTo(x2, y1);
-              ctx.lineTo(x2, y2 + 0.6);
-              ctx.closePath();
-              ctx.fill();
-            } else if (cell.ch === '◤') {
-              ctx.beginPath();
-              ctx.moveTo(x1, y1);
-              ctx.lineTo(x2, y1);
-              ctx.lineTo(x1, y2 + 0.6);
-              ctx.closePath();
-              ctx.fill();
-            } else if (isLead) {
-              // Full-width character (CJK / special symbols): preserve natural aspect ratio without horizontal stretching
-              const charW = this.getCharWidth(cell.ch, fontSize, ctx);
-              if (charW > cellWidth + 0.5) {
-                // If it overflows 2 cells, scale down horizontally to fit
-                const scaleX = cellWidth / charW;
-                ctx.save();
-                ctx.translate(x1, centerY);
-                ctx.scale(scaleX, 1);
-                ctx.fillText(cell.ch, 0, 0);
-                ctx.restore();
-              } else {
-                // Natural aspect ratio: center inside the 2-cell width without stretching
-                const offsetX = Math.max(0, (cellWidth - charW) * 0.5);
-                ctx.fillText(cell.ch, x1 + offsetX, centerY);
-              }
-            } else {
-              // Single-width character (ASCII): center inside cellWidth
-              const charW = this.getCharWidth(cell.ch, fontSize, ctx);
-              if (charW > cellWidth + 0.5) {
-                const scaleX = cellWidth / charW;
-                ctx.save();
-                ctx.translate(x1, centerY);
-                ctx.scale(scaleX, 1);
-                ctx.fillText(cell.ch, 0, 0);
-                ctx.restore();
-              } else {
-                ctx.fillText(cell.ch, x1 + (cellWidth - charW) * 0.5, centerY);
-              }
-            }
-            if (splitGlyph) ctx.restore();
+        if (isBlacklisted) {
+          if (mode === 'hide') {
+            ctx.fillStyle = '#0a0a0a';
+            ctx.fillRect(0, Math.round(r * cellH), this.canvas.width / dpr, clipHeight);
+            ctx.fillStyle = '#3a3a3a';
+            ctx.font = `italic ${Math.round(cellH * 0.58)}px sans-serif`;
+            ctx.fillText(`[🚫 黑名單已隱藏: ${meta.reason}]`, 12, Math.round(r * cellH + cellH * 0.52));
+            ctx.font = `${fontSize}px ${this.getRenderFontFamilyString()}`;
+            continue;
+          } else if (mode === 'mask') {
+            ctx.fillStyle = '#111111';
+            ctx.fillRect(0, Math.round(r * cellH), this.canvas.width / dpr, clipHeight);
+            ctx.fillStyle = '#6b7280';
+            ctx.font = `italic ${Math.round(cellH * 0.58)}px sans-serif`;
+            ctx.fillText(`[🛡️ 遮蔽黑名單行: ${meta.reason}]`, 12, Math.round(r * cellH + cellH * 0.52));
+            ctx.font = `${fontSize}px ${this.getRenderFontFamilyString()}`;
+            continue;
+          } else {
+            ctx.globalAlpha = 0.20;
           }
         }
 
-        // Draw underline
-        if (cell.underLine) {
-          ctx.strokeStyle = fgCol;
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(x1, y2 - 1.5);
-          ctx.lineTo(x2, y2 - 1.5);
-          ctx.stroke();
+        const line = buf.lines[r];
+        const y1 = Math.round(r * cellH);
+        const y2 = Math.round((r + 1) * cellH);
+        const cellHeight = y2 - y1;
+        const centerY = y1 + Math.round(cellHeight * 0.52);
+
+        // 1. Draw continuous background spans (100% eliminates fractional DPI grid lines)
+        let bgStartCol = 0;
+        let curBg = line[0].getBg();
+
+        for (let c = 1; c <= cols; c++) {
+          const bg = (c < cols) ? line[c].getBg() : -1;
+          if (bg !== curBg) {
+            if (curBg !== 0) {
+              const x1 = Math.round(bgStartCol * cellW);
+              const x2 = Math.round(c * cellW);
+              ctx.fillStyle = typeof curBg === 'string' ? curBg : (TERM_COLORS[curBg] || '#000000');
+              ctx.fillRect(x1, y1, x2 - x1, cellHeight + 0.6);
+            }
+            bgStartCol = c;
+            curBg = bg;
+          }
         }
-      }
 
-      // 3. Highlight and Underline clickable URLs in this row
-      const urls = this.getCachedRowUrls(r);
-      for (const u of urls) {
-        const x1 = Math.round(u.startCol * cellW);
-        const x2 = Math.round((u.endCol + 1) * cellW);
-        const width = x2 - x1;
-        const isHovered = this.hoverUrl && this.hoverUrl.row === r && this.hoverUrl.startCol === u.startCol;
+        // 2. Draw foreground characters & ANSI blocks
+        for (let c = 0; c < cols; c++) {
+          const cell = line[c];
+          // Only skip trail byte if it is actually preceded by a valid lead byte
+          if (cell.isTrailByte && c > 0 && line[c - 1].isLeadByte) continue;
 
-        if (isHovered) {
-          ctx.fillStyle = 'rgba(88, 166, 255, 0.25)';
-          ctx.fillRect(x1, y1, width, cellHeight);
+          // Verify that lead byte is genuinely followed by a trail byte before spanning 2 cells
+          const isLead = cell.isLeadByte && (c + 1 < cols) && !!line[c + 1].isTrailByte;
 
-          ctx.strokeStyle = '#58a6ff';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.moveTo(x1, y2 - 1.5);
-          ctx.lineTo(x2, y2 - 1.5);
-          ctx.stroke();
-        } else {
-          ctx.fillStyle = 'rgba(88, 166, 255, 0.08)';
-          ctx.fillRect(x1, y1, width, cellHeight);
+          const x1 = Math.round(c * cellW);
+          const x2 = Math.round((c + (isLead ? 2 : 1)) * cellW);
+          const cellWidth = x2 - x1;
 
-          ctx.strokeStyle = 'rgba(88, 166, 255, 0.75)';
-          ctx.lineWidth = 1.2;
-          ctx.beginPath();
-          ctx.moveTo(x1, y2 - 1.5);
-          ctx.lineTo(x2, y2 - 1.5);
-          ctx.stroke();
+          const fgVal = cell.getFg();
+          const fgCol = typeof fgVal === 'string' ? fgVal : (TERM_COLORS[fgVal] || '#ffffff');
+
+          // Draw character
+          if (cell.ch && cell.ch !== ' ') {
+            const trailCell = isLead ? line[c + 1] : null;
+            const splitGlyph = trailCell &&
+              (trailCell.getFg() !== fgVal || trailCell.blink !== cell.blink);
+            for (let half = 0; half < (splitGlyph ? 2 : 1); half++) {
+              const halfCell = half === 0 ? cell : trailCell;
+              if (halfCell.blink && !this.blinkState) continue;
+              if (splitGlyph) {
+                ctx.save();
+                ctx.beginPath();
+                const clipStart = Math.round((c + half) * cellW);
+                const clipEnd = Math.round((c + half + 1) * cellW);
+                ctx.rect(clipStart, y1, clipEnd - clipStart, cellHeight);
+                ctx.clip();
+              }
+              const halfFg = halfCell.getFg();
+              ctx.fillStyle = half === 0 ? fgCol
+                : typeof halfFg === 'string' ? halfFg : (TERM_COLORS[halfFg] || '#ffffff');
+
+              // Direct pixel-perfect solid block drawing for BBS ANSI art (zero seams)
+              if (cell.ch === '█') {
+                ctx.fillRect(x1, y1, cellWidth + 0.5, cellHeight + 0.6);
+              } else if (cell.ch === '▀') {
+                const halfH = Math.round(cellHeight / 2);
+                ctx.fillRect(x1, y1, cellWidth + 0.5, halfH + 0.3);
+              } else if (cell.ch === '▄') {
+                const halfH = Math.round(cellHeight / 2);
+                ctx.fillRect(x1, y1 + halfH, cellWidth + 0.5, cellHeight - halfH + 0.6);
+              } else if (cell.ch === '▌') {
+                const halfW = Math.round(cellWidth / 2);
+                ctx.fillRect(x1, y1, halfW, cellHeight + 0.6);
+              } else if (cell.ch === '▐') {
+                const halfW = Math.round(cellWidth / 2);
+                ctx.fillRect(x1 + halfW, y1, cellWidth - halfW + 0.5, cellHeight + 0.6);
+              } else if (cell.ch === '◢') {
+                ctx.beginPath();
+                ctx.moveTo(x2, y1);
+                ctx.lineTo(x2, y2 + 0.6);
+                ctx.lineTo(x1, y2 + 0.6);
+                ctx.closePath();
+                ctx.fill();
+              } else if (cell.ch === '◣') {
+                ctx.beginPath();
+                ctx.moveTo(x1, y1);
+                ctx.lineTo(x2, y2 + 0.6);
+                ctx.lineTo(x1, y2 + 0.6);
+                ctx.closePath();
+                ctx.fill();
+              } else if (cell.ch === '◥') {
+                ctx.beginPath();
+                ctx.moveTo(x1, y1);
+                ctx.lineTo(x2, y1);
+                ctx.lineTo(x2, y2 + 0.6);
+                ctx.closePath();
+                ctx.fill();
+              } else if (cell.ch === '◤') {
+                ctx.beginPath();
+                ctx.moveTo(x1, y1);
+                ctx.lineTo(x2, y1);
+                ctx.lineTo(x1, y2 + 0.6);
+                ctx.closePath();
+                ctx.fill();
+              } else if (isLead) {
+                // Full-width character (CJK / special symbols): preserve natural aspect ratio without horizontal stretching
+                const charW = this.getCharWidth(cell.ch, fontSize, ctx);
+                if (charW > cellWidth + 0.5) {
+                  // If it overflows 2 cells, scale down horizontally to fit
+                  const scaleX = cellWidth / charW;
+                  ctx.save();
+                  ctx.translate(x1, centerY);
+                  ctx.scale(scaleX, 1);
+                  ctx.fillText(cell.ch, 0, 0);
+                  ctx.restore();
+                } else {
+                  // Natural aspect ratio: center inside the 2-cell width without stretching
+                  const offsetX = Math.max(0, (cellWidth - charW) * 0.5);
+                  ctx.fillText(cell.ch, x1 + offsetX, centerY);
+                }
+              } else {
+                // Single-width character (ASCII): center inside cellWidth
+                const charW = this.getCharWidth(cell.ch, fontSize, ctx);
+                if (charW > cellWidth + 0.5) {
+                  const scaleX = cellWidth / charW;
+                  ctx.save();
+                  ctx.translate(x1, centerY);
+                  ctx.scale(scaleX, 1);
+                  ctx.fillText(cell.ch, 0, 0);
+                  ctx.restore();
+                } else {
+                  ctx.fillText(cell.ch, x1 + (cellWidth - charW) * 0.5, centerY);
+                }
+              }
+              if (splitGlyph) ctx.restore();
+            }
+          }
+
+          // Draw underline
+          if (cell.underLine) {
+            ctx.strokeStyle = fgCol;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(x1, y2 - 1.5);
+            ctx.lineTo(x2, y2 - 1.5);
+            ctx.stroke();
+          }
         }
-      }
 
-      if (isBlacklisted) {
-        ctx.globalAlpha = 1.0;
+        // 3. Highlight and Underline clickable URLs in this row
+        const urls = this.getCachedRowUrls(r);
+        for (const u of urls) {
+          // Repaired links are hit-testing assistance only; preserve native
+          // terminal colors/underlines even before or during hover.
+          if (u.repaired || u.isContinuation || u.repairRows?.some(row => this.isRowMasked(row, filterScreenState))) continue;
+          const x1 = Math.round(u.startCol * cellW);
+          const x2 = Math.round((u.endCol + 1) * cellW);
+          const width = x2 - x1;
+          const isHovered = this.hoverUrl && this.hoverUrl.row === r && this.hoverUrl.startCol === u.startCol;
+
+          if (isHovered) {
+            ctx.fillStyle = 'rgba(88, 166, 255, 0.25)';
+            ctx.fillRect(x1, y1, width, cellHeight);
+
+            ctx.strokeStyle = '#58a6ff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(x1, y2 - 1.5);
+            ctx.lineTo(x2, y2 - 1.5);
+            ctx.stroke();
+          } else {
+            ctx.fillStyle = 'rgba(88, 166, 255, 0.08)';
+            ctx.fillRect(x1, y1, width, cellHeight);
+
+            ctx.strokeStyle = 'rgba(88, 166, 255, 0.75)';
+            ctx.lineWidth = 1.2;
+            ctx.beginPath();
+            ctx.moveTo(x1, y2 - 1.5);
+            ctx.lineTo(x2, y2 - 1.5);
+            ctx.stroke();
+          }
+        }
+
+      } finally {
+        ctx.restore();
       }
     }
 
     // Show the active mouse hotspot like a lightweight terminal cursor.
-    if (this.hoverAction) {
+    if (this.hoverAction && !this.isRowMasked(this.hoverAction.row, filterScreenState)) {
       const a = this.hoverAction;
       const x1 = Math.round(a.startCol * cellW) + 1;
       const x2 = Math.round((a.endCol + 1) * cellW) - 1;
@@ -1095,6 +1249,7 @@ export class TermView {
     if (this.searchMatches && this.searchMatches.length > 0) {
       for (let i = 0; i < this.searchMatches.length; i++) {
         const m = this.searchMatches[i];
+        if (this.isRowMasked(m.row, filterScreenState)) continue;
         const mx1 = Math.round(m.startCol * cellW);
         const mx2 = Math.round((m.endCol + 1) * cellW);
         const mw = mx2 - mx1;
@@ -1269,5 +1424,6 @@ export class TermView {
 
   destroy() {
     if (this.blinkTimer) clearInterval(this.blinkTimer);
+    if (this.blacklistListener) blacklistManager.removeListener(this.blacklistListener);
   }
 }

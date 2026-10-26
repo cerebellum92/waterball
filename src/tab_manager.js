@@ -1,7 +1,9 @@
 import { TermBuf } from './term_buf.js';
 import { AnsiParser } from './ansi_parser.js';
 import { TermView } from './term_view.js';
-import { settingsManager } from './settings.js';
+import { settingsManager, getDefaultAddress } from './settings.js';
+import { isMac } from './keymap.js';
+import { resolveEnv, getShortcutTooltip } from './shortcuts_config.js';
 
 let tabCounter = 1;
 
@@ -9,7 +11,7 @@ export class Tab {
   constructor(options = {}) {
     this.id = options.id || `tab-${Date.now()}-${tabCounter++}`;
     this.title = options.title || `連線 ${tabCounter - 1}`;
-    this.address = options.address || 'bbs@ptt.cc:22';
+    this.address = options.address || getDefaultAddress();
     this.encoding = options.encoding || 'big5';
     this.status = 'disconnected'; // 'disconnected' | 'connecting' | 'connected'
     this.unread = false;
@@ -38,6 +40,9 @@ export class TabManager {
     this.onUrlClick = null;
     this.onUrlHover = null;
     this.onUrlLeave = null;
+    this.onAidClick = null;
+    this.onAidHover = null;
+    this.onAidLeave = null;
     this.onWheel = null;
     this.onSelectionChange = null;
     this.onArticleClick = null;
@@ -72,10 +77,12 @@ export class TabManager {
       }
     });
 
+    const defaultAddress = getDefaultAddress();
+
     this.tabSwitcherNewBtn?.addEventListener('click', () => {
       const newTab = this.createTab({
         title: '批踢踢實業坊',
-        address: 'bbs@ptt.cc:22',
+        address: defaultAddress,
         encoding: 'big5',
       });
       this.switchTab(newTab.id);
@@ -85,7 +92,7 @@ export class TabManager {
     // Create initial first tab
     const firstTab = this.createTab({
       title: '批踢踢實業坊',
-      address: 'bbs@ptt.cc:22',
+      address: defaultAddress,
       encoding: 'big5',
     });
     this.switchTab(firstTab.id);
@@ -102,6 +109,9 @@ export class TabManager {
     tab.view.onUrlClick = (url) => this.onUrlClick?.(url, tab);
     tab.view.onUrlHover = (url, cx, cy) => this.onUrlHover?.(url, cx, cy, tab);
     tab.view.onUrlLeave = () => this.onUrlLeave?.(tab);
+    tab.view.onAidClick = (aid) => this.onAidClick?.(aid, tab);
+    tab.view.onAidHover = (aid, cx, cy) => this.onAidHover?.(aid, cx, cy, tab);
+    tab.view.onAidLeave = () => this.onAidLeave?.(tab);
     tab.view.onWordHover = (word, cx, cy) => this.onWordHover?.(word, cx, cy, tab);
     tab.view.onWordLeave = () => this.onWordLeave?.(tab);
     tab.view.onWheel = (direction) => this.onWheel?.(direction, tab);
@@ -114,18 +124,31 @@ export class TabManager {
 
     // Initial welcome banner for new tab
     tab.parser.feed('\x1b[1;36m╔═════════════════════════════════════╗\r\n\x1b[0m');
-    tab.parser.feed('\x1b[1;36m║\x1b[0m  \x1b[1;33mWaterball (水球)\x1b[0m — 跨平台 BBS 連線終端 (Mac / Windows / Linux)         \x1b[1;36m║\r\n\x1b[0m');
-    tab.parser.feed('\x1b[1;36m║\x1b[0m                                                                          \x1b[1;36m║\r\n\x1b[0m');
-    tab.parser.feed('\x1b[1;36m║\x1b[0m  \x1b[1;32m★ 快捷鍵指南：\x1b[0m                                                         \x1b[1;36m║\r\n\x1b[0m');
-    tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ ⌘ + K ]\x1b[0m  看板快速跳轉 (中英文板名即時直達)                         \x1b[1;36m║\r\n\x1b[0m');
-    tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ ⌘ + D ]\x1b[0m  圖文好讀版 (無損長文採集、大圖展開)                       \x1b[1;36m║\r\n\x1b[0m');
-    tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ ⌘ + P ]\x1b[0m  ANSI 調色盤 (16色雙色發文、符號顏文字)                    \x1b[1;36m║\r\n\x1b[0m');
-    tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ ⌘+Shift+X ]\x1b[0m 智慧長推文 (自動分段排版、防冷卻定時發送)              \x1b[1;36m║\r\n\x1b[0m');
-    tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ ⌘+Shift+S ]\x1b[0m 畫面截圖匯出 (2x Retina PNG 與 ANSI 代碼)              \x1b[1;36m║\r\n\x1b[0m');
+    if (isMac) {
+      tab.parser.feed('\x1b[1;36m║\x1b[0m  \x1b[1;33mWaterball (水球)\x1b[0m — 跨平台 BBS 連線終端 (macOS)                         \x1b[1;36m║\r\n\x1b[0m');
+      tab.parser.feed('\x1b[1;36m║\x1b[0m                                                                          \x1b[1;36m║\r\n\x1b[0m');
+      tab.parser.feed('\x1b[1;36m║\x1b[0m  \x1b[1;32m★ 快捷鍵指南 (隨時按 \x1b[1;33mF1\x1b[1;32m 查閱完整清單)：\x1b[0m                                \x1b[1;36m║\r\n\x1b[0m');
+      tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ ⌘ + K ]\x1b[0m  看板快速跳轉 (中英文板名即時直達)                         \x1b[1;36m║\r\n\x1b[0m');
+      tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ ⌘ + D ]\x1b[0m  圖文好讀版 (無損長文採集、大圖展開)                       \x1b[1;36m║\r\n\x1b[0m');
+      tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ ⌥ + B ]\x1b[0m  收合／展開功能列 (極大化終端可視範圍)                     \x1b[1;36m║\r\n\x1b[0m');
+      tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ ⌘ + P ]\x1b[0m  ANSI 調色盤 (16色雙色發文、符號顏文字)                    \x1b[1;36m║\r\n\x1b[0m');
+      tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ ⌘+Shift+X ]\x1b[0m 智慧長推文 (自動分段排版、防冷卻定時發送)              \x1b[1;36m║\r\n\x1b[0m');
+      tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ F1 ]\x1b[0m     鍵盤快捷鍵一覽表 (完整熱鍵速查手冊)                        \x1b[1;36m║\r\n\x1b[0m');
+    } else {
+      tab.parser.feed('\x1b[1;36m║\x1b[0m  \x1b[1;33mWaterball (水球)\x1b[0m — 跨平台 BBS 連線終端 (Windows / Linux)               \x1b[1;36m║\r\n\x1b[0m');
+      tab.parser.feed('\x1b[1;36m║\x1b[0m                                                                          \x1b[1;36m║\r\n\x1b[0m');
+      tab.parser.feed('\x1b[1;36m║\x1b[0m  \x1b[1;32m★ 快捷鍵指南 (隨時按 \x1b[1;33mF1\x1b[1;32m 查閱完整清單)：\x1b[0m                                \x1b[1;36m║\r\n\x1b[0m');
+      tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ Alt + K ]\x1b[0m  看板快速跳轉 (中英文板名即時直達)                       \x1b[1;36m║\r\n\x1b[0m');
+      tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ F2 ]\x1b[0m       圖文好讀版 (無損長文採集、大圖展開)                     \x1b[1;36m║\r\n\x1b[0m');
+      tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ Alt + B ]\x1b[0m  收合／展開功能列 (極大化終端可視範圍)                   \x1b[1;36m║\r\n\x1b[0m');
+      tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ Alt + P ]\x1b[0m  ANSI 調色盤 (16色雙色發文、符號顏文字)                  \x1b[1;36m║\r\n\x1b[0m');
+      tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ Alt + X ]\x1b[0m  智慧長推文 (自動分段排版、防冷卻定時發送)                \x1b[1;36m║\r\n\x1b[0m');
+      tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ F1 ]\x1b[0m       鍵盤快捷鍵一覽表 (完整熱鍵速查手冊)                      \x1b[1;36m║\r\n\x1b[0m');
+    }
     tab.parser.feed('\x1b[1;36m║\x1b[0m                                                                          \x1b[1;36m║\r\n\x1b[0m');
     tab.parser.feed('\x1b[1;36m║\x1b[0m  \x1b[1;32m★ 連線方式：\x1b[0m                                                           \x1b[1;36m║\r\n\x1b[0m');
     tab.parser.feed('\x1b[1;36m║\x1b[0m    請點選上方「⭐ 常用書籤」或直接輸入位址並按 Enter 連線                \x1b[1;36m║\r\n\x1b[0m');
-    tab.parser.feed('\x1b[1;36m║\x1b[0m    例如: \x1b[1;33mbbs@ptt.cc:22\x1b[0m (SSH) 或 \x1b[1;33mnckugibbs.duckdns.org\x1b[0m (Telnet)           \x1b[1;36m║\r\n\x1b[0m');
+      tab.parser.feed('\x1b[1;36m║\x1b[0m    例如: \x1b[1;33mbbs@ptt.cc:22\x1b[0m (SSH) 或 \x1b[1;33mnckugibbs.duckdns.org\x1b[0m (Telnet)           \x1b[1;36m║\r\n\x1b[0m');
     tab.parser.feed('\x1b[1;36m╚═════════════════════════════════════╝\r\n\x1b[0m');
 
     this.tabs.push(tab);
@@ -198,7 +221,7 @@ export class TabManager {
       // If all tabs closed, create a fresh new tab
       const freshTab = this.createTab({
         title: '批踢踢實業坊',
-        address: 'bbs@ptt.cc:22',
+        address: getDefaultAddress(),
         encoding: 'big5',
       });
       this.switchTab(freshTab.id);
@@ -288,7 +311,7 @@ export class TabManager {
       const closeBtn = document.createElement('button');
       closeBtn.className = 'bbs-tab-close';
       closeBtn.innerHTML = '&times;';
-      closeBtn.title = '關閉此分頁 (Cmd+W)';
+      closeBtn.title = getShortcutTooltip('close_tab', resolveEnv({ isMac }));
       closeBtn.onclick = (e) => {
         e.stopPropagation();
         this.closeTab(tab.id);
@@ -303,11 +326,11 @@ export class TabManager {
     const newTabBtn = document.createElement('button');
     newTabBtn.className = 'bbs-tab-new';
     newTabBtn.innerHTML = '＋';
-    newTabBtn.title = '開啟新連線分頁 (Cmd+T)';
+    newTabBtn.title = getShortcutTooltip('new_tab', resolveEnv({ isMac }));
     newTabBtn.onclick = () => {
       const newTab = this.createTab({
         title: `連線 ${this.tabs.length + 1}`,
-        address: 'bbs@ptt.cc:22',
+        address: getDefaultAddress(),
         encoding: 'big5',
       });
       this.switchTab(newTab.id);

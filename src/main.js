@@ -1,5 +1,5 @@
 import { TabManager } from './tab_manager.js';
-import { settingsManager } from './settings.js';
+import { settingsManager, getDefaultAddress } from './settings.js';
 import { imagePreview } from './image_preview.js';
 import { articleReader } from './article_reader.js';
 import { SearchWidget } from './search.js';
@@ -8,10 +8,12 @@ import { PaletteWidget } from './palette.js';
 import { notificationManager } from './notifications.js';
 import { exportModal } from './exporter.js';
 import { BoardSwitcherWidget } from './board_switcher.js';
+import { AidJumpModal } from './aid_jump_modal.js';
 import { UpdateChecker } from './updater.js';
 import { PushHelper } from './push_helper.js';
 import { blacklistManager } from './blacklist.js';
-import { writeClipboardText, isTouchDevice, isIOS } from './platform.js';
+import { writeClipboardText, readClipboardText, readClipboardImage, extractClipboardImage, isTouchDevice, isIOS, safeInvoke, isTauri, openExternalUrl } from './platform.js';
+import { uploadImageToHost, deleteUploadedImage, imageUploadHistory } from './image_uploader.js';
 import { isMac, isInteractiveInputElement, translateBbsKey } from './keymap.js';
 
 if (isTouchDevice() || isIOS()) {
@@ -19,6 +21,7 @@ if (isTouchDevice() || isIOS()) {
 }
 
 import { ConnectionController } from './connection_controller.js';
+import { TerminalPasteTransaction } from './paste_transaction.js';
 import { ImeController } from './ime_controller.js';
 import { BookmarksUI } from './bookmarks_ui.js';
 import { SettingsUI } from './settings_ui.js';
@@ -30,11 +33,13 @@ import { waterballManager } from './waterball_manager.js';
 import { waterballUI } from './waterball_ui.js';
 import { articleMonitorManager, normalizePttArticleUrl } from './article_monitor.js';
 import { articleMonitorUI } from './article_monitor_ui.js';
+import { ShortcutsModal } from './shortcuts_modal.js';
+import { resolveEnv, matchShortcut, getShortcutTooltip } from './shortcuts_config.js';
 
-const { invoke } = window.__TAURI__.core;
+async function startApp() {
 
 // Keep the native close handler in sync with the persisted preference.
-invoke('set_remember_window_state', {
+safeInvoke('set_remember_window_state', {
   enabled: settingsManager.settings.rememberWindowState !== false,
 }).catch(() => {});
 
@@ -52,10 +57,12 @@ window.addEventListener('scroll', () => {
 const tabBar = document.getElementById('tab-bar');
 const addressInput = document.getElementById('address-input');
 const encodingSelect = document.getElementById('encoding-select');
+
 const bookmarksSelect = document.getElementById('bookmarks-select');
 const connectBtn = document.getElementById('connect-btn');
 const disconnectBtn = document.getElementById('disconnect-btn');
 const boardBtn = document.getElementById('board-btn');
+const aidBtn = document.getElementById('aid-btn');
 const exportBtn = document.getElementById('export-btn');
 const paletteBtn = document.getElementById('palette-btn');
 const articleReaderBtn = document.getElementById('article-reader-btn');
@@ -63,6 +70,9 @@ const mouseBrowsingBtn = document.getElementById('mouse-browsing-btn');
 const pushHelperBtn = document.getElementById('push-helper-btn');
 const addBookmarkBtn = document.getElementById('add-bookmark-btn');
 const settingsBtn = document.getElementById('settings-btn');
+const shortcutsBtn = document.getElementById('shortcuts-btn');
+const collapseToolbarBtn = document.getElementById('collapse-toolbar-btn');
+const floatingExpandBtn = document.getElementById('floating-expand-btn');
 const toolbar = document.getElementById('toolbar');
 const toolbarActions = document.getElementById('toolbar-actions');
 const statusDot = document.getElementById('status-dot');
@@ -79,6 +89,7 @@ function updateMouseBrowsingButton(enabled) {
 
 function updateToolbarMode() {
   if (!toolbar || !toolbarActions) return;
+  if (document.body.classList.contains('toolbar-collapsed')) return;
 
   // Measure the full text version first. This lets the toolbar switch back
   // to labels automatically when the window becomes wide enough again.
@@ -129,9 +140,27 @@ const updateChecker = new UpdateChecker();
 const searchWidget = new SearchWidget(() => tabManager.getActiveTab());
 const paletteWidget = new PaletteWidget((data) => connectionCtrl.sendData(data), () => tabManager.getActiveTab());
 const boardSwitcherWidget = new BoardSwitcherWidget((data) => connectionCtrl.sendData(data));
-const pushHelper = new PushHelper((data) => connectionCtrl.sendData(data), () => tabManager.getActiveTab());
+const aidJumpModal = new AidJumpModal({
+  getActiveTab: () => tabManager.getActiveTab(),
+  getTabById: id => tabManager.getTabById(id),
+  getSession: id => connectionCtrl.getConnectionSession(id),
+  acquireInput: id => terminalPaste.busy ? null : connectionCtrl.acquireInputLease(id),
+  releaseInput: (id, token) => connectionCtrl.releaseInputLease(id, token),
+  sendToTab: (id, text, session, token) => connectionCtrl.sendDataToTabAndWait(id, text, session, token),
+  onShowToast: showGlobalToast,
+});
+const pushHelper = new PushHelper(null, () => tabManager.getActiveTab(), {
+  getTabById: id => tabManager.getTabById(id),
+  getSession: id => connectionCtrl.getConnectionSession(id),
+  acquireInput: id => terminalPaste.busy ? null : connectionCtrl.acquireInputLease(id),
+  releaseInput: (id, token) => connectionCtrl.releaseInputLease(id, token),
+  sendToTab: (id, text, session, token) => connectionCtrl.sendDataToTabAndWait(id, text, session, token),
+});
+const shortcutsModal = new ShortcutsModal();
 
 function areAnyModalsOpen() {
+  if (shortcutsModal && shortcutsModal.isOpen()) return true;
+  if (document.getElementById('paste-recovery-dialog')?.open || document.getElementById('paste-confirm-dialog')?.open) return true;
   if (tabManager && tabManager.isTabSwitcherOpen && tabManager.isTabSwitcherOpen()) return true;
   if (settingsUI && settingsUI.isOpen()) return true;
   if (articleReader && articleReader.isOpen) return true;
@@ -140,6 +169,7 @@ function areAnyModalsOpen() {
   if (paletteWidget && paletteWidget.isOpen) return true;
   if (exportModal && exportModal.isOpen) return true;
   if (boardSwitcherWidget && boardSwitcherWidget.isOpen) return true;
+  if (aidJumpModal && aidJumpModal.isOpen) return true;
   if (userTagsUI && userTagsUI.isOpen()) return true;
   if (waterballUI && waterballUI.isOpen()) return true;
   if (articleMonitorUI && articleMonitorUI.isOpen()) return true;
@@ -151,7 +181,7 @@ const imeCtrl = new ImeController({
   imeInput,
   terminalContainer,
   tabManager,
-  onSendData: (data) => connectionCtrl.sendData(data),
+  onSendData: (data) => { if (!terminalPaste.busy) connectionCtrl.sendData(data); },
   getModalOpenStates: areAnyModalsOpen,
 });
 
@@ -165,6 +195,9 @@ const connectionCtrl = new ConnectionController({
   onFocusTerminal: (force) => imeCtrl.focusTerminal(force),
   onShowToast: showGlobalToast,
 });
+
+articleReader.getConnectionSession = id => connectionCtrl.getConnectionSession(id);
+articleReader.sendToTab = (id, text, session) => connectionCtrl.sendDataToTabAndWait(id, text, session);
 
 // 5. Bookmarks UI Controller
 const bookmarksUI = new BookmarksUI({
@@ -220,6 +253,12 @@ const settingsUI = new SettingsUI({
     settingMouseBrowsing: document.getElementById('setting-mouse-browsing'),
     settingWheelScroll: document.getElementById('setting-wheel-scroll'),
     settingAutoCopy: document.getElementById('setting-auto-copy'),
+    settingImageUpload: document.getElementById('setting-image-upload'),
+    settingImageHostProvider: document.getElementById('setting-image-host-provider'),
+    settingImageImgurClientId: document.getElementById('setting-image-imgur-client-id'),
+    settingImageCustomEndpoint: document.getElementById('setting-image-custom-endpoint'),
+    settingImageImgurClientGroup: document.getElementById('setting-image-imgur-client-group'),
+    settingImageCustomEndpointGroup: document.getElementById('setting-image-custom-endpoint-group'),
     settingTheme: document.getElementById('setting-theme'),
     settingCursorStyle: document.getElementById('setting-cursor-style'),
     settingBlinkRate: document.getElementById('setting-blink-rate'),
@@ -229,6 +268,10 @@ const settingsUI = new SettingsUI({
     btnCheckUpdate: document.getElementById('btn-check-update'),
     updateStatusMsg: document.getElementById('update-status-msg'),
     settingBlacklistEnabled: document.getElementById('setting-blacklist-enabled'),
+    settingBlacklistMode: document.getElementById('setting-blacklist-mode'),
+    settingBlacklistBlockWaterball: document.getElementById('setting-blacklist-block-waterball'),
+    settingBlacklistBlockPush: document.getElementById('setting-blacklist-block-push'),
+    settingBlacklistEnableKeywords: document.getElementById('setting-blacklist-enable-keywords'),
     settingBlacklistGreatTreasure: document.getElementById('setting-blacklist-great-treasure'),
     greatTreasureBadge: document.getElementById('great-treasure-badge'),
     inputBlacklistAdd: document.getElementById('input-blacklist-add'),
@@ -240,6 +283,14 @@ const settingsUI = new SettingsUI({
     btnBlacklistExportTxt: document.getElementById('btn-blacklist-export-txt'),
     btnBlacklistExportJson: document.getElementById('btn-blacklist-export-json'),
     btnBlacklistClear: document.getElementById('btn-blacklist-clear'),
+    inputBlacklistKwAdd: document.getElementById('input-blacklist-kw-add'),
+    btnBlacklistKwAdd: document.getElementById('btn-blacklist-kw-add'),
+    blacklistKwTagsContainer: document.getElementById('blacklist-kw-tags-container'),
+    blacklistKwCount: document.getElementById('blacklist-kw-count'),
+    btnBlacklistKwImport: document.getElementById('btn-blacklist-kw-import'),
+    fileBlacklistKwImport: document.getElementById('file-blacklist-kw-import'),
+    btnBlacklistKwExportTxt: document.getElementById('btn-blacklist-kw-export-txt'),
+    btnBlacklistKwClear: document.getElementById('btn-blacklist-kw-clear'),
   },
   onBookmarksRender: () => bookmarksUI.renderBookmarkList(),
   onUserTagsRender: () => userTagsUI.renderList(),
@@ -290,9 +341,7 @@ waterballUI.onFocusTerminal = (force = true) => imeCtrl.focusTerminal(force);
 // Article Monitor UI Integration
 articleMonitorUI.onOpenArticleReader = (url) => {
   const safeUrl = normalizePttArticleUrl(url);
-  invoke('open_browser_url', { url: safeUrl }).catch(() => {
-    window.open(safeUrl, '_blank');
-  });
+  openExternalUrl(safeUrl).catch(console.error);
 };
 articleMonitorUI.onSwitchBoard = (board) => {
   const activeTab = tabManager.getActiveTab();
@@ -310,10 +359,11 @@ userTagsUI.onFocusTerminal = (force = true) => imeCtrl.focusTerminal(force);
 // Start background article monitoring scheduler (every 3 minutes)
 articleMonitorManager.startScheduler(3);
 
-// Article Reader User Tag Integration
+// Article Reader User Tag & Toast Integration
 articleReader.onEditUserTag = (userId) => {
   userTagsUI.openModal(userId);
 };
+articleReader.onShowToast = showGlobalToast;
 userTagsManager.addListener(() => {
   articleReader.refresh();
   tabManager.getActiveTab()?.view?.redraw();
@@ -333,18 +383,13 @@ tabManager.onActiveTabChange = (activeTab) => {
 tabManager.onTabCloseRequest = (closingTab) => {
   imagePreview.hideImmediate();
   userTagsUI.hideTooltip();
-  if (closingTab.isConnected) {
-    invoke('disconnect', { tabId: closingTab.id }).catch(() => {});
-  }
+  connectionCtrl.disconnectTab(closingTab.id).catch(console.error);
 };
 
 tabManager.onUrlClick = (url) => {
   imagePreview.hideImmediate();
   userTagsUI.hideTooltip();
-  invoke('open_browser_url', { url }).catch((err) => {
-    console.error('Failed to open URL via Tauri:', err);
-    window.open(url, '_blank');
-  });
+  openExternalUrl(url).catch(console.error);
 };
 
 tabManager.onUrlHover = (url, cx, cy) => {
@@ -356,6 +401,12 @@ tabManager.onUrlHover = (url, cx, cy) => {
 
 tabManager.onUrlLeave = () => {
   imagePreview.hide();
+};
+
+tabManager.onAidClick = (aid) => {
+  imagePreview.hideImmediate();
+  userTagsUI.hideTooltip();
+  aidJumpModal.open(aid.raw);
 };
 
 tabManager.onWordHover = (word, cx, cy) => {
@@ -429,15 +480,39 @@ notificationManager.onTabBadgeTrigger = (tabId) => tabManager.triggerTabBadge(ta
 notificationManager.onFocusTab = (tabId) => tabManager.switchTab(tabId);
 
 // Initialize first tab & UI
+try {
+  if (localStorage.getItem('waterball_toolbar_collapsed') === 'true') {
+    document.body.classList.add('toolbar-collapsed');
+  }
+} catch (e) {}
+
 tabManager.init();
 bookmarksUI.renderBookmarksSelect();
 settingsUI.applyToolbarScale(settingsManager.settings.toolbarScale || 'medium');
 updateToolbarMode();
 
+function applyPlatformShortcutTooltips() {
+  const env = resolveEnv({ isMac });
+  if (shortcutsBtn) shortcutsBtn.title = getShortcutTooltip('shortcuts_help', env);
+  if (boardBtn) boardBtn.title = getShortcutTooltip('board_switcher', env);
+  if (articleReaderBtn) articleReaderBtn.title = getShortcutTooltip('article_reader', env);
+  if (pushHelperBtn) pushHelperBtn.title = getShortcutTooltip('push_helper', env);
+  if (paletteBtn) paletteBtn.title = getShortcutTooltip('palette', env);
+  if (exportBtn) exportBtn.title = getShortcutTooltip('export_screen', env);
+  if (aidBtn) aidBtn.title = getShortcutTooltip('aid_jump', env);
+  if (collapseToolbarBtn) collapseToolbarBtn.title = getShortcutTooltip('toggle_toolbar', env);
+  if (floatingExpandBtn) floatingExpandBtn.title = getShortcutTooltip('toggle_toolbar', env);
+  const ctxCopy = document.getElementById('ctx-copy');
+  if (ctxCopy) ctxCopy.textContent = `📋 ${getShortcutTooltip('copy_text', env)}`;
+  const ctxPush = document.getElementById('ctx-quick-push');
+  if (ctxPush) ctxPush.textContent = `💬 快速開啟長推文小幫手 (${env.isMac ? 'Cmd+Shift+X' : 'Alt+X'})`;
+}
+applyPlatformShortcutTooltips();
+
 // Window resize handling & Window state persistence
 let windowStateSaveTimer = null;
 function persistWindowState(immediate = false) {
-  if (settingsManager.settings.rememberWindowState === false) return;
+  if (!isTauri() || settingsManager.settings.rememberWindowState === false) return;
   clearTimeout(windowStateSaveTimer);
   const save = () => {
     try {
@@ -459,7 +534,7 @@ function persistWindowState(immediate = false) {
           isMaximized,
         }));
 
-        invoke('save_window_state', {
+        safeInvoke('save_window_state', {
           width,
           height,
           x: (typeof x === 'number' && !isNaN(x)) ? x : null,
@@ -513,6 +588,7 @@ autoLoginManager.onLoginError = (tabId, errorMsg) => {
 
 // Toolbar Action Buttons
 boardBtn?.addEventListener('click', () => boardSwitcherWidget.open());
+aidBtn?.addEventListener('click', () => aidJumpModal.open());
 exportBtn?.addEventListener('click', () => {
   const activeTab = tabManager.getActiveTab();
   if (activeTab) exportModal.open(activeTab);
@@ -523,51 +599,313 @@ articleReaderBtn?.addEventListener('click', () => {
   if (activeTab) articleReader.open(activeTab);
 });
 pushHelperBtn?.addEventListener('click', () => pushHelper.open());
+shortcutsBtn?.addEventListener('click', () => shortcutsModal.open());
+document.getElementById('settings-open-shortcuts-btn')?.addEventListener('click', () => {
+  settingsUI.close();
+  shortcutsModal.open();
+});
 
-// Global paste handler for terminal
-window.addEventListener('paste', (e) => {
-  const activeEl = document.activeElement;
-  const activeTag = activeEl?.tagName;
-  if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeEl?.isContentEditable) {
-    if (activeEl !== imeInput) {
-      return; // Let browser paste natively into the focused input or textarea
-    }
+function setToolbarCollapsed(collapsed, options = {}) {
+  const { focusTerminal = true, showNotice = false } = options;
+  const wasCollapsed = document.body.classList.contains('toolbar-collapsed');
+  document.body.classList.toggle('toolbar-collapsed', collapsed);
+
+  try {
+    localStorage.setItem('waterball_toolbar_collapsed', collapsed ? 'true' : 'false');
+  } catch (err) {
+    console.warn('Failed to persist toolbar state:', err);
   }
-  if (
-    e.target.closest('#push-modal') ||
-    e.target.closest('#settings-modal') ||
-    e.target.closest('#search-bar-widget') ||
-    e.target.closest('#export-modal') ||
-    e.target.closest('#board-switcher-widget') ||
-    e.target.closest('#article-reader-modal')
-  ) {
-    return;
+
+  if (!collapsed) {
+    updateToolbarMode();
   }
-  e.preventDefault();
-  const text = (e.clipboardData || window.clipboardData)?.getData('text');
-  if (text) {
-    let clean = text.replace(/\r\n/g, '\r').replace(/\n/g, '\r');
-    const activeTab = tabManager.getActiveTab();
-    const isPtt = (activeTab?.address || '').toLowerCase().includes('ptt');
-    // Only convert standard ESC[ to \x15[ (Ctrl+U) on PTT, which uses \x15 as color leader.
-    // On MapleBBS or other telnet sites, \x15 is erase-line, so keep \x1b[ intact.
-    if (isPtt) {
-      clean = clean.replace(/\x1b\[/g, '\x15[');
-      clean = clean.replace(/\*\[([0-9;]*m)/g, '\x15[$1');
+
+  const activeTab = tabManager.getActiveTab();
+  if (activeTab?.view) {
+    activeTab.view.resize();
+  }
+
+  if (focusTerminal) {
+    imeCtrl.focusTerminal(true);
+  }
+
+  if (showNotice && collapsed && !wasCollapsed) {
+    showGlobalToast(`功能列已收合；可點選右上角「▼ 功能列」或按 ${isMac ? 'Option+B' : 'Alt+B'} 展開`, 2500);
+  }
+}
+
+function toggleToolbar(showNotice = false) {
+  const isCollapsed = document.body.classList.contains('toolbar-collapsed');
+  setToolbarCollapsed(!isCollapsed, { showNotice });
+}
+
+collapseToolbarBtn?.addEventListener('click', () => {
+  setToolbarCollapsed(true, { showNotice: true });
+});
+
+floatingExpandBtn?.addEventListener('click', () => {
+  setToolbarCollapsed(false);
+});
+
+function isAnyModalOpen() {
+  return Boolean(
+    shortcutsModal?.isOpen() ||
+    document.getElementById('monitor-cloud-confirm')?.open ||
+    document.getElementById('paste-recovery-dialog')?.open ||
+    document.getElementById('paste-confirm-dialog')?.open ||
+    document.querySelector('#push-modal:not(.hidden)') ||
+    document.querySelector('#settings-modal:not(.hidden)') ||
+    document.querySelector('#search-bar-widget:not(.hidden)') ||
+    document.querySelector('#export-modal:not(.hidden)') ||
+    document.querySelector('#board-switcher-widget:not(.hidden)') ||
+    document.querySelector('#article-reader-modal:not(.hidden)')
+  );
+}
+
+const terminalPaste = new TerminalPasteTransaction({
+  getActiveTab: () => tabManager.getActiveTab(),
+  getTabById: id => tabManager.getTabById(id),
+  getSession: id => connectionCtrl.getConnectionSession(id),
+  acquireInput: id => connectionCtrl.acquireInputLease(id),
+  releaseInput: (id, token) => connectionCtrl.releaseInputLease(id, token),
+  send: (id, text, session, token, signal) => connectionCtrl.sendDataToTabAndWait(id, text, session, token, signal),
+  confirm: promptPasteConfirm,
+  onFailure: draft => {
+    const recovery = document.getElementById('paste-recovery-dialog');
+    if (draft.remaining && recovery) {
+      const remainingText = draft.remaining;
+      document.getElementById('paste-recovery-text').value = remainingText;
+      document.getElementById('paste-recovery-message').textContent = `${draft.error}。${draft.uncertain ? '第一個區塊可能已部分送出，請先檢查 BBS 畫面。' : ''}內容僅保留於此視窗，不會自動重送。`;
+
+      const deleteBtn = document.getElementById('paste-recovery-delete-image');
+      if (deleteBtn) {
+        const entry = imageUploadHistory.findByUrl(remainingText);
+        if (entry?.deletehash && !entry.deleted) {
+          deleteBtn.classList.remove('hidden');
+          deleteBtn.disabled = false;
+          deleteBtn.textContent = '🗑️ 從圖床撤回刪除此圖';
+        } else {
+          deleteBtn.classList.add('hidden');
+        }
+      }
+
+      recovery.showModal();
     }
-    connectionCtrl.sendData(clean);
+    showGlobalToast(`⚠️ ${draft.error}，貼上已停止`, 6000);
+  },
+});
+
+document.getElementById('paste-recovery-delete-image')?.addEventListener('click', async () => {
+  const deleteBtn = document.getElementById('paste-recovery-delete-image');
+  const textEl = document.getElementById('paste-recovery-text');
+  const url = textEl?.value?.trim();
+  if (!url || !deleteBtn) return;
+
+  deleteBtn.disabled = true;
+  deleteBtn.textContent = '⏳ 正在從圖床刪除...';
+  try {
+    await deleteUploadedImage({ url });
+    showGlobalToast('✅ 圖片已成功從圖床撤回並銷毀！', 5000);
+    deleteBtn.textContent = '✅ 已從圖床刪除';
+    textEl.value = `[此圖片已於 ${new Date().toLocaleTimeString()} 成功從圖床撤回並銷毀]\n${url}`;
+  } catch (err) {
+    showGlobalToast(`❌ 撤回失敗：${err.message}`, 5000);
+    deleteBtn.disabled = false;
+    deleteBtn.textContent = '🗑️ 從圖床撤回刪除此圖';
   }
 });
 
+document.getElementById('paste-recovery-copy')?.addEventListener('click', async () => {
+  try {
+    await writeClipboardText(document.getElementById('paste-recovery-text').value);
+    showGlobalToast('已複製待處理文字；請確認 BBS 畫面後再決定是否貼上');
+  } catch { showGlobalToast('複製失敗，請手動選取文字複製'); }
+});
+document.getElementById('paste-recovery-close')?.addEventListener('click', () => document.getElementById('paste-recovery-dialog').close());
+
+function promptPasteConfirm(lineCount, charCount, previewSnippet) {
+  return new Promise((resolve) => {
+    const dialog = document.getElementById('paste-confirm-dialog');
+    const msgEl = document.getElementById('paste-confirm-text');
+    const previewEl = document.getElementById('paste-confirm-preview');
+    const cancelBtn = document.getElementById('paste-confirm-cancel');
+    const acceptBtn = document.getElementById('paste-confirm-accept');
+
+    if (!dialog || !acceptBtn || !cancelBtn) {
+      resolve(false);
+      return;
+    }
+
+    if (msgEl) {
+      msgEl.textContent = `即將貼上 ${lineCount} 行文字（共 ${charCount} 個字元）至 BBS 終端機：`;
+    }
+    if (previewEl) {
+      previewEl.textContent = previewSnippet + (lineCount > 4 ? `\n... （其餘還有 ${lineCount - 4} 行）` : '');
+    }
+
+    const onAccept = () => {
+      cleanup();
+      dialog.close();
+      resolve(true);
+    };
+
+    const onCancel = () => {
+      cleanup();
+      dialog.close();
+      resolve(false);
+    };
+
+    const cleanup = () => {
+      acceptBtn.removeEventListener('click', onAccept);
+      cancelBtn.removeEventListener('click', onCancel);
+      dialog.removeEventListener('cancel', onCancel);
+    };
+
+    acceptBtn.addEventListener('click', onAccept, { once: true });
+    cancelBtn.addEventListener('click', onCancel, { once: true });
+    dialog.addEventListener('cancel', onCancel, { once: true });
+
+    dialog.showModal();
+  });
+}
+
+async function uploadClipboardImage(imageBlob, { signal } = {}) {
+  const s = settingsManager.settings;
+  showGlobalToast('☁️ 正在上傳圖片至圖床...', 8000);
+  const url = await uploadImageToHost(imageBlob, {
+    provider: s.imageUploadProvider || 'imgur',
+    imgurClientId: s.imageUploadImgurClientId,
+    customEndpoint: s.imageUploadCustomEndpoint,
+    autoFallback: false,
+    signal,
+  });
+  if (!signal?.aborted) { try { await writeClipboardText(url); } catch {} }
+  if (imageUploadHistory.persistenceError) {
+    showGlobalToast('圖片撤回紀錄目前僅保存在此視窗記憶體；請先撤回或備份，關閉視窗後可能無法撤回', 10000);
+  }
+  return url;
+}
+
+// The transaction captures the original tab/session and owns the lock before
+// clipboard reads or uploads begin. Its normal ACK/recovery path owns sending.
+async function pasteTerminalClipboard(input) {
+  const result = await terminalPaste.paste(input);
+  if (result.status === 'busy') showGlobalToast('上一筆貼上尚未完成');
+  else if (result.status === 'disconnected') showGlobalToast('尚未連線，未貼上');
+  else if (result.status === 'sent') showGlobalToast('✅ 貼上完成', 3000);
+  return result;
+}
+
+const imageInsertions = new WeakSet();
+async function handleImageUploadAndInsert(imageBlob, targetEl) {
+  if (imageInsertions.has(targetEl)) {
+    showGlobalToast('上一張圖片尚未上傳完成');
+    return;
+  }
+  imageInsertions.add(targetEl);
+  const original = targetEl.value;
+  const start = targetEl.selectionStart;
+  const end = targetEl.selectionEnd;
+  try {
+    const url = await uploadClipboardImage(imageBlob);
+    // Do not overwrite an edited draft or insert into another editor.
+    if (!targetEl.isConnected || targetEl.readOnly || targetEl.disabled ||
+        !pushHelper.isOpen || targetEl.value !== original) {
+      showGlobalToast(`圖片已上傳；草稿已變更，請手動貼上：${url}`, 8000);
+      return;
+    }
+    targetEl.value = original.slice(0, start) + url + original.slice(end);
+    targetEl.selectionStart = targetEl.selectionEnd = start + url.length;
+    targetEl.dispatchEvent(new Event('input', { bubbles: true }));
+    showGlobalToast('✅ 圖片網址已填入推文草稿', 3000);
+  } catch (error) {
+    console.error('Image upload failed:', error);
+    showGlobalToast(`❌ 圖片上傳失敗：${error.message}`, 5000);
+  } finally {
+    imageInsertions.delete(targetEl);
+  }
+}
+
+async function doPaste() {
+  const activeEl = document.activeElement;
+  if (isInteractiveInputElement(activeEl, imeInput) || isAnyModalOpen()) return;
+  await pasteTerminalClipboard(async ({ signal }) => {
+    // Native text paste keeps the existing single read fast path. Some native
+    // backends reject readText for image-only clipboards, so probe images then.
+    let textError;
+    try {
+      if (signal.aborted) return '';
+      const text = await readClipboardText();
+      if (text || settingsManager.settings.imageUploadEnabled === false) return text;
+    } catch (error) {
+      if (settingsManager.settings.imageUploadEnabled === false) throw error;
+      textError = error;
+    }
+    if (signal.aborted) return '';
+    const imageBlob = await readClipboardImage();
+    if (signal.aborted) return '';
+    if (imageBlob) return await uploadClipboardImage(imageBlob, { signal });
+    if (textError) throw textError;
+    return '';
+  });
+}
+
+// Snapshot event data and cancel native insertion synchronously. Browser paste
+// shortcuts use this event directly, without a second clipboard permission read.
+window.addEventListener('paste', (e) => {
+  const activeEl = document.activeElement;
+  const clipboardData = e.clipboardData || window.clipboardData;
+  if (isInteractiveInputElement(activeEl, imeInput)) {
+    if (activeEl !== pushHelper.textInput || !pushHelper.isOpen ||
+        activeEl.readOnly || activeEl.disabled || settingsManager.settings.imageUploadEnabled === false) return;
+    if (clipboardData?.getData('text/plain') || clipboardData?.getData('text')) return;
+    const imageBlob = extractClipboardImage(clipboardData);
+    if (!imageBlob) return;
+    e.preventDefault();
+    void handleImageUploadAndInsert(imageBlob, activeEl);
+    return;
+  }
+  if (isAnyModalOpen()) return;
+  const text = clipboardData?.getData('text') || '';
+  const imageBlob = !text && settingsManager.settings.imageUploadEnabled !== false
+    ? extractClipboardImage(clipboardData) : null;
+  e.preventDefault();
+  imeInput.value = '';
+  void pasteTerminalClipboard(imageBlob ? ({ signal }) => uploadClipboardImage(imageBlob, { signal }) : text);
+});
+
+// Capture before focused editors/dialogs can consume Escape. Already-issued
+// uploads may finish so their deletion keys can be retained, but never insert.
+window.addEventListener('keydown', (e) => {
+  if (!terminalPaste.busy || e.key !== 'Escape' || e.isComposing || e.keyCode === 229) return;
+  terminalPaste.cancel();
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  const confirmDialog = document.getElementById('paste-confirm-dialog');
+  if (confirmDialog?.open) confirmDialog.dispatchEvent(new Event('cancel', { cancelable: true }));
+  showGlobalToast('已停止貼上；若圖片已送出，會等待回應並保留可用的撤回資料', 8000);
+}, { capture: true });
+
 // Comprehensive Keyboard Mapping for BBS & Multi-Tab Shortcuts
 window.addEventListener('keydown', (e) => {
-  if (document.getElementById('monitor-cloud-confirm')?.open) return;
+  if (document.getElementById('monitor-cloud-confirm')?.open ||
+      document.getElementById('paste-confirm-dialog')?.open ||
+      document.getElementById('paste-recovery-dialog')?.open) {
+    return;
+  }
+
   // Ignore bare modifier keys to not interfere with OS level HUDs (e.g., Cmd+Space input method HUD)
   if (['Meta', 'Control', 'Alt', 'Shift', 'OS'].includes(e.key)) {
     return;
   }
+
   // Immediately let OS handle Cmd+Space / Ctrl+Space without any interference or focus shifts
   if ((e.metaKey || e.ctrlKey) && e.code === 'Space') {
+    return;
+  }
+
+  // 1. IME Composition Check: MUST run before any client action or BBS translation!
+  if (imeCtrl.isComposing || e.isComposing || e.key === 'Process' || e.keyCode === 229) {
     return;
   }
 
@@ -590,62 +928,156 @@ window.addEventListener('keydown', (e) => {
   imagePreview.hideImmediate();
   settingsManager.recordActivity();
 
-  // Modal Dialog ESC handling
-  if (boardSwitcherWidget && boardSwitcherWidget.isOpen) {
+  // 2. Interactive Input Element Handling (inputs/textareas other than terminal imeInput)
+  if (isInteractiveInputElement(document.activeElement, imeInput)) {
+    // Escape in an input closes containing modals/widgets
+    if (e.key === 'Escape') {
+      if (shortcutsModal?.isOpen()) { shortcutsModal.close(); e.preventDefault(); return; }
+      if (searchWidget?.isOpen) { searchWidget.close(); e.preventDefault(); return; }
+      if (boardSwitcherWidget?.isOpen) { boardSwitcherWidget.close(); e.preventDefault(); return; }
+      if (aidJumpModal?.isOpen) { aidJumpModal.close(); e.preventDefault(); return; }
+      if (exportModal?.isOpen) { exportModal.close(); e.preventDefault(); return; }
+      if (paletteWidget?.isOpen) { paletteWidget.close(); e.preventDefault(); return; }
+      if (articleReader?.isOpen) { articleReader.close(); e.preventDefault(); return; }
+      if (settingsUI?.isOpen()) { settingsUI.close(); e.preventDefault(); return; }
+      if (pushHelper?.isOpen) {
+        if (pushHelper.isPushing) pushHelper.abort(); else pushHelper.close();
+        e.preventDefault();
+        return;
+      }
+      if (waterballUI?.isOpen()) { waterballUI.close(); e.preventDefault(); return; }
+      if (userTagsUI?.isOpen()) { userTagsUI.closeModal(); e.preventDefault(); return; }
+      if (articleMonitorUI?.isOpen()) { articleMonitorUI.close(); e.preventDefault(); return; }
+      if (tabManager?.isTabSwitcherOpen?.()) { tabManager.closeTabSwitcher(); e.preventDefault(); return; }
+    }
+    // F3 / Shift+F3 in search input (if not caught by local input handler)
+    if (searchWidget?.isOpen && (e.key === 'F3' || (isMac && e.metaKey && e.code === 'KeyG'))) {
+      e.preventDefault();
+      if (e.shiftKey) searchWidget.prevMatch();
+      else searchWidget.nextMatch();
+      return;
+    }
+    return; // Allow native typing in the focused input
+  }
+
+  // 3. Open Modal ESC / Key Handling (when focus is outside the input)
+  if (shortcutsModal?.isOpen()) {
+    if (e.key === 'Escape' || e.key === 'F1') {
+      shortcutsModal.close();
+      e.preventDefault();
+      return;
+    }
+    return; // Modal captures keyboard
+  }
+
+  if (aidJumpModal?.isOpen) {
+    if (e.key === 'Escape') { aidJumpModal.close(); e.preventDefault(); }
+    return; // Never forward keys from AID buttons/backdrop into the terminal.
+  }
+
+  if (boardSwitcherWidget?.isOpen) {
     if (e.key === 'Escape') {
       boardSwitcherWidget.close();
-      return;
+      e.preventDefault();
     }
+    return;
   }
 
-  if (exportModal && exportModal.isOpen) {
+  if (exportModal?.isOpen) {
     if (e.key === 'Escape') {
       exportModal.close();
-      return;
+      e.preventDefault();
     }
+    return;
   }
 
-  if (paletteWidget && paletteWidget.isOpen) {
+  if (paletteWidget?.isOpen) {
     if (e.key === 'Escape') {
       paletteWidget.close();
-      return;
-    }
-  }
-
-  if (searchWidget && searchWidget.isOpen) {
-    if (e.key === 'Escape') {
-      searchWidget.close();
+      e.preventDefault();
     }
     return;
   }
 
-  if (articleReader && articleReader.isOpen) {
-    if (e.key === 'Escape') {
-      articleReader.close();
-    }
-    return;
-  }
-
-  if (settingsUI && settingsUI.isOpen()) {
+  if (settingsUI?.isOpen()) {
     if (e.key === 'Escape') {
       settingsUI.close();
+      e.preventDefault();
     }
     return;
   }
 
-  if (pushHelper && pushHelper.isOpen) {
+  if (pushHelper?.isOpen) {
     if (e.key === 'Escape') {
       if (pushHelper.isPushing) {
         pushHelper.abort();
       } else {
         pushHelper.close();
       }
+      e.preventDefault();
     }
     return;
   }
 
-  // Article Monitor & Alert Center Toggle (Alt+M / Cmd+Alt+M / Ctrl+Alt+M)
-  if (e.altKey && (e.code === 'KeyM' || e.key === 'm' || e.key === 'M')) {
+  if (waterballUI?.isOpen()) {
+    if (e.key === 'Escape') {
+      waterballUI.close();
+      e.preventDefault();
+    }
+    return;
+  }
+
+  if (userTagsUI?.isOpen()) {
+    if (e.key === 'Escape') {
+      userTagsUI.closeModal();
+      e.preventDefault();
+    }
+    return;
+  }
+
+  if (articleMonitorUI?.isOpen()) {
+    if (e.key === 'Escape') {
+      articleMonitorUI.close();
+      e.preventDefault();
+    }
+    return;
+  }
+
+  if (tabManager?.isTabSwitcherOpen?.()) {
+    if (e.key === 'Escape') {
+      tabManager.closeTabSwitcher();
+      e.preventDefault();
+    }
+    return;
+  }
+
+  if (articleReader?.isOpen) {
+    if (e.key === 'Escape') {
+      articleReader.close();
+      e.preventDefault();
+    }
+    return;
+  }
+
+  // Search Widget handling (searchWidget does NOT swallow other keys; Escape closes it)
+  if (searchWidget?.isOpen) {
+    if (e.key === 'Escape') {
+      searchWidget.close();
+      e.preventDefault();
+      return;
+    }
+  }
+
+  // 4. Client Global Shortcuts Dispatch
+  const env = resolveEnv({ isMac });
+
+  if (matchShortcut('shortcuts_help', e, env)) {
+    e.preventDefault();
+    shortcutsModal.toggle();
+    return;
+  }
+
+  if (matchShortcut('article_monitor', e, env)) {
     e.preventDefault();
     if (articleMonitorUI.isOpen()) {
       articleMonitorUI.close();
@@ -655,67 +1087,31 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
-  // Waterball Messenger Toggle (Alt+W / Cmd+Alt+W / Ctrl+Alt+W) - Disabled in v0.1.8
-  /*
-  if (e.altKey && (e.code === 'KeyW' || e.key === 'w' || e.key === 'W')) {
+  if (matchShortcut('toggle_toolbar', e, env)) {
     e.preventDefault();
-    if (waterballUI.isOpen()) {
-      waterballUI.close();
-    } else {
-      waterballUI.open();
-    }
-    return;
-  }
-  */
-
-  if (waterballUI && waterballUI.isOpen()) {
-    if (e.key === 'Escape') {
-      waterballUI.close();
-    }
+    toggleToolbar(true);
     return;
   }
 
-  if (userTagsUI && userTagsUI.isOpen()) {
-    if (e.key === 'Escape') {
-      userTagsUI.closeModal();
-    }
-    return;
-  }
-
-  if (articleMonitorUI && articleMonitorUI.isOpen()) {
-    if (e.key === 'Escape') {
-      articleMonitorUI.close();
-    }
-    return;
-  }
-
-  if (tabManager && tabManager.isTabSwitcherOpen?.()) {
-    if (e.key === 'Escape') {
-      tabManager.closeTabSwitcher();
-    }
-    return;
-  }
-
-  if (isInteractiveInputElement(document.activeElement, imeInput)) {
-    return;
-  }
-
-  // Smart Multi-Push Assistant (Cmd+Shift+X / Ctrl+Shift+X / Alt+X)
-  if (((e.metaKey || e.ctrlKey) && e.shiftKey && (e.code === 'KeyX' || e.key === 'X')) || (e.altKey && (e.code === 'KeyX' || e.key === 'x'))) {
+  if (matchShortcut('push_helper', e, env)) {
     e.preventDefault();
     pushHelper.open();
     return;
   }
 
-  // Quick Board Switcher (Cmd+K on macOS / Ctrl+Shift+K on Windows & Linux)
-  if (((isMac && e.metaKey) || (!isMac && e.ctrlKey && e.shiftKey)) && e.code === 'KeyK' && !e.altKey) {
+  if (matchShortcut('board_switcher', e, env)) {
     e.preventDefault();
     boardSwitcherWidget.open();
     return;
   }
 
-  // HD Screenshot & Export Modal (Cmd+Shift+S on macOS / Ctrl+Shift+S on Windows & Linux)
-  if (((isMac && e.metaKey) || (!isMac && e.ctrlKey)) && e.shiftKey && e.code === 'KeyS' && !e.altKey) {
+  if (matchShortcut('aid_jump', e, env)) {
+    e.preventDefault();
+    aidJumpModal.open();
+    return;
+  }
+
+  if (matchShortcut('export_screen', e, env)) {
     e.preventDefault();
     const activeTab = tabManager.getActiveTab();
     if (activeTab) {
@@ -724,33 +1120,39 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
-  // Toggle ANSI Palette & Symbols (Cmd+P on macOS / Ctrl+Shift+P on Windows & Linux)
-  if (((isMac && e.metaKey && !e.shiftKey) || (!isMac && e.ctrlKey && e.shiftKey)) && e.code === 'KeyP' && !e.ctrlKey && !e.altKey) {
+  if (matchShortcut('palette', e, env)) {
     e.preventDefault();
     paletteWidget.toggle();
     return;
   }
 
-  // Find in Terminal (Cmd+F on macOS / Ctrl+Shift+F on Windows & Linux)
-  if (((isMac && e.metaKey && !e.shiftKey) || (!isMac && e.ctrlKey && e.shiftKey)) && e.code === 'KeyF' && !e.altKey) {
+  if (matchShortcut('search_find', e, env)) {
     e.preventDefault();
     searchWidget.open();
     return;
   }
 
-  // Find Next/Prev (Cmd+G / Cmd+Shift+G)
-  if (((isMac && e.metaKey) || (!isMac && e.ctrlKey)) && e.code === 'KeyG' && !e.altKey) {
+  if (matchShortcut('search_next', e, env)) {
     e.preventDefault();
-    if (e.shiftKey) {
-      searchWidget.prevMatch();
+    if (!searchWidget.isOpen) {
+      searchWidget.open();
     } else {
       searchWidget.nextMatch();
     }
     return;
   }
 
-  // Open Article Reader Mode (Cmd+D / Cmd+R on macOS)
-  if (isMac && e.metaKey && (e.code === 'KeyD' || e.code === 'KeyR') && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+  if (matchShortcut('search_prev', e, env)) {
+    e.preventDefault();
+    if (!searchWidget.isOpen) {
+      searchWidget.open();
+    } else {
+      searchWidget.prevMatch();
+    }
+    return;
+  }
+
+  if (matchShortcut('article_reader', e, env)) {
     e.preventDefault();
     const activeTab = tabManager.getActiveTab();
     if (activeTab) {
@@ -759,20 +1161,18 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
-  // New Tab: Cmd+T (macOS) / Ctrl+Shift+T (Windows & Linux)
-  if (((isMac && e.metaKey) || (!isMac && e.ctrlKey && e.shiftKey)) && e.code === 'KeyT' && !e.altKey) {
+  if (matchShortcut('new_tab', e, env)) {
     e.preventDefault();
     const newTab = tabManager.createTab({
       title: `連線 ${tabManager.tabs.length + 1}`,
-      address: 'bbs@ptt.cc:22',
+      address: getDefaultAddress(),
       encoding: 'big5',
     });
     tabManager.switchTab(newTab.id);
     return;
   }
 
-  // Close Current Tab: Cmd+W (macOS) / Ctrl+Shift+W (Windows & Linux)
-  if (((isMac && e.metaKey) || (!isMac && e.ctrlKey && e.shiftKey)) && e.code === 'KeyW' && !e.altKey) {
+  if (matchShortcut('close_tab', e, env)) {
     e.preventDefault();
     const activeTab = tabManager.getActiveTab();
     if (activeTab) {
@@ -781,8 +1181,7 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
-  // Ctrl+Tab / Ctrl+Shift+Tab: Cycle through tabs
-  if (e.ctrlKey && e.key === 'Tab') {
+  if (matchShortcut('cycle_tab', e, env)) {
     e.preventDefault();
     if (e.shiftKey) {
       tabManager.switchToPrevTab();
@@ -792,8 +1191,7 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
-  // Switch directly to tab 1 ~ 9 (Cmd+1~9 on macOS / Alt+1~9 on Windows & Linux)
-  if (((isMac && e.metaKey) || (!isMac && e.altKey)) && !e.shiftKey && e.code.startsWith('Digit')) {
+  if (matchShortcut('switch_tab_digits', e, env)) {
     const digit = parseInt(e.code.charAt(5), 10);
     if (digit >= 1 && digit <= 9) {
       e.preventDefault();
@@ -802,16 +1200,12 @@ window.addEventListener('keydown', (e) => {
     }
   }
 
+  // 5. BBS Terminal Key Handling & Translation
   const activeTab = tabManager.getActiveTab();
   if (!activeTab || !activeTab.isConnected) return;
 
   // Make sure terminal textarea has focus
   imeCtrl.focusTerminal(true);
-
-  // If user is actively in IME composition or candidate selection popup
-  if (imeCtrl.isComposing || e.isComposing || e.key === 'Process' || e.keyCode === 229) {
-    return;
-  }
 
   const view = activeTab.view;
   const buf = activeTab.buf;
@@ -833,6 +1227,12 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
+  if (terminalPaste.busy) {
+    e.preventDefault();
+    if (e.code === 'Escape') terminalPaste.cancel();
+    return;
+  }
+
   // 2. Translate BBS Key (Control characters, navigation, editing keys, DBCS)
   const { seq, handled, isPaste } = translateBbsKey(e, {
     smartDbcsBackspace: settingsManager.settings.smartDbcsBackspace,
@@ -841,7 +1241,12 @@ window.addEventListener('keydown', (e) => {
   });
 
   if (isPaste) {
-    return; // Let browser paste event handle
+    // Web/extension needs the browser's native paste event and its snapshot.
+    if (!isTauri()) return;
+    e.preventDefault();
+    imeInput.value = '';
+    doPaste();
+    return;
   }
 
   if (handled && seq) {
@@ -884,3 +1289,11 @@ setTimeout(async () => {
     console.warn('[Updater] Background check failed:', err);
   }
 }, 2000);
+
+}
+
+startApp().catch(error => {
+  console.error('Waterball initialization failed:', error);
+  const status = document.getElementById('status-text');
+  if (status) status.textContent = `初始化失敗：${error.message || error}`;
+});

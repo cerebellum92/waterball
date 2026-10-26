@@ -2,9 +2,10 @@
 
 import { sendNativeNotification } from './platform.js';
 import { CloudPushClient, normalizePushServiceUrl } from './cloud_push_client.js';
-import { checkedCloudConfig, restorePreview, rulesSignature } from './cloud_restore.js';
+import { checkedCloudConfig, checkedSelfHostedConfig, checkedRemoteConfig, reconcileRulesWithCloud, restorePreview, rulesSignature } from './cloud_restore.js';
 import { makeMergePlan, mergeRules, mergeSilent, withLocalBackups } from './cloud_merge.js';
 import { isDeletedArticleTitle } from '../shared/push-rules.js';
+import { blacklistManager } from './blacklist.js';
 
 export const MAX_MONITOR_BOARDS = 10;
 export const DEFAULT_OFFICIAL_WORKER_URL = 'https://waterball-tracker.cerebellum92.workers.dev';
@@ -469,7 +470,7 @@ export class ArticleMonitorManager {
   getCloudRestorePreview() {
     const c = this.cloudSyncConfig;
     if (!c.remoteConfig || c.remoteConfig.configRevision === 0) return null;
-    return restorePreview(this.rules, c.remoteConfig, normalizePushServiceUrl(c.workerUrl));
+    return restorePreview(this.rules, c.remoteConfig, normalizePushServiceUrl(c.workerUrl), c.serverMode === 'selfHosted' ? 'selfHosted' : 'official');
   }
 
   getLocalRulesBackup() {
@@ -488,33 +489,64 @@ export class ArticleMonitorManager {
 
   applyCloudRestore(preview, { fromRead = false } = {}) {
     try {
-      const c = this.cloudSyncConfig, remote = checkedCloudConfig(c.remoteConfig);
+      const c = this.cloudSyncConfig, mode = c.serverMode === 'selfHosted' ? 'selfHosted' : 'official';
+      const remote = checkedRemoteConfig(c.remoteConfig, mode);
       if ((!fromRead && this.cloudClient.running) || c.pendingRequest) return { success: false, message: '同步操作仍在執行或等待確認，請先確認結果，再還原本機規則' };
-      if (!preview || preview.origin !== normalizePushServiceUrl(c.workerUrl) || preview.serviceId !== c.serviceId ||
+      if (!preview || preview.mode !== mode || preview.origin !== normalizePushServiceUrl(c.workerUrl) || preview.serviceId !== c.serviceId ||
           preview.bindingVersion !== c.bindingVersion || preview.configRevision !== remote.configRevision ||
           preview.cloudSignature !== rulesSignature(remote.rules) || preview.localSignature !== rulesSignature(this.rules)) {
         return { success: false, message: '本機或雲端設定已變更，請重新查看還原預覽；規則尚未替換' };
       }
       const backup = this.hasLocalRuleDraft() || !this.getLocalRulesBackup() ? structuredClone(this.rules) : structuredClone(this.getLocalRulesBackup());
-      this.persistRestoredRules(remote.rules, backup, { origin: preview.origin, serviceId: remote.serviceId, bindingVersion: remote.bindingVersion, revision: remote.configRevision, signature: rulesSignature(remote.rules), baseRules: structuredClone(remote.rules), baseSilent: remote.telegram.silent });
+      const isPristine = !this.hasLocalRuleDraft() && !this.restoreSource && rulesSignature(this.rules) === rulesSignature(DEFAULT_MONITOR_RULES) && !this.storage?.getItem('bbsterm_monitor_rules');
+      const reconciled = isPristine ? structuredClone(remote.rules) : reconcileRulesWithCloud(this.rules, remote.rules);
+      this.persistRestoredRules(reconciled, backup, { origin: preview.origin, serviceId: remote.serviceId, bindingVersion: remote.bindingVersion, revision: remote.configRevision, signature: rulesSignature(reconciled), baseRules: structuredClone(remote.rules), baseSilent: remote.telegram.silent });
       this.saveCloudSyncConfig({ ...c, restorePending: false, dirty: false, savedLocalRules: null, mergeBlocked: null, lastError: '' });
       const warning = this.cloudStorageError ? '規則與備份已保存，但同步狀態保存失敗；請檢查本機儲存空間' : undefined;
       this.saveTelegramConfig({ ...this.telegramConfig, silent: remote.telegram.silent }, { sync: false, markDirty: false });
-      return { success: true, restored: true, warning, message: '已將雲端規則還原到此裝置，原本規則保留於本機備份；雲端未變更' };
+      return { success: true, restored: true, warning, message: '已同步雲端勾選與篩選設定至此裝置，本機規則清單已完整保留；雲端未變更' };
     } catch (e) { return { success: false, message: `還原失敗：${e.message}` }; }
   }
 
   adoptCloudConfig(raw, { importRules = false } = {}) {
     const remote = checkedCloudConfig(raw), c = this.cloudSyncConfig;
     if ((c.serviceId && c.serviceId !== remote.serviceId) || (c.bindingVersion && c.bindingVersion !== remote.bindingVersion)) throw new Error('雲端服務身份已變更，請重新配對；本機規則保持不變');
-    const draft = this.hasLocalRuleDraft() || this.canAutoRestoreRules?.() === false;
+    const isPristine = !this.hasLocalRuleDraft() && !this.restoreSource && rulesSignature(this.rules) === rulesSignature(DEFAULT_MONITOR_RULES) && !this.storage?.getItem('bbsterm_monitor_rules');
+    const draft = this.canAutoRestoreRules?.() === false || (!isPristine && this.hasLocalRuleDraft());
     this.saveCloudSyncConfig({ ...c, serverMode: 'official', serviceId: remote.serviceId, bindingVersion: remote.bindingVersion, configRevision: remote.configRevision, lifecycleVersion: remote.lifecycleVersion, serverStatus: remote.status, leaseExpiresAt: remote.leaseExpiresAt, remoteConfig: remote, lastError: '', requiresPairing: false });
     this.saveTelegramConfig({ ...this.telegramConfig, enabled: remote.status === 'active', chatId: remote.telegram.chatId, silent: c.dirty ? this.telegramConfig.silent : remote.telegram.silent, botToken: '' }, { sync: false, markDirty: false });
     if (!importRules || remote.configRevision === 0) return { restored: false };
     if (draft) {
-      const differs = rulesSignature(this.rules) !== rulesSignature(remote.rules);
-      this.saveCloudSyncConfig({ ...this.cloudSyncConfig, restorePending: differs });
-      return { restored: false, restoreRequired: differs, message: differs ? '雲端設定已下載；本機已有規則，請預覽後選擇是否還原' : '雲端與本機規則相同，本機草稿保留' };
+      const activeDiffers = rulesSignature(this.rules) !== rulesSignature(reconcileRulesWithCloud(this.rules, remote.rules));
+      this.saveCloudSyncConfig({ ...this.cloudSyncConfig, restorePending: activeDiffers });
+      return { restored: false, restoreRequired: activeDiffers, message: activeDiffers ? '雲端設定已下載；本機已有規則，請預覽後選擇是否同步勾選與篩選設定' : '雲端與本機勾選規則相同，本機清單保留' };
+    }
+    return this.applyCloudRestore(this.getCloudRestorePreview(), { fromRead: true });
+  }
+
+  adoptSelfHostedConfig(raw, origin) {
+    const c = this.cloudSyncConfig;
+    if (c.serverMode !== 'selfHosted' || normalizePushServiceUrl(c.workerUrl) !== origin) {
+      throw new Error('服務模式或網址已變更，已取消舊回應');
+    }
+    const remote = checkedSelfHostedConfig(raw);
+    const isPristine = !this.hasLocalRuleDraft() && !this.restoreSource && rulesSignature(this.rules) === rulesSignature(DEFAULT_MONITOR_RULES) && !this.storage?.getItem('bbsterm_monitor_rules');
+    const draft = this.canAutoRestoreRules?.() === false || (!isPristine && this.hasLocalRuleDraft());
+    const differs = draft && remote.configRevision > 0 && rulesSignature(this.rules) !== rulesSignature(reconcileRulesWithCloud(this.rules, remote.rules));
+    const next = { ...c, serverMode: 'selfHosted', serviceId: null, bindingVersion: null,
+      configRevision: remote.configRevision, lifecycleVersion: remote.lifecycleVersion,
+      serverStatus: remote.status, leaseExpiresAt: null, remoteConfig: remote,
+      credentialOrigin: origin, restorePending: differs, needsCloudRead: false, lastError: '', requiresPairing: false };
+    // Persist before exposing metadata. A failed read must not replace live rules
+    // or mutate bot tokens / owner credentials from a server response.
+    if (!this.storage) throw new Error('無法保存自架設定，本機規則保持不變');
+    this.storage.setItem('bbsterm_monitor_cloud_sync', JSON.stringify(next));
+    this.cloudSyncConfig = next;
+    this.cloudStorageError = '';
+    if (remote.configRevision === 0) { this.notify(); return { restored: false }; }
+    if (draft) {
+      this.notify();
+      return { restored: false, restoreRequired: differs, message: differs ? '自架設定已下載；請預覽後同步勾選與篩選設定' : '自架與本機規則相同，本機清單保留' };
     }
     return this.applyCloudRestore(this.getCloudRestorePreview(), { fromRead: true });
   }
@@ -789,6 +821,17 @@ export class ArticleMonitorManager {
     if (!rule.enabled) return false;
     if (isDeletedArticleTitle(article.title)) return false;
     if (article.board.toLowerCase() !== rule.board.toLowerCase()) return false;
+
+    // Blacklist check: exclude articles by blacklisted authors or blacklisted keywords
+    if (blacklistManager.settings.enabled && blacklistManager.settings.blockPushNotification !== false) {
+      const cleanAuthor = article.author ? String(article.author).split('(')[0].trim() : '';
+      if (cleanAuthor && blacklistManager.isBlacklisted(cleanAuthor)) {
+        return false;
+      }
+      if (article.title && blacklistManager.isKeywordBlacklisted(article.title)) {
+        return false;
+      }
+    }
 
     // Author check
     if (rule.author) {

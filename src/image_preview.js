@@ -32,6 +32,15 @@ export function isImageUrl(url) {
   return false;
 }
 
+export function getProxiedImageUrl(url) {
+  if (!url || typeof url !== 'string') return '';
+  const clean = url.trim();
+  if (!clean || clean.startsWith('data:') || clean.startsWith('blob:') || clean.includes('images.weserv.nl')) {
+    return clean;
+  }
+  return `https://images.weserv.nl/?url=${encodeURIComponent(clean)}&default=1`;
+}
+
 export function normalizeImageUrl(url) {
   if (!url) return '';
   let clean = url.trim();
@@ -41,11 +50,20 @@ export function normalizeImageUrl(url) {
     clean = 'https://' + clean.substring(7);
   }
 
-  // Imgur page link to direct image link (e.g. imgur.com/abc -> i.imgur.com/abc.jpg)
-  const imgurMatch = clean.match(/(?:https?:\/\/)?(?:m\.|www\.)?imgur\.com\/([a-zA-Z0-9]+)(?:\.[a-zA-Z]+)?$/i);
-  if (imgurMatch && !clean.includes('/a/') && !clean.includes('/gallery/')) {
-    return `https://i.imgur.com/${imgurMatch[1]}.jpg`;
+  // Normalize Twitter / X media links ending with :large or :orig
+  if (/pbs\.twimg\.com\/media\/[^?]+\:(large|orig|medium|small)$/i.test(clean)) {
+    clean = clean.replace(/\:(large|orig|medium|small)$/i, '?format=jpg&name=$1');
   }
+
+  // Only rewrite actual Imgur page hosts. Direct-image URLs keep their
+  // extension/query, so a repaired PNG is never silently changed to JPEG.
+  try {
+    const parsed = new URL(clean);
+    if (/^(?:www\.|m\.)?imgur\.com$/i.test(parsed.hostname) && ['http:', 'https:'].includes(parsed.protocol)) {
+      const image = parsed.pathname.match(/^\/(?:gallery\/)?([a-zA-Z0-9]+)(\.[a-zA-Z]+)?$/);
+      if (image) return `https://i.imgur.com/${image[1]}${image[2] || '.jpg'}${parsed.search}${parsed.hash}`;
+    }
+  } catch { /* Preserve unsupported input for the caller to validate. */ }
 
   return clean;
 }
@@ -75,6 +93,7 @@ export class ImagePreviewController {
     const img = document.createElement('img');
     img.className = 'preview-img';
     img.alt = 'Preview';
+    img.referrerPolicy = 'no-referrer';
 
     const caption = document.createElement('div');
     caption.className = 'preview-caption';
@@ -122,18 +141,24 @@ export class ImagePreviewController {
       this.overlay.classList.remove('hidden');
       this.updatePosition(clientX, clientY);
 
-      // Preload image
+      // Preload image with anti-hotlinking referrerPolicy and proxy fallback
       const tempImg = new Image();
+      tempImg.referrerPolicy = 'no-referrer';
+      let triedProxy = false;
       tempImg.onload = () => {
         if (this.currentUrl === targetUrl) {
-          this.img.src = targetUrl;
+          this.img.referrerPolicy = 'no-referrer';
+          this.img.src = tempImg.src;
           this.img.style.display = 'block';
           this.spinner.style.display = 'none';
           this.updatePosition(clientX, clientY);
         }
       };
       tempImg.onerror = () => {
-        if (this.currentUrl === targetUrl) {
+        if (!triedProxy) {
+          triedProxy = true;
+          tempImg.src = getProxiedImageUrl(targetUrl);
+        } else if (this.currentUrl === targetUrl) {
           this.hideImmediate();
         }
       };

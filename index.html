@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="color-scheme" content="dark" />
+  <meta name="referrer" content="no-referrer" />
   <title>Waterball (水球) — 新世代跨平台 BBS 連線軟體</title>
   <link rel="stylesheet" href="/src/styles.css" />
 </head>
@@ -37,10 +38,13 @@
       </div>
 
       <div id="toolbar-actions">
-        <button id="board-btn" class="tb-btn" title="看板快速跳轉 (Cmd+K)">
+        <button id="board-btn" class="tb-btn" title="看板快速跳轉 (Cmd+K / Alt+K)">
           <span class="tb-icon">⚡</span><span class="tb-label">看板</span>
         </button>
-        <button id="article-reader-btn" class="tb-btn" title="圖文好讀版 (Cmd+D)">
+        <button id="aid-btn" class="tb-btn" title="文章代碼跳轉 (Cmd+J / Alt+J)">
+          <span class="tb-icon">🎯</span><span class="tb-label">跳文</span>
+        </button>
+        <button id="article-reader-btn" class="tb-btn" title="圖文好讀版 (Cmd+D / F2)">
           <span class="tb-icon">📖</span><span class="tb-label">好讀版</span>
         </button>
         <button id="mouse-browsing-btn" class="tb-btn" title="切換滑鼠操作 BBS">
@@ -49,7 +53,7 @@
         <button id="push-helper-btn" class="tb-btn" title="長推文自動分段發送 (Cmd+Shift+X / Alt+X)">
           <span class="tb-icon">💬</span><span class="tb-label">推文</span>
         </button>
-        <button id="waterball-btn" class="tb-btn hidden" style="display: none;" title="水球通訊錄與對話紀錄 (Cmd+Alt+W)">
+        <button id="waterball-btn" class="tb-btn hidden" style="display: none;" title="水球通訊錄與對話紀錄">
           <span class="tb-icon">💧</span><span class="tb-label">水球</span>
           <span id="waterball-unread-badge" class="tb-unread-badge hidden">0</span>
         </button>
@@ -57,10 +61,10 @@
           <span class="tb-icon">📢</span><span class="tb-label">追蹤</span>
           <span id="monitor-unread-badge" class="tb-unread-badge hidden">0</span>
         </button>
-        <button id="palette-btn" class="tb-btn" title="ANSI 調色盤 (Cmd+P)">
+        <button id="palette-btn" class="tb-btn" title="ANSI 調色盤 (Cmd+P / Alt+P)">
           <span class="tb-icon">🎨</span><span class="tb-label">調色盤</span>
         </button>
-        <button id="export-btn" class="tb-btn" title="畫面截圖與匯出 (Cmd+Shift+S)">
+        <button id="export-btn" class="tb-btn" title="畫面截圖與匯出 (Cmd+Shift+S / Ctrl+Shift+S)">
           <span class="tb-icon">📷</span><span class="tb-label">截圖</span>
         </button>
         <button id="add-bookmark-btn" class="tb-btn" title="將目前位址加入書籤">
@@ -70,12 +74,23 @@
           <span class="tb-icon">⚙️</span><span class="tb-label">設定</span>
         </button>
 
+        <button id="shortcuts-btn" class="tb-btn" title="鍵盤快捷鍵一覽 (F1)">
+          <span class="tb-icon">⌨️</span><span class="tb-label">熱鍵</span>
+        </button>
+
+        <button id="collapse-toolbar-btn" class="tb-btn" title="收合功能列 (Alt+B)">
+          <span class="tb-icon">▲</span><span class="tb-label">收合</span>
+        </button>
+
         <div id="status-indicator">
           <span id="status-dot"></span>
           <span id="status-text">未連線</span>
         </div>
       </div>
     </div>
+    <button id="floating-expand-btn" class="floating-toolbar-toggle" title="展開功能列 (Alt+B)" aria-label="展開功能列">
+      <span>▼ 功能列</span>
+    </button>
     <div id="terminal-container">
       <textarea
         id="ime-input"
@@ -176,6 +191,13 @@
 
           <!-- Tab 3: Keyboard & Mouse -->
           <div id="tab-keyboard" class="tab-pane">
+            <div class="form-group" style="margin-bottom: 16px; padding: 12px 14px; background: rgba(56, 139, 253, 0.1); border: 1px solid rgba(56, 139, 253, 0.3); border-radius: 6px; display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+              <div>
+                <strong style="color: var(--text-primary); font-size: 13.5px;">⌨️ 快捷鍵速查手冊 (Cheat Sheet)</strong>
+                <p class="hint" style="margin-top: 4px; margin-bottom: 0;">隨時按下 <kbd style="padding: 2px 6px; border-radius: 4px; background: var(--bg-surface-elevated); border: 1px solid var(--border-color); font-family: monospace;">F1</kbd> 即可開啟全域快捷鍵清單。</p>
+              </div>
+              <button type="button" id="settings-open-shortcuts-btn" class="btn-primary" style="white-space: nowrap; font-size: 12.5px; padding: 6px 12px; height: auto;">查看快捷鍵一覽 (F1)</button>
+            </div>
             <div class="form-group">
               <label class="checkbox-label">
                 <input type="checkbox" id="setting-smart-dbcs" />
@@ -202,7 +224,42 @@
                 <input type="checkbox" id="setting-auto-copy" />
                 <span>滑鼠框選文字後自動複製至剪貼簿</span>
               </label>
-              <p class="hint">滑鼠選取完成後自動複製純文字，無需手動按 Cmd+C。</p>
+              <p class="hint">滑鼠選取完成後自動複製純文字，無需手動按鍵盤複製（Cmd+C / Ctrl+C）。</p>
+            </div>
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="setting-image-upload" />
+                <span>貼上圖片自動上傳圖床並送出網址 (Ctrl+V / Cmd+V)</span>
+              </label>
+              <p class="hint">純文字優先；僅圖片時上傳至所選圖床並填入網址。失敗不會自動改傳其他圖床。Esc 停止終端貼入，但已送出的圖片仍須另行撤回。</p>
+            </div>
+            <div class="form-group" id="setting-image-host-group">
+              <label for="setting-image-host-provider">預設圖床服務：</label>
+              <select id="setting-image-host-provider">
+                <option value="imgur" selected>Imgur (PTT 相容度最高、自動轉外鏈)</option>
+                <option value="catbox">Catbox.moe (無限制免帳號圖床)</option>
+                <option value="custom">自訂圖床 API 端點</option>
+              </select>
+            </div>
+            <div class="form-group hidden" id="setting-image-imgur-client-group">
+              <label for="setting-image-imgur-client-id">自訂 Imgur Client-ID (選填)：</label>
+              <input type="text" id="setting-image-imgur-client-id" placeholder="預設使用內建 Client-ID" />
+              <p class="hint">留空則使用 Waterball 內建 Client-ID。</p>
+            </div>
+            <div class="form-group hidden" id="setting-image-custom-endpoint-group">
+              <label for="setting-image-custom-endpoint">自訂圖床 API 端點網址：</label>
+              <input type="text" id="setting-image-custom-endpoint" placeholder="https://your-host.com/api/upload" />
+              <p class="hint">接收 POST multipart/form-data（欄位 file 或 image），回傳 JSON 包含 url 或 link 屬性。</p>
+            </div>
+            <div class="form-group" id="setting-image-history-group" style="margin-top: 15px; border-top: 1px dashed var(--border-color); padding-top: 12px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <label style="font-weight: 600;">🕒 最近圖片上傳紀錄與撤回：</label>
+                <button type="button" id="btn-clear-image-history" class="btn-secondary" style="font-size: 11px; padding: 2px 8px; cursor: pointer;">清除本機紀錄</button>
+              </div>
+              <p class="hint">顯示您近期透過 Waterball 上傳的圖片。Imgur 有撤回金鑰時可刪除原始檔；Catbox／自訂圖床不提供自動撤回。已下載或快取的副本無法保證清除。</p>
+              <div id="image-upload-history-list" style="max-height: 180px; overflow-y: auto; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 6px; padding: 6px; font-size: 12px;">
+                <p style="text-align: center; color: var(--text-muted); margin: 8px 0;">尚無上傳紀錄</p>
+              </div>
             </div>
           </div>
 
@@ -344,38 +401,86 @@
                 <input type="checkbox" id="setting-blacklist-enabled" checked />
                 <span>啟用智慧黑名單過濾 (Enable Blacklist Filtering)</span>
               </label>
-              <p class="hint">開啟後，黑名單作者的文章在列表將自動淡化顯示（22% 透明度），好讀模式留言推文亦會自動淡化標註。</p>
+              <p class="hint">開啟後，黑名單作者或含有黑名單關鍵字的文章與推文將依照下方設定進行過濾。</p>
             </div>
 
-            <div class="form-group">
-              <label class="checkbox-label">
-                <input type="checkbox" id="setting-blacklist-great-treasure" checked />
-                <span>啟用「PTT 大秘寶」社群公關網軍過濾清單</span>
-                <span id="great-treasure-badge" style="margin-left: 6px; font-size: 11px; padding: 2px 6px; border-radius: 4px; background: rgba(59, 130, 246, 0.2); color: var(--accent);">已收錄 30+ 帳號</span>
-              </label>
-              <p class="hint">一鍵訂閱並過濾 PTT 鄉民社群公開整理的知名網軍、公關公司洗板與惡意宣傳帳號。</p>
+            <div class="form-group" style="margin-top: 10px;">
+              <label for="setting-blacklist-mode" style="font-weight: 600; font-size: 13px; display: block; margin-bottom: 5px;">過濾顯示模式 (Display Mode)：</label>
+              <select id="setting-blacklist-mode" style="padding: 6px 10px; border-radius: 6px; background: var(--bg-secondary); border: 1px solid var(--border-color); color: var(--text-primary); font-size: 13px; width: 100%; max-width: 360px;">
+                <option value="dim">👓 反灰淡化 (降低透明度至 20%)</option>
+                <option value="mask">🛡️ 佔位遮蔽 (顯示遮蔽標記，好讀模式點擊可展開)</option>
+                <option value="hide">🙈 完全隱藏 (終端隱蔽/好讀模式徹底不顯示)</option>
+              </select>
+              <p class="hint">僅在辨識為文章列表或閱讀畫面時過濾；遮蔽不會刪除原始資料。終端機點擊遮蔽列可展開；含未展開遮蔽列的選取內容不可複製。</p>
             </div>
 
-            <div class="blacklist-custom-section" style="margin-top: 14px; border-top: 1px solid var(--border-color); padding-top: 14px;">
-              <div class="add-box-title" style="font-weight: 600; margin-bottom: 8px; font-size: 13px;">➕ 新增自訂黑名單用戶 ID：</div>
+            <div class="form-group" style="margin-top: 12px;">
+              <div style="font-weight: 600; font-size: 13px; margin-bottom: 6px;">過濾防護範圍 (Protection Scope)：</div>
+              <div style="display: flex; flex-direction: column; gap: 8px;">
+                <label class="checkbox-label">
+                  <input type="checkbox" id="setting-blacklist-block-waterball" checked />
+                  <span>💧 過濾水球通知與鈴聲（啟用關鍵字規則時暫停水球通知與鈴聲，終端仍正常接收）</span>
+                </label>
+                <label class="checkbox-label">
+                  <input type="checkbox" id="setting-blacklist-block-push" checked />
+                  <span>🔔 排除本機看板通知與本機 Telegram（不適用雲端推播）</span>
+                </label>
+                <label class="checkbox-label">
+                  <input type="checkbox" id="setting-blacklist-enable-keywords" checked />
+                  <span>🔤 啟用關鍵字黑名單 (過濾文章標題與推文特定詞彙)</span>
+                </label>
+                <label class="checkbox-label">
+                  <input type="checkbox" id="setting-blacklist-great-treasure" />
+                  <span>啟用舊版內建名單（來源未驗證，預設關閉）</span>
+                  <span id="great-treasure-badge" style="margin-left: 6px; font-size: 11px; padding: 2px 6px; border-radius: 4px; background: rgba(59, 130, 246, 0.2); color: var(--accent);">來源未驗證</span>
+                </label>
+              </div>
+            </div>
+
+            <!-- Section 1: ID Blacklist -->
+            <div class="blacklist-custom-section" style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 14px;">
+              <div class="add-box-title" style="font-weight: 600; margin-bottom: 8px; font-size: 13px;">👤 新增自訂黑名單用戶 ID：</div>
               <div class="add-box-inputs" style="display: flex; gap: 8px;">
                 <input type="text" id="input-blacklist-add" placeholder="輸入 PTT 使用者 ID (如: spammer5566)" style="flex: 1;" />
                 <button id="btn-blacklist-add" class="btn-primary" style="flex-shrink: 0; padding: 0 14px;">加入黑名單</button>
               </div>
             </div>
 
-            <div class="blacklist-list-header-row" style="display: flex; justify-content: space-between; align-items: center; margin-top: 16px; margin-bottom: 8px;">
+            <div class="blacklist-list-header-row" style="display: flex; justify-content: space-between; align-items: center; margin-top: 14px; margin-bottom: 8px;">
               <div class="blacklist-list-header" style="font-size: 12px; font-weight: 600;">已封鎖的自訂帳號清單 (<span id="blacklist-count">0</span>)：</div>
               <div style="display: flex; gap: 6px;">
                 <button id="btn-blacklist-import" class="btn-secondary" style="height: 24px; padding: 0 8px; font-size: 11px; cursor: pointer;">📥 匯入名單</button>
                 <input type="file" id="file-blacklist-import" accept=".txt,.json" class="hidden" />
                 <button id="btn-blacklist-export-txt" class="btn-secondary" style="height: 24px; padding: 0 8px; font-size: 11px; cursor: pointer;">📤 匯出 TXT</button>
                 <button id="btn-blacklist-export-json" class="btn-secondary" style="height: 24px; padding: 0 8px; font-size: 11px; cursor: pointer;">📤 匯出 JSON</button>
-                <button id="btn-blacklist-clear" class="btn-danger" style="height: 24px; padding: 0 8px; font-size: 11px; cursor: pointer;">🗑️ 清空名單</button>
+                <button id="btn-blacklist-clear" class="btn-danger" style="height: 24px; padding: 0 8px; font-size: 11px; cursor: pointer;">🗑️ 清空帳號</button>
               </div>
             </div>
 
-            <div id="blacklist-tags-container" class="blacklist-tags-container">
+            <div id="blacklist-tags-container" class="blacklist-tags-container" style="max-height: 140px;">
+              <!-- Rendered dynamically -->
+            </div>
+
+            <!-- Section 2: Keyword Blacklist -->
+            <div class="blacklist-custom-section" style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 14px;">
+              <div class="add-box-title" style="font-weight: 600; margin-bottom: 8px; font-size: 13px;">🔤 新增關鍵字黑名單 (標題或推文)：</div>
+              <div class="add-box-inputs" style="display: flex; gap: 8px;">
+                <input type="text" id="input-blacklist-kw-add" placeholder="輸入要過濾的關鍵字 (如: 買一送一, 爆雷, 詐騙)" style="flex: 1;" />
+                <button id="btn-blacklist-kw-add" class="btn-primary" style="flex-shrink: 0; padding: 0 14px;">加入關鍵字</button>
+              </div>
+            </div>
+
+            <div class="blacklist-list-header-row" style="display: flex; justify-content: space-between; align-items: center; margin-top: 14px; margin-bottom: 8px;">
+              <div class="blacklist-list-header" style="font-size: 12px; font-weight: 600;">已封鎖的關鍵字清單 (<span id="blacklist-kw-count">0</span>)：</div>
+              <div style="display: flex; gap: 6px;">
+                <button id="btn-blacklist-kw-import" class="btn-secondary" style="height: 24px; padding: 0 8px; font-size: 11px; cursor: pointer;">📥 匯入關鍵字</button>
+                <input type="file" id="file-blacklist-kw-import" accept=".txt,.json" class="hidden" />
+                <button id="btn-blacklist-kw-export-txt" class="btn-secondary" style="height: 24px; padding: 0 8px; font-size: 11px; cursor: pointer;">📤 匯出 TXT</button>
+                <button id="btn-blacklist-kw-clear" class="btn-danger" style="height: 24px; padding: 0 8px; font-size: 11px; cursor: pointer;">🗑️ 清關鍵字</button>
+              </div>
+            </div>
+
+            <div id="blacklist-kw-tags-container" class="blacklist-tags-container" style="max-height: 140px;">
               <!-- Rendered dynamically -->
             </div>
           </div>
@@ -385,7 +490,7 @@
             <div class="about-hero">
               <div class="about-logo">💧</div>
               <div class="about-title">Waterball (水球)</div>
-              <div class="about-ver">版本 v0.1.8 &bull; 開源授權 GPL-3.0</div>
+              <div class="about-ver">版本 v0.1.9 &bull; 開源授權 GPL-3.0</div>
               <div class="about-desc">
                 新世代跨平台 BBS 終端連線客戶端 (macOS / Windows / Linux / Chromebook)
                 <br>
@@ -459,12 +564,16 @@
               <button id="push-template-save-cancel" class="push-item-btn" style="height: 24px; padding: 0 8px; font-size: 11.5px; border-radius: var(--radius);">取消</button>
             </div>
           </div>
-          <textarea id="push-input-text" placeholder="在此貼上或輸入想說的話，長篇大論也能自動幫您分段排版推文..." rows="4"></textarea>
+          <textarea id="push-input-text" maxlength="10000" placeholder="在此貼上或輸入想說的話，長篇大論也能自動幫您分段排版推文..." rows="4"></textarea>
+        </div>
+
+        <div id="push-author-notice" class="push-author-notice hidden" style="font-size: 12px; color: var(--cyan); background: rgba(36, 200, 219, 0.1); border: 1px solid rgba(36, 200, 219, 0.3); border-radius: var(--radius); padding: 6px 10px; margin-bottom: 8px;">
+          ✍️ 偵測到您為本文作者，已自動切換為原 PO 箭頭模式
         </div>
 
         <div class="push-config-row">
           <div class="push-config-item">
-            <label for="push-input-id">您的帳號 ID (精算填滿)：</label>
+            <label for="push-input-id">您的帳號 ID（自填，非登入驗證）：</label>
             <input type="text" id="push-input-id" placeholder="如 cerebellum (選填)" style="height: 34px; padding: 0 8px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius); color: var(--text-primary); font-size: 12.5px; outline: none;" />
           </div>
 
@@ -474,7 +583,7 @@
               <option value="1" selected>1. 推 👍</option>
               <option value="2">2. 噓 👎</option>
               <option value="3">3. 箭頭 →</option>
-              <option value="author">✍️ 我是文章作者 (不需選推噓)</option>
+              <option value="author">✍️ 作者／保守箭頭模式</option>
             </select>
           </div>
 
@@ -489,13 +598,16 @@
           <div class="push-config-item">
             <label for="push-delay-select">發送間隔冷卻：</label>
             <select id="push-delay-select">
-              <option value="800">0.8 秒 (快衝 / 無限制板)</option>
-              <option value="2000" selected>2.0 秒 (一般看板推薦)</option>
+              <option value="auto" selected>⚡ 依明確冷卻提示等待（重試有上限）</option>
+              <option value="800">0.8 秒（仍遵守伺服器冷卻）</option>
+              <option value="2000">2.0 秒 (一般看板推薦)</option>
               <option value="5000">5.0 秒 (熱門大板 / 5s冷卻)</option>
               <option value="10000">10.0 秒 (嚴格防洗板 / 10s冷卻)</option>
             </select>
           </div>
         </div>
+
+        <p style="font-size:12px;color:var(--text-secondary)">自動發送限 PTT/PTT2、Big5。結果未確認時會停下保留待處理文字；停止無法撤回已送出的按鍵，請先核對終端畫面。</p>
 
         <!-- Real-time Live Split Preview -->
         <div class="push-preview-section">
@@ -522,8 +634,43 @@
 
       <div class="modal-footer push-modal-footer">
         <button id="push-btn-cancel" class="btn-secondary">取消</button>
+        <button id="push-btn-review" class="btn-secondary hidden">已核對畫面，解除未確認狀態（不會自動重送）</button>
         <button id="push-btn-send" class="btn-primary">🚀 開始自動推文</button>
         <button id="push-btn-abort" class="btn-danger hidden">⏹️ 中途停止</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Article ID (AID) Jump Modal (文章代碼一鍵跳轉小幫手) -->
+  <div id="aid-modal" class="modal-backdrop hidden">
+    <div class="modal-dialog" style="max-width: 460px;">
+      <div class="modal-header">
+        <h2>🎯 文章代碼 (AID) 一鍵跳轉</h2>
+        <button id="aid-modal-close" class="close-btn" title="關閉 (ESC)">&times;</button>
+      </div>
+      <div class="modal-body" style="display: block; padding: 16px; overflow-y: auto;">
+        <div class="form-group" style="margin-bottom: 12px;">
+          <label for="aid-input" style="font-weight: 600; margin-bottom: 6px; display: block;">請輸入文章代碼 (AID) 或 PTT 網址：</label>
+          <input type="text" id="aid-input" maxlength="2048" placeholder="例如 #1auv507u (Gossiping) 或 1auv507u 或 PTT 網址" autocomplete="off" spellcheck="false" style="width: 100%; height: 36px; padding: 0 10px; font-size: 13.5px; font-family: monospace; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius); color: var(--text-primary); outline: none; box-sizing: border-box;" />
+        </div>
+        <p style="font-size:12px;color:var(--text-secondary)">限 PTT 一般文章定位。完成後請核對列表游標；定位中按 × 停止後續步驟，已開始的寫入無法撤回。</p>
+        <div id="aid-info-box" class="aid-info-box hidden" style="margin-bottom: 14px; padding: 10px 12px; background: rgba(56, 139, 253, 0.08); border: 1px solid rgba(56, 139, 253, 0.25); border-radius: var(--radius); font-size: 12.5px;">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+            <span>代碼：<b id="aid-info-code" style="color: var(--accent-color);"></b></span>
+            <span>看板：<b id="aid-info-board" style="color: var(--yellow);"></b></span>
+          </div>
+          <div id="aid-info-url-row" style="word-break: break-all; color: var(--text-secondary); font-size: 11.5px;">
+            網址：<span id="aid-info-url"></span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer" style="display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; align-items: center; padding-top: 10px; border-top: 1px solid var(--border-color);">
+        <span style="font-size: 11px; color: var(--text-secondary);"><kbd style="padding: 1px 4px; border: 1px solid var(--border-color); border-radius: 3px; background: var(--bg-secondary);">Enter</kbd> 終端定位 • <kbd style="padding: 1px 4px; border: 1px solid var(--border-color); border-radius: 3px; background: var(--bg-secondary);">Shift+Enter</kbd> 網頁版</span>
+        <div style="display: flex; flex-wrap: wrap; gap: 8px; white-space: nowrap;">
+          <button id="aid-btn-copy" class="btn-secondary" style="font-size: 12px; padding: 6px 10px;">📋 複製</button>
+          <button id="aid-btn-reader" class="btn-secondary" style="font-size: 12px; padding: 6px 10px;">🌐 網頁版</button>
+          <button id="aid-btn-jump" class="btn-primary" style="font-size: 12px; padding: 6px 12px;">🚀 終端定位</button>
+        </div>
       </div>
     </div>
   </div>
@@ -739,6 +886,7 @@
                   🔔 測試發送本地通知
                 </button>
               </div>
+              <div id="monitor-local-notif-status" class="tg-status-banner hidden"></div>
             </div>
           </div>
 
@@ -793,6 +941,9 @@
               <button type="button" id="monitor-tg-test-btn" class="btn-secondary">📱 發送測試私訊</button>
             </div>
 
+            <!-- Instant Status Banner: Right under the main action buttons -->
+            <div id="monitor-tg-status" class="tg-status-banner hidden"></div>
+
             <p id="monitor-cloud-summary" class="hint"></p>
             <label class="checkbox-label"><input type="checkbox" id="monitor-cloud-auto-merge" />修改規則後自動合併同步（衝突時暫停）</label>
             <div class="tg-form-actions">
@@ -809,7 +960,6 @@
               <input id="monitor-tg-rebind-code" type="password" autocomplete="off" placeholder="WB2-…" />
               <button id="monitor-tg-rebind-btn" type="button" class="btn-secondary">驗證並更換 Telegram</button>
             </details>
-            <div id="monitor-tg-status" class="tg-status-banner hidden"></div>
           </div>
 
           <!-- Collapsible Advanced / Self-Hosted Server Settings -->
@@ -896,13 +1046,14 @@
 
   <!-- Global Terminal Context Menu (右鍵選單) -->
   <div id="terminal-context-menu" class="context-menu hidden">
-    <div class="context-menu-item" id="ctx-copy">📋 複製選取文字 (Cmd+C)</div>
+    <div class="context-menu-item" id="ctx-copy">📋 複製選取文字 (Cmd+C / Ctrl+C)</div>
     <div class="context-menu-item" id="ctx-copy-ansi">🎨 複製含色彩 ANSI 代碼</div>
     <div class="context-menu-item" id="ctx-search-google">🔍 Google 搜尋此文字</div>
     <div class="context-menu-separator"></div>
     <div class="context-menu-item hidden" id="ctx-waterball-send" style="display: none;">💧 傳送水球訊息</div>
     <div class="context-menu-item" id="ctx-tag-edit">🏷️ 編輯鄉民標籤 / 備註</div>
     <div class="context-menu-item" id="ctx-blacklist-toggle">🚫 加入黑名單</div>
+    <div class="context-menu-item" id="ctx-blacklist-kw-toggle">🔤 加入關鍵字黑名單</div>
     <div class="context-menu-item" id="ctx-quick-push">💬 快速開啟長推文小幫手 (Alt+X)</div>
   </div>
 
@@ -929,6 +1080,71 @@
     </div>
   </div>
 
+  <!-- Keyboard Shortcuts Cheat Sheet Modal (快捷鍵一覽表 - F1) -->
+  <div id="shortcuts-modal" class="modal-backdrop hidden">
+    <div class="modal-dialog shortcuts-dialog">
+      <div class="modal-header">
+        <h2>⌨️ 鍵盤快捷鍵一覽 (Shortcuts)</h2>
+        <div class="shortcuts-tabs">
+          <button type="button" id="shortcuts-tab-auto" class="shortcuts-tab-btn active">目前系統</button>
+          <button type="button" id="shortcuts-tab-win" class="shortcuts-tab-btn">Windows / Linux</button>
+          <button type="button" id="shortcuts-tab-mac" class="shortcuts-tab-btn">macOS</button>
+        </div>
+        <button id="shortcuts-close-btn" class="close-btn" title="關閉 (ESC 或 F1)">&times;</button>
+      </div>
+      <div class="modal-body shortcuts-modal-body">
+        <div class="shortcuts-grid">
+          <div class="shortcuts-group">
+            <h3>⚡ 常用快捷功能</h3>
+            <table class="shortcuts-table">
+              <tr><td>看板快速跳轉</td><td><kbd class="key-win">Alt + K</kbd><kbd class="key-mac">Cmd + K</kbd></td><td>中英文板名即時直達</td></tr>
+              <tr><td>文章代碼跳轉</td><td><kbd class="key-win">Alt + J</kbd><kbd class="key-mac">Cmd + J</kbd></td><td>輸入或貼上 AID 快速跳文</td></tr>
+              <tr><td>圖文好讀版</td><td><kbd class="key-win">F2 / Alt + O</kbd><kbd class="key-mac">Cmd + D / F2</kbd></td><td>長文好讀、大圖展開</td></tr>
+              <tr><td>收合／展開功能列</td><td><kbd class="key-win">Alt + B</kbd><kbd class="key-mac">Option + B</kbd></td><td>極大化終端機可視範圍</td></tr>
+              <tr><td>新文章追蹤中心</td><td><kbd class="key-win">Alt + M</kbd><kbd class="key-mac">Option + M</kbd></td><td>看板推播追蹤與警示</td></tr>
+              <tr><td>長推文小幫手</td><td><kbd class="key-win">Alt + X</kbd><kbd class="key-mac">Cmd + Shift + X</kbd></td><td>長文自動分段定時發送</td></tr>
+              <tr><td>ANSI 調色盤</td><td><kbd class="key-win">Alt + P</kbd><kbd class="key-mac">Cmd + P</kbd></td><td>16色雙色發文、符號表情</td></tr>
+              <tr><td>畫面截圖與匯出</td><td><kbd class="key-win">Ctrl + Shift + S</kbd><kbd class="key-mac">Cmd + Shift + S</kbd></td><td>匯出高畫質 PNG 或 ANSI</td></tr>
+            </table>
+          </div>
+
+          <div class="shortcuts-group">
+            <h3>📑 連線分頁管理</h3>
+            <table class="shortcuts-table">
+              <tr><td>開啟新連線分頁</td><td><kbd class="key-win">Alt + N</kbd><kbd class="key-mac">Cmd + T</kbd></td><td>開啟新的站台連線</td></tr>
+              <tr><td>關閉目前分頁</td><td><kbd class="key-win">Alt + W</kbd><kbd class="key-mac">Cmd + W</kbd></td><td>關閉當前分頁連線</td></tr>
+              <tr><td>切換至分頁 1 ~ 9</td><td><kbd class="key-win">Alt + 1 ~ 9</kbd><kbd class="key-mac">Cmd + 1 ~ 9</kbd></td><td>直接跳轉指定編號分頁</td></tr>
+              <tr><td>循環切換分頁</td><td><kbd>Ctrl + Tab</kbd></td><td>切換至下一分頁 (桌面版)</td></tr>
+            </table>
+          </div>
+
+          <div class="shortcuts-group">
+            <h3>🔍 搜尋與剪貼簿</h3>
+            <table class="shortcuts-table">
+              <tr><td>畫面文字搜尋</td><td><kbd class="key-win">Ctrl + Shift + F</kbd><kbd class="key-mac">Cmd + F</kbd></td><td>在當前畫面搜尋關鍵字</td></tr>
+              <tr><td>找下一處 / 上一處</td><td><kbd class="key-win">F3 / Shift + F3</kbd><kbd class="key-mac">Cmd + G / Shift + G</kbd></td><td>在搜尋結果間跳轉</td></tr>
+              <tr><td>複製選取文字</td><td><kbd class="key-win">Ctrl + C</kbd><kbd class="key-mac">Cmd + C</kbd></td><td>有選取時複製純文字</td></tr>
+              <tr><td>複製色彩 ANSI 代碼</td><td><kbd class="key-win">Ctrl + Shift + C</kbd><kbd class="key-mac">Cmd + Shift + C</kbd></td><td>保留前景、背景色碼</td></tr>
+              <tr><td>貼上至終端機</td><td><kbd class="key-win">Ctrl + V / Shift + Insert</kbd><kbd class="key-mac">Cmd + V</kbd></td><td>安全斷行傳送至 BBS</td></tr>
+            </table>
+          </div>
+
+          <div class="shortcuts-group">
+            <h3>⌨️ BBS (PTT) 必備控制鍵</h3>
+            <table class="shortcuts-table">
+              <tr><td>發表文章</td><td><kbd>Ctrl + P</kbd></td><td>看板中按此鍵開始發文</td></tr>
+              <tr><td>存檔發表 / 暫存</td><td><kbd>Ctrl + X</kbd></td><td>編輯文章完成後存檔離開</td></tr>
+              <tr><td>使用者名單</td><td><kbd>Ctrl + U</kbd></td><td>查看線上使用者或發水球</td></tr>
+              <tr><td>水球回呼 (丟水球)</td><td><kbd>Ctrl + W</kbd></td><td>收到水球時直接回覆</td></tr>
+              <tr><td>取消 / 中斷 (Break)</td><td><kbd>Ctrl + C</kbd></td><td>終端未選取時送出中斷訊號</td></tr>
+              <tr><td>熱鍵一覽表</td><td><kbd>F1</kbd></td><td>隨時開關本快捷鍵說明</td></tr>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <dialog id="monitor-cloud-confirm" class="cloud-confirm-dialog" aria-labelledby="monitor-cloud-confirm-title">
     <h3 id="monitor-cloud-confirm-title">確認雲端操作</h3>
     <p id="monitor-cloud-confirm-text"></p>
@@ -936,6 +1152,26 @@
     <div class="tg-form-actions">
       <button id="monitor-cloud-confirm-cancel" type="button" class="btn-secondary" autofocus>取消</button>
       <button id="monitor-cloud-confirm-accept" type="button" class="btn-primary">確認</button>
+    </div>
+  </dialog>
+
+  <dialog id="paste-confirm-dialog" class="cloud-confirm-dialog" aria-labelledby="paste-confirm-title">
+    <h3 id="paste-confirm-title">📋 確認貼上文字至 BBS</h3>
+    <p id="paste-confirm-text"></p>
+    <pre id="paste-confirm-preview" style="max-height: 120px; overflow-y: auto; padding: 10px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 6px; font-size: 12px; font-family: monospace; white-space: pre-wrap; word-break: break-all; margin: 12px 0 18px 0; color: var(--text-primary);"></pre>
+    <div class="tg-form-actions">
+      <button id="paste-confirm-cancel" type="button" class="btn-secondary" autofocus>取消</button>
+      <button id="paste-confirm-accept" type="button" class="btn-primary">確認貼上</button>
+    </div>
+  </dialog>
+  <dialog id="paste-recovery-dialog" class="cloud-confirm-dialog" aria-labelledby="paste-recovery-title">
+    <h3 id="paste-recovery-title">貼上已停止：待處理文字</h3>
+    <p id="paste-recovery-message"></p>
+    <textarea id="paste-recovery-text" readonly rows="10" aria-label="尚待確認或未送出的文字" style="width:100%"></textarea>
+    <div class="tg-form-actions">
+      <button id="paste-recovery-delete-image" type="button" class="btn-danger hidden" style="background:#dc2626;color:#fff;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;margin-right:auto;">🗑️ 從圖床撤回刪除</button>
+      <button id="paste-recovery-copy" type="button" class="btn-secondary">複製待處理文字</button>
+      <button id="paste-recovery-close" type="button" class="btn-primary" autofocus>關閉（不重送）</button>
     </div>
   </dialog>
   <script type="module" src="/src/main.js"></script>

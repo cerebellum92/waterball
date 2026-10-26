@@ -1,6 +1,7 @@
 // Terminal Right-Click Context Menu Controller for Waterball BBS
 
-import { writeClipboardText } from './platform.js';
+import { writeClipboardText, openExternalUrl } from './platform.js';
+import { normalizeBlacklistId, BLACKLIST_LIMITS } from './blacklist.js';
 
 export class ContextMenuController {
   constructor({
@@ -37,6 +38,7 @@ export class ContextMenuController {
     const ctxWaterballSend = document.getElementById('ctx-waterball-send');
     const ctxTagEdit = document.getElementById('ctx-tag-edit');
     const ctxBlacklistToggle = document.getElementById('ctx-blacklist-toggle');
+    const ctxBlacklistKwToggle = document.getElementById('ctx-blacklist-kw-toggle');
     const ctxQuickPush = document.getElementById('ctx-quick-push');
 
     ctxCopy?.addEventListener('click', () => {
@@ -66,7 +68,7 @@ export class ContextMenuController {
 
     ctxSearchGoogle?.addEventListener('click', () => {
       if (this.activeTarget) {
-        window.open(`https://www.google.com/search?q=${encodeURIComponent(this.activeTarget)}`, '_blank');
+        openExternalUrl(`https://www.google.com/search?q=${encodeURIComponent(this.activeTarget)}`).catch(console.error);
       }
       this.hide();
     });
@@ -85,9 +87,23 @@ export class ContextMenuController {
 
     ctxBlacklistToggle?.addEventListener('click', () => {
       if (this.activeTarget) {
-        const isNowAdded = this.blacklistManager.toggle(this.activeTarget);
-        this.onShowToast(isNowAdded ? `已將 ${this.activeTarget} 加入黑名單` : `已將 ${this.activeTarget} 從黑名單移除`);
-        this.onBlacklistChange();
+        try {
+          const isNowAdded = this.blacklistManager.toggle(this.activeTarget);
+          this.onShowToast(isNowAdded ? `已將 ${this.activeTarget} 加入黑名單` : `已將 ${this.activeTarget} 從黑名單移除`);
+          this.onBlacklistChange();
+        } catch (error) { this.onShowToast(`黑名單未變更：${error.message}`); }
+      }
+      this.hide();
+    });
+
+    ctxBlacklistKwToggle?.addEventListener('click', () => {
+      if (this.activeTarget) {
+        try {
+          const isNowAdded = this.blacklistManager.toggleKeyword(this.activeTarget);
+          const suspended = this.blacklistManager.settings.enabled && this.blacklistManager.settings.enableKeywords && this.blacklistManager.settings.blockWaterball;
+          this.onShowToast(isNowAdded ? `已將「${this.activeTarget}」加入關鍵字黑名單${suspended ? '；水球通知與鈴聲暫停，終端仍接收' : ''}` : `已將「${this.activeTarget}」從關鍵字黑名單移除`);
+          this.onBlacklistChange();
+        } catch (error) { this.onShowToast(`關鍵字未變更：${error.message}`); }
       }
       this.hide();
     });
@@ -144,12 +160,26 @@ export class ContextMenuController {
 
     const ctxBlacklistToggle = document.getElementById('ctx-blacklist-toggle');
     if (ctxBlacklistToggle) {
-      if (targetText) {
-        const isBl = this.blacklistManager.isBlacklisted(targetText);
+      if (normalizeBlacklistId(targetText)) {
+        const isBl = this.blacklistManager.hasUserRule(targetText);
         ctxBlacklistToggle.textContent = isBl ? `🚫 從黑名單移除 (${targetText})` : `🚫 加入黑名單 (${targetText})`;
         ctxBlacklistToggle.style.display = 'flex';
       } else {
         ctxBlacklistToggle.style.display = 'none';
+      }
+    }
+
+    const ctxBlacklistKwToggle = document.getElementById('ctx-blacklist-kw-toggle');
+    if (ctxBlacklistKwToggle) {
+      if (targetText && targetText.trim().length >= 1 && targetText.length <= BLACKLIST_LIMITS.keywordLength && !/[\x00-\x1f\x7f]/.test(targetText)) {
+        const isKw = this.blacklistManager.hasKeywordRule(targetText);
+        const snippet = targetText.length > 12 ? `${targetText.slice(0, 10)}…` : targetText;
+        ctxBlacklistKwToggle.textContent = isKw
+          ? `🔤 移出關鍵字黑名單 ("${snippet}")`
+          : `🔤 加入關鍵字黑名單 ("${snippet}")`;
+        ctxBlacklistKwToggle.style.display = 'flex';
+      } else {
+        ctxBlacklistKwToggle.style.display = 'none';
       }
     }
 

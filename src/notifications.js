@@ -3,6 +3,7 @@
 import { settingsManager } from './settings.js';
 import { requestNotificationPermission, sendNativeNotification } from './platform.js';
 import { waterballManager } from './waterball_manager.js';
+import { blacklistManager } from './blacklist.js';
 
 export class NotificationManager {
   constructor() {
@@ -78,7 +79,7 @@ export class NotificationManager {
       // Filter out article lists, pinned announcements, and article titles
       // PTT articles: □, ■, ◆, ◇, ~, !, R:, Re:, Fw:, 轉, [公告], MM/DD, etc.
       const isArticleLine = /[□■◆◇~!]|\b(?:R:|Re:|Fw:|轉[:\s])|\d{1,2}\/\d{1,2}\s+[a-zA-Z]|\[(?:公告|問卦|新聞|情報|心得|討論|閒聊|買賣|徵求|創作)\]/i.test(cleanLine);
-      if (isArticleLine) continue;
+      if (isArticleLine && !/^★\s*[a-zA-Z][a-zA-Z0-9_]{1,11}\s*(?:呼叫\s*[:：]?|[:：])/.test(cleanLine)) continue;
 
       // 1. Waterball Message Detection (PTT / MapleBBS)
       // PTT username rule: must start with an alphabet letter, 2-12 alphanumeric or underscore characters: [a-zA-Z][a-zA-Z0-9_]{1,11}
@@ -101,6 +102,7 @@ export class NotificationManager {
             tabTitle,
           });
         }
+        continue;
       }
 
       // Incoming waterball detection
@@ -114,21 +116,41 @@ export class NotificationManager {
         const timeStr = timeMatch ? timeMatch[0].replace(/[\[\]]/g, '') : '';
         message = message.replace(/\[(?:(?:\d{2}\/)?\d{2}\s+)?\d{2}:\d{2}\]$/, '').trim();
 
+        // A terminal snapshot has no authenticated message boundary. Body timestamps
+        // can be forged, so content-rule mode must not publish unchecked previews/sound.
+        if (this.suspendWaterballAlerts()) continue;
+
         // Ignore system titles and menu headers
         const ignoredSenders = ['BBS', '站長', '系統', '公告', '精華區', '文章選單', '主功能表', '看板列表'];
         if (!ignoredSenders.includes(sender) && !/^\d+$/.test(sender) && message.length > 0) {
+          // Blacklist check: block notifications & sounds from blacklisted users or keywords
+          if (blacklistManager.settings.enabled && blacklistManager.settings.blockWaterball !== false) {
+            if (blacklistManager.isBlacklisted(sender) || blacklistManager.isKeywordBlacklisted(message)) {
+              continue;
+            }
+          }
           this.triggerWaterballNotification(tabId, sender, message, tabTitle, timeStr);
         }
+        continue; // Message text cannot also masquerade as a new-mail alert.
       }
 
       // 2. New Mail Detection (PTT / MapleBBS)
-      if (/●\s*您有新信件|您有新信件，請按|收到\s*新信件/i.test(cleanLine)) {
+      if (/^(?:●\s*您有新信件|您有新信件，請按|收到\s*新信件)/i.test(cleanLine)) {
         this.triggerMailNotification(tabId, tabTitle);
       }
     }
   }
 
+  suspendWaterballAlerts() {
+    return blacklistManager.settings.enabled && blacklistManager.settings.blockWaterball &&
+      blacklistManager.settings.enableKeywords && blacklistManager.customKeywords.size > 0;
+  }
+
   async triggerWaterballNotification(tabId, sender, message, tabTitle, timeStr = '') {
+    if (this.suspendWaterballAlerts()) return;
+    if (settingsManager.settings.notifyEnabled === false) return;
+    if (blacklistManager.settings.blockWaterball &&
+        (blacklistManager.isBlacklisted(sender) || blacklistManager.isKeywordBlacklisted(message))) return;
     const hash = `wb:${tabId}:${sender}:${message}`;
     const now = Date.now();
     if (this.recentCache.has(hash) && now - this.recentCache.get(hash) < 6000) {

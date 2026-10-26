@@ -1,0 +1,16 @@
+name = "waterball-self-hosted"
+main = "self-hosted-worker.js"
+compatibility_date = "2026-10-13"
+
+[vars]
+MAX_BOARDS_PER_USER = "10"
+CATCHUP_MAX_ARTICLES = "100"
+CATCHUP_MAX_AGE_MINUTES = "30"
+
+[[durable_objects.bindings]]
+name = "TRACKER"
+class_name = "ArticleTracker"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ArticleTracker"]

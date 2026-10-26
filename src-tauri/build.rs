@@ -39,9 +39,9 @@ fn main() {
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.8</string>
+	<string>0.1.9</string>
 	<key>CFBundleVersion</key>
-	<string>0.1.8</string>
+	<string>0.1.9</string>
 	<key>CFBundleIconFile</key>
 	<string>icon.icns</string>
 	<key>LSMultipleInstancesProhibited</key>

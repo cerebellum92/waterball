@@ -9,7 +9,7 @@ export const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/i
 export function isInteractiveInputElement(el, imeInput = null) {
   if (!el) return false;
   if (el === imeInput) return false;
-  return (
+  return Boolean(
     el.tagName === 'INPUT' ||
     el.tagName === 'SELECT' ||
     el.tagName === 'TEXTAREA' ||
@@ -22,6 +22,9 @@ export function isInteractiveInputElement(el, imeInput = null) {
  * Returns { seq: string, handled: boolean, isPaste?: boolean }
  */
 export function translateBbsKey(e, { smartDbcsBackspace = true, isPrevCharDBCS = false, isCurCharDBCSLead = false } = {}) {
+  // AltGraph produces text; never translate it into terminal control codes.
+  if (e.getModifierState?.('AltGraph')) return { seq: '', handled: false };
+
   // Let CapsLock switch IME without sending keycodes
   if (e.code === 'CapsLock') {
     return { seq: '', handled: true };
@@ -31,13 +34,23 @@ export function translateBbsKey(e, { smartDbcsBackspace = true, isPrevCharDBCS =
   const isCtrl = isMac ? e.ctrlKey : (e.ctrlKey && !e.shiftKey);
   let seq = '';
 
+  // Mac Cmd+V paste shortcut
+  if (isMac && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && e.code === 'KeyV') {
+    return { seq: '', handled: false, isPaste: true };
+  }
+
+  // Shift+Insert paste shortcut (standard in Windows/Linux terminals and PCMan)
+  if (e.shiftKey && (e.code === 'Insert' || e.key === 'Insert') && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    return { seq: '', handled: false, isPaste: true };
+  }
+
   if (isCtrl && !e.altKey) {
     if (e.code.startsWith('Key')) {
       const letter = e.code.charAt(3).toUpperCase();
       const code = letter.charCodeAt(0) - 64; // 'A' (65) -> 1, 'Z' (90) -> 26
       if (code >= 1 && code <= 26) {
         if (letter === 'V') {
-          return { seq: '', handled: false, isPaste: true }; // Let browser paste event handle
+          return { seq: '', handled: false, isPaste: true }; // Let paste handler process
         }
         seq = String.fromCharCode(code);
       }
@@ -63,9 +76,19 @@ export function translateBbsKey(e, { smartDbcsBackspace = true, isPrevCharDBCS =
       const code = e.key.toLowerCase().charCodeAt(0) - 96;
       seq = String.fromCharCode(code);
     }
-  } else if (e.altKey && !isCtrl) {
-    // Alt / Option Key Combinations (ESC prefix)
-    if (e.key.length === 1) {
+  } else if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.getModifierState?.('AltGraph')) {
+    // term.ptt.cc compatibility: Alt fallbacks for browser-intercepted Ctrl codes
+    // Source: https://github.com/ptt/ptt-term/blob/dev/src/js/term_keyboard.js#L151-L166
+    if (e.code === 'KeyR') {
+      seq = '\x12'; // Ctrl+R (0x12, PTT Waterball reply in wmsg.c)
+    } else if (e.code === 'KeyT') {
+      seq = '\x14'; // Ctrl+T (0x14)
+    } else if (e.code === 'KeyW') {
+      seq = '\x17'; // Ctrl+W (0x17)
+    } else if (e.code === 'KeyA') {
+      seq = '\x01'; // Ctrl+A (0x01)
+    } else if (e.key && e.key.length === 1) {
+      // Standard Alt / Option Key Combinations (ESC prefix)
       seq = '\x1b' + e.key;
     }
   } else if (!isCtrl && !e.altKey) {
