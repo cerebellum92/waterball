@@ -82,6 +82,7 @@ export class ConnectionController {
     this.sendQueue = [];
     this.isSending = false;
     this.connectionAttempts = new Map();
+    this.otpAttempts = new Map();
     this.nativeAttempts = new Map();
     this.heldScreenNavigationKeys = new Set();
     this.notificationScrapeTimers = new Map();
@@ -503,6 +504,10 @@ export class ConnectionController {
           item.reject?.(new Error('貼上已取消'));
           continue;
         }
+        if (item.expectedAttempt && this.connectionAttempts.get(tabId) !== item.expectedAttempt) {
+          item.reject?.(new Error('連線已變更'));
+          continue;
+        }
         const currentTabId = item.tabId;
 
         if (item.data) {
@@ -512,7 +517,7 @@ export class ConnectionController {
             if (isDevelopment) {
               terminalDiagnostics.recordInput({
                 tabId: currentTabId,
-                data: item.data,
+                data: item.sensitive ? '[redacted]' : item.data,
                 sourceKey: item.sourceKey,
                 isRepeat: item.isRepeat,
               });
@@ -569,19 +574,22 @@ export class ConnectionController {
     return (this.inputLeases?.get(tabId) || null) === token;
   }
 
-  sendDataToTabAndWait(tabId, data, expectedSession, inputLease = null, signal = null) {
+  sendDataToTabAndWait(tabId, data, expectedSession, inputLease = null, signal = null, sensitive = false) {
     if (!this.acceptsInputLease(tabId, inputLease)) return Promise.reject(new Error('終端機正由其他發送流程使用'));
     if (!expectedSession) return Promise.reject(new Error('缺少連線身分'));
     if (!tabId || typeof data !== 'string' || !data) return Promise.reject(new Error('待送資料不可為空'));
     return new Promise((resolve, reject) => {
       const cleanData = data.replace(/\u00a0/g, ' ').replace(/[\u2000-\u200b\u202f\u205f\ufeff]/g, ' ');
-      this.sendQueue.push({ tabId, data: cleanData, expectedSession, signal, resolve, reject });
+      this.sendQueue.push({ tabId, data: cleanData, expectedSession, signal, sensitive, resolve, reject });
       this.processSendQueue();
     });
   }
 
-  sendDataToTab(tabId, data, { sourceKey = null, isRepeat = false } = {}) {
-    if (!tabId || !data || !this.acceptsInputLease(tabId)) return false;
+  sendDataToTab(tabId, data, { sourceKey = null, isRepeat = false, sensitive = false, signal = null, expectedAttempt = null } = {}) {
+    if (!sensitive && this.autoLoginManager?.sessions?.get(tabId)?.state === 'SENDING_2FA') {
+      this.autoLoginManager.stopSession(tabId);
+    }
+    if (!tabId || !data || signal?.aborted || (expectedAttempt && this.connectionAttempts.get(tabId) !== expectedAttempt) || !this.acceptsInputLease(tabId)) return false;
     const cleanData = data
       .replace(/\u00a0/g, ' ')
       .replace(/[\u2000-\u200b\u202f\u205f\ufeff]/g, ' ');
@@ -599,7 +607,7 @@ export class ConnectionController {
           item.tabId !== tabId || !item.isRepeat);
       }
     }
-    this.sendQueue.push({ tabId, data: cleanData, sourceKey, isRepeat });
+    this.sendQueue.push({ tabId, data: cleanData, sourceKey, isRepeat, sensitive, signal, expectedAttempt });
     this.processSendQueue();
   }
 
@@ -625,7 +633,11 @@ export class ConnectionController {
     this.sendDataToTab(activeTab.id, data, options);
   }
 
-  async connect(targetBm = null) {
+  async connect(targetBm = null, options = {}) {
+    if (targetBm && !targetBm.address && targetBm.credentials) {
+      options = targetBm;
+      targetBm = null;
+    }
     const activeTab = this.tabManager.getActiveTab();
     if (!activeTab) return;
 
@@ -662,6 +674,10 @@ export class ConnectionController {
     }
     activeTab.address = raw;
     activeTab.encoding = charset;
+    if (targetBm?.name) {
+      activeTab.bookmarkName = targetBm.name;
+      activeTab.title = targetBm.name;
+    }
     activeTab.parser?.resetByteDecoder?.();
 
     activeTab.buf?.clear?.(2);
@@ -699,7 +715,15 @@ export class ConnectionController {
     }
 
     // 2. Pre-initialize auto-login session BEFORE socket connection
-    if (matchedBm && matchedBm.username) {
+    const customCreds = options?.credentials;
+    if (customCreds && customCreds.username) {
+      this.autoLoginManager.startSession(
+        activeTab.id,
+        customCreds,
+        (data, signal) => this.sendDataToTab(activeTab.id, data, { sensitive: true, signal, expectedAttempt: attempt }),
+        '', { sendOtp: (code, signal) => this.sendQuickLoginOtp(activeTab.id, attempt, code, signal) }
+      );
+    } else if (matchedBm && matchedBm.username) {
       try {
         const creds = await this.settingsManager.getDecryptedCredentials(matchedBm);
         if (!isCurrent()) return;
@@ -707,7 +731,7 @@ export class ConnectionController {
           this.autoLoginManager.startSession(
             activeTab.id,
             creds,
-            (data) => this.sendDataToTab(activeTab.id, data)
+            (data, signal) => this.sendDataToTab(activeTab.id, data, { sensitive: true, signal, expectedAttempt: attempt })
           );
         }
       } catch (err) {
@@ -759,6 +783,53 @@ export class ConnectionController {
     const activeTab = this.tabManager.getActiveTab();
     if (!activeTab) return;
     await this.disconnectTab(activeTab.id);
+  }
+
+  getQuickLoginContext() {
+    const tab = this.tabManager.getActiveTab();
+    if (!tab) throw new Error('沒有可用的分頁');
+    const address = tab.isConnected ? tab.address : this.elements.addressInput?.value?.trim();
+    if (!address || parseAddress(address).transport !== 'wss') throw new Error('快速登入需要 WSS 安全連線，請先確認站台網址');
+    return { tabId: tab.id, address, connected: tab.isConnected, attempt: this.connectionAttempts.get(tab.id) };
+  }
+
+  isQuickLoginContextCurrent(context) {
+    try {
+      const now = this.getQuickLoginContext();
+      return now.tabId === context.tabId && now.address === context.address && now.connected === context.connected && now.attempt === context.attempt;
+    } catch { return false; }
+  }
+
+  async sendQuickLoginOtp(tabId, attempt, code, signal) {
+    if (!attempt || this.connectionAttempts.get(tabId) !== attempt || this.otpAttempts.get(tabId) === attempt) throw new Error('此連線已嘗試過動態驗證碼');
+    this.otpAttempts.set(tabId, attempt);
+    const lease = this.acquireInputLease(tabId);
+    if (!lease) throw new Error('終端機正在使用中');
+    try {
+      const session = await this.getConnectionSession(tabId);
+      if (signal.aborted || this.connectionAttempts.get(tabId) !== attempt) throw new Error('登入已取消');
+      await this.sendDataToTabAndWait(tabId, `${code}\r`, session, lease, signal, true);
+    } finally {
+      this.releaseInputLease(tabId, lease);
+    }
+  }
+
+  startCustomAutoLogin(credentials, context) {
+    if (!context || !this.isQuickLoginContextCurrent(context)) return false;
+    const activeTab = this.tabManager.getActiveTab();
+    if (!activeTab || !activeTab.isConnected) return false;
+    let screen = '';
+    if (activeTab.buf) {
+      screen = activeTab.buf.getText(0, 0, activeTab.buf.cols - 1, activeTab.buf.rows - 1);
+    }
+    this.autoLoginManager.startSession(
+      activeTab.id,
+      credentials,
+      (data, signal) => this.sendDataToTab(activeTab.id, data, { sensitive: true, signal, expectedAttempt: context.attempt }),
+      screen,
+      { sendOtp: (code, signal) => this.sendQuickLoginOtp(activeTab.id, context.attempt, code, signal) }
+    );
+    return true;
   }
 
   updateToolbarConnectionState(state) {

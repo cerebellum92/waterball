@@ -155,6 +155,7 @@ const pushHelper = new PushHelper(null, () => tabManager.getActiveTab(), {
   acquireInput: id => terminalPaste.busy ? null : connectionCtrl.acquireInputLease(id),
   releaseInput: (id, token) => connectionCtrl.releaseInputLease(id, token),
   sendToTab: (id, text, session, token) => connectionCtrl.sendDataToTabAndWait(id, text, session, token),
+  getUserId: (tab = tabManager.getActiveTab()) => connectionCtrl.autoLoginManager?.sessions?.get(tab?.id)?.username || settingsManager?.bookmarks?.find(b => b.username)?.username || '',
 });
 const shortcutsModal = new ShortcutsModal();
 

@@ -567,14 +567,10 @@
           <textarea id="push-input-text" maxlength="10000" placeholder="在此貼上或輸入想說的話，長篇大論也能自動幫您分段排版推文..." rows="4"></textarea>
         </div>
 
-        <div id="push-author-notice" class="push-author-notice hidden" style="font-size: 12px; color: var(--cyan); background: rgba(36, 200, 219, 0.1); border: 1px solid rgba(36, 200, 219, 0.3); border-radius: var(--radius); padding: 6px 10px; margin-bottom: 8px;">
-          ✍️ 偵測到您為本文作者，已自動切換為原 PO 箭頭模式
-        </div>
-
         <div class="push-config-row">
           <div class="push-config-item">
-            <label for="push-input-id">您的帳號 ID（自填，非登入驗證）：</label>
-            <input type="text" id="push-input-id" placeholder="如 cerebellum (選填)" style="height: 34px; padding: 0 8px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius); color: var(--text-primary); font-size: 12.5px; outline: none;" />
+            <label for="push-input-id" title="輸入或自動帶入您的帳號 ID，以精算每行字數上限">帳號 ID（選填）：</label>
+            <input type="text" id="push-input-id" placeholder="選填 / 自動帶入" style="height: 34px; padding: 0 8px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius); color: var(--text-primary); font-size: 12.5px; outline: none;" />
           </div>
 
           <div class="push-config-item">
@@ -583,7 +579,6 @@
               <option value="1" selected>1. 推 👍</option>
               <option value="2">2. 噓 👎</option>
               <option value="3">3. 箭頭 →</option>
-              <option value="author">✍️ 作者／保守箭頭模式</option>
             </select>
           </div>
 
@@ -598,16 +593,15 @@
           <div class="push-config-item">
             <label for="push-delay-select">發送間隔冷卻：</label>
             <select id="push-delay-select">
-              <option value="auto" selected>⚡ 依明確冷卻提示等待（重試有上限）</option>
-              <option value="800">0.8 秒（仍遵守伺服器冷卻）</option>
-              <option value="2000">2.0 秒 (一般看板推薦)</option>
+              <option value="800">0.8 秒 (快衝 / 無限制板)</option>
+              <option value="2000" selected>2.0 秒 (一般看板推薦)</option>
               <option value="5000">5.0 秒 (熱門大板 / 5s冷卻)</option>
               <option value="10000">10.0 秒 (嚴格防洗板 / 10s冷卻)</option>
             </select>
           </div>
         </div>
 
-        <p style="font-size:12px;color:var(--text-secondary)">自動發送限 PTT/PTT2、Big5。結果未確認時會停下保留待處理文字；停止無法撤回已送出的按鍵，請先核對終端畫面。</p>
+        <p style="font-size:12px;color:var(--text-secondary)">💡 支援文章內或文章列表直接發送。每段推文送出後會自動倒數間隔，亦可隨時按「中止發送」。</p>
 
         <!-- Real-time Live Split Preview -->
         <div class="push-preview-section">
@@ -623,8 +617,8 @@
         <!-- Pushing Progress Bar -->
         <div id="push-progress-box" class="push-progress-box hidden">
           <div class="push-progress-info">
-            <span id="push-progress-label">正在發送第 1 / 3 段...</span>
-            <span id="push-progress-countdown">倒數 2.0s</span>
+            <span id="push-progress-label"></span>
+            <span id="push-progress-countdown"></span>
           </div>
           <div class="push-progress-bar-bg">
             <div id="push-progress-bar-fill" class="push-progress-bar-fill"></div>
@@ -1105,6 +1099,7 @@
               <tr><td>長推文小幫手</td><td><kbd class="key-win">Alt + X</kbd><kbd class="key-mac">Cmd + Shift + X</kbd></td><td>長文自動分段定時發送</td></tr>
               <tr><td>ANSI 調色盤</td><td><kbd class="key-win">Alt + P</kbd><kbd class="key-mac">Cmd + P</kbd></td><td>16色雙色發文、符號表情</td></tr>
               <tr><td>畫面截圖與匯出</td><td><kbd class="key-win">Ctrl + Shift + S</kbd><kbd class="key-mac">Cmd + Shift + S</kbd></td><td>匯出高畫質 PNG 或 ANSI</td></tr>
+              <tr><td>快速登入 / 密碼管理</td><td><kbd class="key-win">Alt + L</kbd><kbd class="key-mac">Cmd + Shift + L</kbd></td><td>1Password 填入帳密與 2FA</td></tr>
             </table>
           </div>
 

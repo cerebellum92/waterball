@@ -60,6 +60,34 @@ function createController() {
   return controller;
 }
 
+test('quick login OTP reserves one try per connection and binds the send', async () => {
+  const c = createController();
+  const attempt = Symbol('connection');
+  c.connectionAttempts.set('tab-1', attempt);
+  c.getConnectionSession = async () => 'session-1';
+  const writes = [];
+  c.sendDataToTabAndWait = async (...args) => { writes.push(args); };
+  const signal = new AbortController().signal;
+  await c.sendQuickLoginOtp('tab-1', attempt, '123456', signal);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0][1], '123456\r');
+  assert.equal(writes[0][2], 'session-1');
+  assert.equal(writes[0][5], true);
+  await assert.rejects(c.sendQuickLoginOtp('tab-1', attempt, '654321', signal), /已嘗試過/);
+  assert.equal(writes.length, 1);
+});
+
+test('quick login OTP aborts when connection changes during session lookup', async () => {
+  const c = createController();
+  const attempt = Symbol('connection');
+  c.connectionAttempts.set('tab-1', attempt);
+  c.getConnectionSession = async () => { c.connectionAttempts.set('tab-1', Symbol('new')); return 'old'; };
+  let wrote = false;
+  c.sendDataToTabAndWait = async () => { wrote = true; };
+  await assert.rejects(c.sendQuickLoginOtp('tab-1', attempt, '123456', new AbortController().signal), /取消/);
+  assert.equal(wrote, false);
+});
+
 test('terminal data does not capture full-screen diagnostics outside development', () => {
   const controller = createController();
   let screenReads = 0;

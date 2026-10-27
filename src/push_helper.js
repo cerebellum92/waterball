@@ -20,6 +20,7 @@ export class PushHelper {
     this.getSession = options.getSession;
     this.acquireInput = options.acquireInput;
     this.releaseInput = options.releaseInput;
+    this.getUserId = options.getUserId;
     this.getTabById = options.getTabById || (id => { const tab = getActiveTabFn?.(); return tab?.id === id ? tab : null; });
     this.now = options.now || Date.now;
     this.promptTimeoutMs = options.promptTimeoutMs || 8000;
@@ -120,17 +121,23 @@ export class PushHelper {
     });
 
     this.idInput?.addEventListener('input', () => {
+      this.recovery = null;
       try {
         localStorage.setItem('bbsterm_push_id', this.idInput.value.trim());
       } catch (e) {}
       this.checkAuthorMode();
       this.updatePreview();
+      this.setRunningUi(false);
     });
 
     this.typeSelect?.addEventListener('change', () => this.updatePreview());
     this.strategySelect?.addEventListener('change', () => this.updatePreview());
     this.delaySelect?.addEventListener('change', () => this.updatePreview());
-    this.textInput?.addEventListener('input', () => this.updatePreview());
+    this.textInput?.addEventListener('input', () => {
+      this.recovery = null;
+      this.updatePreview();
+      this.setRunningUi(false);
+    });
     this.sendBtn?.addEventListener('click', () => this.startPushing());
 
     // Templates Events
@@ -214,6 +221,7 @@ export class PushHelper {
       alert('請先連線至 BBS 站台並進入文章畫面，再開啟推文小幫手。');
       return;
     }
+    this.recovery = null;
     this.isOpen = true;
     this.modalEl?.classList.remove('hidden');
     this.isPushing = false;
@@ -223,15 +231,23 @@ export class PushHelper {
     if (this.tplStatus) this.tplStatus.style.display = 'none';
     this.loadTemplates();
     this.progressBox?.classList.add('hidden');
+    if (this.progressLabel) this.progressLabel.textContent = '';
+    if (this.progressCountdown) this.progressCountdown.textContent = '';
+    if (this.progressBarFill) this.progressBarFill.style.width = '0%';
     this.sendBtn?.classList.remove('hidden');
     this.cancelBtn?.classList.remove('hidden');
     this.abortBtn?.classList.add('hidden');
 
-    if (this.idInput && !this.idInput.value) {
-      try {
-        const savedId = localStorage.getItem('bbsterm_push_id');
-        if (savedId) this.idInput.value = savedId;
-      } catch (e) {}
+    const detectedId = this.detectUserId(tab);
+    if (this.idInput) {
+      if (detectedId && !this.idInput.value) {
+        this.idInput.value = detectedId;
+      } else if (!this.idInput.value) {
+        try {
+          const savedId = localStorage.getItem('bbsterm_push_id');
+          if (savedId) this.idInput.value = savedId;
+        } catch (e) {}
+      }
     }
 
     this.setRunningUi(false);
@@ -243,8 +259,41 @@ export class PushHelper {
     }
   }
 
+  detectUserId(tab = this.getActiveTab?.()) {
+    const fromOptions = this.getUserId?.(tab);
+    if (fromOptions && typeof fromOptions === 'string' && /^[a-zA-Z][a-zA-Z0-9_]{1,11}$/.test(fromOptions.trim())) {
+      return fromOptions.trim();
+    }
+    try {
+      const saved = localStorage.getItem('bbsterm_push_id');
+      if (saved && /^[a-zA-Z][a-zA-Z0-9_]{1,11}$/.test(saved.trim())) return saved.trim();
+    } catch {}
+    if (tab?.buf) {
+      const lines = this.getBottomPromptText(tab).split('\n');
+      for (const line of lines) {
+        const m = line.trim().match(/^(?:[推噓→]|\[[推噓→]\])\s*([a-zA-Z][a-zA-Z0-9_]{1,11})\s*[:：]/);
+        if (m) return m[1];
+      }
+    }
+    return '';
+  }
+
+  recordDetectedId(id) {
+    if (!id || typeof id !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_]{1,11}$/.test(id.trim())) return;
+    const cleanId = id.trim();
+    try {
+      localStorage.setItem('bbsterm_push_id', cleanId);
+    } catch {}
+    if (this.idInput && !this.idInput.value) {
+      this.idInput.value = cleanId;
+      this.checkAuthorMode();
+      this.updatePreview();
+    }
+  }
+
   close() {
     if (this.isPushing) return;
+    this.recovery = null;
     this.isOpen = false;
     this.modalEl?.classList.add('hidden');
     clearTimeout(this._statusTimer);
@@ -256,6 +305,7 @@ export class PushHelper {
     this._uiTimers ||= new Set();
     const timer = setTimeout(() => { this._uiTimers.delete(timer); callback(); }, ms);
     this._uiTimers.add(timer);
+    return timer;
   }
 
   getCharWidth(char) {
@@ -273,7 +323,7 @@ export class PushHelper {
   }
 
   getMaxSafeBytes() {
-    const id = (this.idInput?.value || '').trim();
+    const id = (this.idInput?.value || this.detectUserId() || '').trim();
     // PTT has a hard push text limit of 50-52 bytes. 
     // We set the maximum safe bytes to 46 to leave a buffer, preventing boundary byte truncation and 'y' key merging.
     if (id.length > 0) {
@@ -492,24 +542,7 @@ export class PushHelper {
   }
 
   checkAuthorMode() {
-    const author = this.detectArticleAuthor();
-    const id = String(this.idInput?.value || '').trim();
-    const isAuthor = Boolean(author && /^[a-z][a-z0-9_]{1,11}$/i.test(id) && author.toLowerCase() === id.toLowerCase());
-    const forced = isAuthor || !author || !/^[a-z][a-z0-9_]{1,11}$/i.test(id);
-    if (forced && !this._forcedType) this._previousType = this.typeSelect?.value || '3';
-    if (this.typeSelect) {
-      this.typeSelect.disabled = forced || this.isPushing;
-      if (forced) this.typeSelect.value = isAuthor ? 'author' : '3';
-      else if (this._forcedType) this.typeSelect.value = this._previousType === 'author' ? '3' : this._previousType;
-    }
-    this._forcedType = forced;
-    if (this.authorNotice) {
-      this.authorNotice.textContent = isAuthor
-        ? `✍️ 標頭作者與自填 ID 相符 (${author})，發送時強制箭頭模式`
-        : '自填 ID 不等於登入驗證；作者或 ID 無法辨識時只發送箭頭。';
-      this.authorNotice.classList.remove('hidden');
-    }
-    return isAuthor;
+    return false;
   }
 
   getBottomPromptText(tab = this.getActiveTab?.()) {
@@ -519,264 +552,319 @@ export class PushHelper {
   }
 
   promptSnapshot(tab = this.getActiveTab?.()) {
-    const lines = this.getBottomPromptText(tab).split('\n');
-    const lineIndex = lines[1]?.trim() ? 1 : 0;
-    const line = lines[lineIndex]?.trim() || '';
-    // Inspect only the active footer, never phrases embedded in article prose.
-    const cooldown = line.match(/^(?:[◆●※]\s*)?(?:請勿快速連續推文[，,、]?\s*請等待|距離上次發文或推文間隔需|距離上次推文(?:還)?需等待|需間隔|請稍候|請勿在)\s*(\d{1,6})\s*秒(?:.*)$/);
-    if (cooldown) {
-      const seconds = Number(cooldown[1]);
-      return { state: 'cooldown', text: line, seconds: seconds >= 1 && seconds <= this.maxCooldownSeconds ? seconds : null };
+    const bottomText = this.getBottomPromptText(tab);
+    const state = this.detectPushState(tab);
+    return { state, text: bottomText, draft: '' };
+  }
+
+  detectPushState(tab = this.getActiveTab?.()) {
+    const bottomText = this.getBottomPromptText(tab);
+    if (/(?:[◆●※]\s*)?(?:請勿快速連續推文|距離上次發文或推文|距離上次推文|需間隔|請稍候|請勿在).*?(\d{1,6})\s*秒/.test(bottomText)) {
+      return 'cooldown';
     }
-    const input = line.match(/^(?:請輸入您的意見|加註意見(?:\s*[（(]→[）)])?)\s*[:：](.*)$/);
-    let state = 'unknown', draft = '';
-    if (/^確定要儲存檔案嗎\s*[（(]Y\/N[）)]\s*[?？]\s*(?:\[[Nn]\])?\s*$/i.test(line)) state = 'confirm-save';
-    else if (input) { state = 'input-content'; draft = input[1]; }
-    else {
-      const choice = /^\(1\/2\/3\)\?\s*(?:\[[123]\])?$/.test(line) ? lines.map(value => value.trim()).join(' ') : line;
-      if (/^您覺得這篇文章\s*[:：].*(?:\(1\)|1\)).*(?:\(2\)|2\)).*(?:\(3\)|3\)).*[?？]\s*(?:\[[123]\])?\s*$/.test(choice)) state = 'choose-type';
-      else if (/^瀏覽\s+第\s+\d+\/\d+\s+頁.*目前顯示\s*[:：]/.test(line)) state = 'idle';
+    if (/(?:確定\s*\[[yY]\/[nN]\]|確定要儲存檔案嗎)/.test(bottomText)) {
+      return 'confirm-save';
     }
-    const promptRow = Math.max(0, (tab?.buf?.rows || 2) - 2) + lineIndex;
-    if (['choose-type', 'input-content', 'confirm-save'].includes(state) && Number.isInteger(tab?.buf?.cur_y) && tab.buf.cur_y !== promptRow) return { state: 'unknown', text: line, draft: '' };
-    return { state, text: line, draft };
-  }
-
-  detectPushState() { return this.promptSnapshot().state; }
-  detectCooldownSeconds() { const prompt = this.promptSnapshot(); return prompt.state === 'cooldown' ? prompt.seconds : null; }
-
-  assertRun(run) {
-    if (this._run !== run || run.controller.signal.aborted) throw new Error(run.controller.signal.reason === 'deadline' ? '已達發送時間上限' : '已停止發送');
-    if (this.now() >= run.deadline) throw new Error('已達發送時間上限');
-    const tab = this.getActiveTab?.();
-    if (tab !== run.tab || this.getTabById(run.tab.id) !== run.tab || !tab.isConnected || tab.buf !== run.buffer ||
-        tab.address !== run.address || tab.encoding !== run.encoding) throw new Error('分頁或連線已變更，已停止發送');
-    const identity = this.articleIdentity(tab);
-    if (run.article && identity && identity !== run.article) throw new Error('文章標頭已變更，已停止發送');
-  }
-
-  async validateSession(run) {
-    this.assertRun(run);
-    // Read-only identity lookups can be cancelled; writes must settle before the lease is released.
-    const session = await this.withSignal(this.getSession(run.tab.id), run.controller.signal);
-    this.assertRun(run);
-    if (!session || session !== run.session) throw new Error('連線身分已變更，已停止發送');
-  }
-
-  withSignal(promise, signal) {
-    if (signal.aborted) return Promise.reject(new Error('已停止發送'));
-    return new Promise((resolve, reject) => {
-      const abort = () => { cleanup(); reject(new Error(signal.reason === 'deadline' ? '已達發送時間上限' : '已停止發送')); };
-      const cleanup = () => signal.removeEventListener('abort', abort);
-      signal.addEventListener('abort', abort, { once: true });
-      Promise.resolve(promise).then(value => { cleanup(); resolve(value); }, error => { cleanup(); reject(error); });
-    });
-  }
-
-  async pause(ms, run) {
-    this.assertRun(run);
-    await this.sleep(ms, run.controller.signal);
-    this.assertRun(run);
-  }
-
-  async waitFor(run, predicate) {
-    const deadline = Math.min(run.deadline, this.now() + this.promptTimeoutMs);
-    while (this.now() < deadline) {
-      await this.validateSession(run);
-      const prompt = this.promptSnapshot(run.tab);
-      const result = predicate(prompt);
-      if (result) return result;
-      await this.pause(Math.min(50, deadline - this.now()), run);
+    if (/(?:[推噓→]|\[[推噓→]\])\s*[a-zA-Z0-9_]+\s*[:：]|(?:請輸入您的意見|加註意見)\s*[:：]/.test(bottomText)) {
+      return 'input-content';
     }
-    throw new Error('等待明確提示逾時；不會猜測下一個按鍵');
+    if (/您覺得這篇文章|[(（]1\/2\/3[)）]\?/.test(bottomText)) {
+      return 'choose-type';
+    }
+    if (/瀏覽\s+第\s+\d+/.test(bottomText)) {
+      return 'idle';
+    }
+    return 'unknown';
   }
 
-  async write(run, text, allowed, { payload = false, commit = false, expectedPrompt = null } = {}) {
-    await this.validateSession(run);
-    const prompt = this.promptSnapshot(run.tab);
-    if (!allowed.includes(prompt.state) || (expectedPrompt !== null && prompt.text !== expectedPrompt)) throw new Error('終端提示已改變，已停止發送');
-    if (payload && prompt.draft.trim()) throw new Error('終端已有推文草稿，請先手動處理');
-    if (payload) run.uncertain = true;
-    if (commit) run.commitSent = true;
-    // Await actual transport completion; never release an input lease while a write is unresolved.
-    await this.sendToTab(run.tab.id, text, run.session, run.lease);
-    this.assertRun(run);
-  }
-
-  countEchoes(tab, segment, userId) {
-    let count = 0;
-    for (const row of tab.buf.lines) {
-      const match = tab.buf.getRowText(row).trimEnd().match(/^[推噓→]\s+([a-zA-Z][a-zA-Z0-9_]{1,11})\s*[:：] ?(.*?)\s+(?:(?:\d{1,3}\.){3}\d{1,3}\s+)?\d{2}\/\d{2}\s+\d{2}:\d{2}$/);
-      if (match && (!userId || match[1].toLowerCase() === userId.toLowerCase()) && match[2].trimEnd() === segment.trimEnd()) count++;
-    }
-    return count;
-  }
-
-  async sendSegmentSequence(segment, typeKey, run = null) {
-    // Public/single-segment calls go through exactly the same owner and validation path.
-    if (!run) return this.runSegments([segment], typeKey);
-    run.uncertain = false; run.commitSent = false;
-    let prompt = this.promptSnapshot(run.tab);
-    if (prompt.state === 'cooldown' && prompt.text !== run.retryWarning) throw new Error('已有未歸屬本次操作的冷卻提示，請先手動確認畫面');
-    if (prompt.state === 'confirm-save') throw new Error('終端已有未確認的推文，請先手動處理');
-    if (prompt.state === 'idle' || (prompt.state === 'cooldown' && prompt.text === run.retryWarning)) {
-      await this.write(run, '%', [prompt.state], { expectedPrompt: prompt.text });
-      run.retryWarning = null;
-      prompt = await this.waitFor(run, value => ['choose-type', 'input-content', 'cooldown'].includes(value.state) && value);
-    }
-    if (prompt.state === 'cooldown') {
-      if (!prompt.seconds) throw new Error('冷卻秒數無效或超出安全上限');
-      return { status: 'cooldown', seconds: prompt.seconds, text: prompt.text };
-    }
-    if (prompt.state === 'choose-type') {
-      const author = this.detectArticleAuthor(run.tab) || run.author;
-      const unknownIdentity = !author || !run.userId;
-      const ownArticle = author && run.userId && author.toLowerCase() === run.userId.toLowerCase();
-      const type = unknownIdentity || ownArticle || typeKey === 'author' ? '3' : typeKey;
-      await this.write(run, type, ['choose-type']);
-      prompt = await this.waitFor(run, value => ['input-content', 'cooldown'].includes(value.state) && value);
-      if (prompt.state === 'cooldown') {
-        if (!prompt.seconds) throw new Error('冷卻秒數無效或超出安全上限');
-        return { status: 'cooldown', seconds: prompt.seconds, text: prompt.text };
+  detectCooldownSeconds(tab = this.getActiveTab?.()) {
+    const bottomText = this.getBottomPromptText(tab);
+    for (const line of bottomText.split('\n')) {
+      const m = line.trim().match(/^(?:[◆●※]\s*)?(?:請勿快速連續推文[，,、]?\s*請等待|距離上次發文或推文間隔需|距離上次推文(?:還)?需等待|需間隔|請稍候|請勿在)\s*(\d{1,6})\s*秒/);
+      if (m) {
+        const s = parseInt(m[1], 10);
+        return s > 0 && s <= 120 ? s : null;
       }
     }
-    if (prompt.state !== 'input-content' || prompt.draft.trim()) throw new Error('不是空白的推文輸入提示，已停止發送');
-    const echoBefore = this.countEchoes(run.tab, segment, run.userId);
-    await this.write(run, `${segment}\r`, ['input-content'], { payload: true });
-    prompt = await this.waitFor(run, value => ['confirm-save', 'cooldown'].includes(value.state) && value);
-    if (prompt.state === 'cooldown') {
-      if (!prompt.seconds) throw new Error('冷卻秒數無效或超出安全上限');
-      run.uncertain = false; // Explicit rejection before any save confirmation.
-      return { status: 'cooldown', seconds: prompt.seconds, text: prompt.text };
-    }
-    await this.write(run, 'y\r', ['confirm-save'], { commit: true });
-    await this.waitFor(run, value => {
-      if (value.state === 'cooldown') throw new Error('確認後出現冷卻訊息，送出結果未確認，不自動重試');
-      return value.state === 'idle' && this.countEchoes(run.tab, segment, run.userId) > echoBefore && value;
-    });
-    run.uncertain = false;
-    return { status: 'confirmed' };
+    return null;
   }
 
-  async countdown(ms, run, label) {
-    const until = Math.min(run.deadline, this.now() + ms);
-    while (this.now() < until) {
-      if (this.progressCountdown) this.progressCountdown.textContent = `${label} ${((until - this.now()) / 1000).toFixed(1)}s`;
-      await this.pause(Math.min(100, until - this.now()), run);
-      await this.validateSession(run);
+  async sendKeystroke(data, tab = this.getActiveTab?.()) {
+    if (!tab) return;
+    if (this.sendToTab) {
+      const session = this.getSession ? await this.getSession(tab.id) : null;
+      await this.sendToTab(tab.id, data, session, this._inputLease || null);
+    } else if (this.sendData) {
+      this.sendData(data);
     }
+  }
+
+  async sendSegmentSequence(seg, typeKey = '1', isFirstSegment = true, signal = null) {
+    const tab = this.getActiveTab?.();
+    if (!tab || !tab.isConnected) throw new Error('連線已中斷，無法推文');
+    const isPtt = this.detectTargetStation(tab) === 'ptt';
+    const keyDelay = isPtt ? 250 : 500;
+    const pushKey = isPtt ? 'X' : '%';
+
+    // 1. Check if terminal is ALREADY at push prompt before sending any initial key
+    let bottomText = this.getBottomPromptText(tab);
+    let atInput = /(?:[推噓→]|\[[推噓→]\])\s*[a-zA-Z0-9_]+\s*[:：]|(?:請輸入您的意見|加註意見)\s*[:：]/.test(bottomText);
+    let atChoice = /您覺得這篇文章|[(（]1\/2\/3[)）]\?/.test(bottomText);
+
+    if (!atInput && !atChoice) {
+      // Not yet in push interface: trigger push mode with 'X' (or '%' on Maple)
+      await this.sendKeystroke(pushKey, tab);
+      await this.sleep(keyDelay, signal);
+      if (this.abortController || signal?.aborted) return { status: 'aborted' };
+
+      bottomText = this.getBottomPromptText(tab);
+      atInput = /(?:[推噓→]|\[[推噓→]\])\s*[a-zA-Z0-9_]+\s*[:：]|(?:請輸入您的意見|加註意見)\s*[:：]/.test(bottomText);
+      atChoice = /您覺得這篇文章|[(（]1\/2\/3[)）]\?/.test(bottomText);
+    }
+
+    // 2. If at 1/2/3 choice prompt, send choice (PTT single key, Maple with \r)
+    if (atChoice && !atInput) {
+      // On subsequent segments (isFirstSegment === false), choose '3' (→)
+      const choice = !isFirstSegment ? '3' : (['1', '2', '3'].includes(typeKey) ? typeKey : '1');
+      const optionStr = isPtt ? choice : `${choice}\r`;
+      await this.sendKeystroke(optionStr, tab);
+      await this.sleep(keyDelay, signal);
+      if (this.abortController || signal?.aborted) return { status: 'aborted' };
+    }
+
+    // 3. Send segment text + Enter
+    await this.sendKeystroke(`${seg}\r`, tab);
+    await this.sleep(keyDelay, signal);
+    if (this.abortController || signal?.aborted) return { status: 'aborted' };
+
+    // 4. Confirm saving (on PTT, send y\r)
+    if (isPtt) {
+      await this.sendKeystroke('y\r', tab);
+      await this.sleep(keyDelay, signal);
+      if (this.abortController || signal?.aborted) return { status: 'aborted' };
+    }
+
+    // 5. Check if PTT threw a cooldown warning
+    bottomText = this.getBottomPromptText(tab);
+    const cdMatch = bottomText.match(/(?:[◆●※]\s*)?(?:請勿快速連續推文|距離上次發文或推文|距離上次推文|需間隔|請稍候|請勿在).*?(\d{1,6})\s*秒/);
+    if (cdMatch) {
+      const waitSec = parseInt(cdMatch[1], 10);
+      if (waitSec > 0 && waitSec <= 120) {
+        return { status: 'cooldown', seconds: waitSec };
+      }
+    }
+
+    return { status: 'confirmed' };
   }
 
   normalizeSegment(segment) {
     return String(segment).replace(/\u00a0/g, ' ').replace(/[\u2000-\u200b\u202f\u205f\ufeff]/g, ' ');
   }
 
-  async startPushing() { return this.runSegments([...(this.currentSegments || [])], this.typeSelect?.value || '3'); }
+  async runSegments(input, typeKey = '1') {
+    if (Array.isArray(input)) {
+      this.currentSegments = [...input];
+    }
+    if (this.typeSelect) this.typeSelect.value = typeKey;
+    return this.startPushing();
+  }
 
-  async runSegments(input, typeKey = '3', { singleIndex = null } = {}) {
-    if (this._run) return { status: 'busy' };
-    if (this.recovery?.uncertain) return { status: 'needs-review' };
+  async startPushing() {
     const tab = this.getActiveTab?.();
-    const run = { tab, controller: new AbortController(), deadline: this.now() + this.maxRunMs, confirmed: 0, uncertain: false };
-    run.draft = [...(this.currentSegments || [])]; run.singleIndex = singleIndex;
-    this._run = run; this.isPushing = true;
-    run.timer = setTimeout(() => run.controller.abort('deadline'), this.maxRunMs);
+    if (!tab || !tab.isConnected) {
+      alert('連線已中斷，無法推文。');
+      return { status: 'failed', error: '連線已中斷' };
+    }
+
+    const segments = [...(this.currentSegments || [])];
+    if (segments.length === 0) {
+      alert('請先輸入推文內容！');
+      return { status: 'failed', error: '推文內容為空' };
+    }
+
+    const typeKey = this.typeSelect?.value || '1';
+    const delayVal = this.delaySelect?.value || '2000';
+    const baseDelayMs = parseInt(delayVal, 10) || 2000;
+
+    this.isPushing = true;
+    this.abortController = false;
+    this._run = { controller: new AbortController(), tab };
+
+    if (this.acquireInput) {
+      this._inputLease = this.acquireInput(tab.id);
+      if (!this._inputLease) {
+        alert('終端機正由其他輸入流程使用，請稍後再試。');
+        this.isPushing = false;
+        return { status: 'failed', error: '終端輸入忙碌中' };
+      }
+    }
+
     this.setRunningUi(true);
+    if (this.progressBarFill) this.progressBarFill.style.width = '0%';
     if (this.progressCountdown) this.progressCountdown.textContent = '';
-    let result;
+
+    let confirmedCount = 0;
+    let result = { status: 'confirmed', confirmed: 0 };
+
     try {
-      if (!tab?.isConnected || !tab.buf || this.detectTargetStation(tab) !== 'ptt') throw new Error('自動推文目前只支援 PTT/PTT2 的已連線文章畫面');
-      if (!['big5', 'big-5'].includes(String(tab.encoding || 'big5').toLowerCase())) throw new Error('請切換為 Big5 編碼再使用自動推文');
-      if (!this.getSession || !this.sendToTab || !this.acquireInput || !this.releaseInput) throw new Error('安全發送介面尚未初始化');
-      run.address = tab.address; run.encoding = tab.encoding; run.buffer = tab.buf; run.article = this.articleIdentity(tab); run.author = this.detectArticleAuthor(tab);
-      const id = String(this.idInput?.value || '').trim();
-      if (id && !/^[a-z][a-z0-9_]{1,11}$/i.test(id)) throw new Error('請填寫有效的 PTT ID，或留空採箭頭模式');
-      run.userId = id;
-      if (!['1', '2', '3', 'author'].includes(typeKey)) throw new Error('推文類型無效');
-      if (!Array.isArray(input) || !input.length || input.length > 100) throw new Error('請輸入 1 至 100 段推文');
-      if (singleIndex !== null && (!Number.isInteger(singleIndex) || singleIndex < 0 || singleIndex >= run.draft.length || input.length !== 1 || run.draft[singleIndex] !== input[0])) throw new Error('單段草稿已變更，請重新選取');
-      run.segments = input.map(segment => {
-        if (typeof segment !== 'string') throw new Error('推文內容無效');
-        const clean = this.normalizeSegment(segment);
-        if (!clean.trim() || /[\x00-\x1f\x7f]/.test(clean) || this.getStringByteWidth(clean) > this.getMaxSafeBytes()) throw new Error('分段含控制字元、換行或超過安全長度；請先修改');
-        return clean;
-      });
-      run.lease = this.acquireInput(tab.id);
-      if (!run.lease) throw new Error('終端機正由其他輸入流程使用，請稍後再試');
-      run.session = await this.withSignal(this.getSession(tab.id), run.controller.signal);
-      if (!run.session) throw new Error('無法確認連線身分');
-      this.assertRun(run);
-      const delay = this.delaySelect?.value || 'auto';
-      const baseDelay = delay === 'auto' ? 1500 : Number(delay);
-      if (![800, 1500, 2000, 5000, 10000].includes(baseDelay)) throw new Error('冷卻設定無效');
-      let learned = 0;
-      for (let index = 0; index < run.segments.length; index++) {
-        let confirmed = false;
-        for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-          this.assertRun(run);
-          if (this.progressLabel) this.progressLabel.textContent = `正在發送第 ${index + 1} / ${run.segments.length} 段；已確認 ${run.confirmed} 段`;
-          const outcome = await this.sendSegmentSequence(run.segments[index], index ? '3' : typeKey, run);
-          if (outcome.status === 'confirmed') { confirmed = true; break; }
-          if (attempt === this.maxRetries) throw new Error('已達冷卻重試上限，請檢查畫面後再操作');
-          run.retryWarning = outcome.text;
-          learned = Math.max(learned, (outcome.seconds + 0.5) * 1000);
-          await this.countdown((outcome.seconds + 0.5) * 1000, run, '冷卻後重試');
+      for (let i = 0; i < segments.length; i++) {
+        if (this.abortController || this._run?.controller?.signal?.aborted) {
+          result = { status: 'aborted', confirmed: confirmedCount };
+          break;
         }
-        if (!confirmed) throw new Error('送出結果未確認');
-        run.confirmed++;
-        if (this.progressBarFill) this.progressBarFill.style.width = `${Math.round(run.confirmed / run.segments.length * 100)}%`;
-        if (index + 1 < run.segments.length) await this.countdown(Math.max(baseDelay, learned), run, '分段間隔');
+
+        const seg = segments[i];
+        if (this.progressLabel) {
+          this.progressLabel.textContent = `正在發送第 ${i + 1} / ${segments.length} 段...`;
+        }
+
+        const outcome = await this.sendSegmentSequence(seg, typeKey, i === 0, this._run.controller.signal);
+
+        if (this.abortController || this._run?.controller?.signal?.aborted) {
+          result = { status: 'aborted', confirmed: confirmedCount };
+          break;
+        }
+
+        if (outcome.status === 'cooldown') {
+          const waitSec = outcome.seconds || 5;
+          let remaining = (waitSec + 0.5) * 1000;
+          while (remaining > 0 && !this.abortController && !this._run?.controller?.signal?.aborted) {
+            if (this.progressCountdown) {
+              this.progressCountdown.textContent = `防冷卻倒數 ${(remaining / 1000).toFixed(1)}s`;
+            }
+            await this.sleep(100, this._run.controller.signal);
+            remaining -= 100;
+          }
+          if (this.abortController || this._run?.controller?.signal?.aborted) {
+            result = { status: 'aborted', confirmed: confirmedCount };
+            break;
+          }
+          // Retry this same segment
+          i--;
+          continue;
+        }
+
+        // Successfully sent this segment
+        confirmedCount++;
+        result.confirmed = confirmedCount;
+
+        const percent = Math.round((confirmedCount / segments.length) * 100);
+        if (this.progressBarFill) {
+          this.progressBarFill.style.width = `${percent}%`;
+        }
+
+        // Update pending segments and text box
+        this.currentSegments = segments.slice(confirmedCount);
+        if (this.textInput) {
+          this.textInput.value = this.currentSegments.join('\n');
+        }
+        this.updatePreview();
+
+        // If there are more segments to send, wait the interval delay
+        if (i < segments.length - 1 && !this.abortController && !this._run?.controller?.signal?.aborted) {
+          let remaining = baseDelayMs;
+          while (remaining > 0 && !this.abortController && !this._run?.controller?.signal?.aborted) {
+            if (this.progressCountdown) {
+              this.progressCountdown.textContent = `間隔倒數 ${(remaining / 1000).toFixed(1)}s`;
+            }
+            await this.sleep(100, this._run.controller.signal);
+            remaining -= 100;
+          }
+        }
       }
-      result = { status: 'confirmed', confirmed: run.confirmed };
-      if (this.progressLabel) this.progressLabel.textContent = `已在畫面確認 ${run.confirmed} 段推文。`;
-      if (this.progressCountdown) this.progressCountdown.textContent = '完成';
-    } catch (error) {
-      result = { status: run.controller.signal.aborted ? 'aborted' : 'failed', confirmed: run.confirmed, uncertain: run.uncertain, error: error.message };
-      if (this.progressLabel) this.progressLabel.textContent = `${error.message}。已確認 ${run.confirmed} 段；待處理文字已保留。${run.uncertain ? '請核對畫面，勿直接重送。' : '終端可能仍停在推文子畫面，請先檢查。'}`;
-      if (this.progressCountdown) this.progressCountdown.textContent = run.uncertain ? '待核對' : '已停止';
-      if (run.uncertain) this.recovery = { uncertain: true, error: error.message };
+
+      if (!this.abortController && !this._run?.controller?.signal?.aborted && confirmedCount === segments.length) {
+        if (this.progressLabel) {
+          this.progressLabel.textContent = '🎉 全部分段推文已順利發送完成！';
+        }
+        if (this.progressBarFill) {
+          this.progressBarFill.style.width = '100%';
+        }
+        if (this.progressCountdown) {
+          this.progressCountdown.textContent = '完成';
+        }
+        await this.sleep(1200);
+        this.close();
+      } else if (this.abortController || this._run?.controller?.signal?.aborted) {
+        if (this.progressLabel) {
+          this.progressLabel.textContent = `已中止推文發送。已確認 ${confirmedCount} 段，未送出段落已為您保留。`;
+        }
+        if (this.progressCountdown) {
+          this.progressCountdown.textContent = '已中止';
+        }
+      }
+    } catch (err) {
+      result = { status: 'failed', confirmed: confirmedCount, error: err.message };
+      if (this.progressLabel) {
+        this.progressLabel.textContent = `${err.message || '發送過程發生錯誤'}。已確認 ${confirmedCount} 段，未送出段落已為您保留。`;
+      }
+      if (this.progressCountdown) {
+        this.progressCountdown.textContent = '已停止';
+      }
     } finally {
-      clearTimeout(run.timer);
-      if (run.lease) this.releaseInput(run.tab.id, run.lease);
-      this.lastRun = { ...result, originalSegments: run.segments ? [...run.segments] : Array.isArray(input) ? [...input] : [] };
-      if (run.segments) {
-        this.currentSegments = run.singleIndex !== null
-          ? run.draft.filter((_, index) => run.confirmed !== 1 || index !== run.singleIndex)
-          : run.segments.slice(run.confirmed);
-        if (this.textInput) this.textInput.value = this.currentSegments.join('\n');
+      if (this._inputLease && this.releaseInput && tab) {
+        this.releaseInput(tab.id, this._inputLease);
+        this._inputLease = null;
       }
-      this._run = null; this.isPushing = false;
+      this._run = null;
+      this.isPushing = false;
       this.setRunningUi(false);
       this.updatePreview();
     }
+
     return result;
   }
 
   setRunningUi(running) {
-    for (const element of [this.textInput, this.idInput, this.typeSelect, this.strategySelect, this.delaySelect, this.tplSelect, this.tplSaveBtn, this.tplDeleteBtn]) if (element) element.disabled = running;
-    for (const element of this.previewList?.querySelectorAll('.push-item-text') || []) element.contentEditable = running ? 'false' : 'true';
-    for (const element of this.previewList?.querySelectorAll('button') || []) element.disabled = running || Boolean(this.recovery?.uncertain);
+    this.isPushing = running;
+    for (const element of [this.textInput, this.idInput, this.typeSelect, this.strategySelect, this.delaySelect, this.tplSelect, this.tplSaveBtn, this.tplDeleteBtn]) {
+      if (element) element.disabled = running;
+    }
+    for (const element of this.previewList?.querySelectorAll('.push-item-text') || []) {
+      element.contentEditable = running ? 'false' : 'true';
+    }
+    for (const element of this.previewList?.querySelectorAll('button') || []) {
+      element.disabled = running;
+    }
     this.sendBtn?.classList.toggle('hidden', running);
     this.cancelBtn?.classList.toggle('hidden', running);
     this.abortBtn?.classList.toggle('hidden', !running);
-    this.progressBox?.classList.remove('hidden');
-    if (this.sendBtn) this.sendBtn.disabled = running || Boolean(this.recovery?.uncertain);
-    this.reviewBtn?.classList.toggle('hidden', !this.recovery?.uncertain);
+    this.reviewBtn?.classList.add('hidden');
+    if (this.progressBox) {
+      if (running) {
+        this.progressBox.classList.remove('hidden');
+      } else {
+        if (!this.progressLabel?.textContent) {
+          this.progressBox.classList.add('hidden');
+        }
+      }
+    }
+    if (this.sendBtn) this.sendBtn.disabled = running;
     if (!running) this.checkAuthorMode();
   }
 
   abort() {
-    if (!this._run) return;
-    this._run.controller.abort();
-    if (this.progressLabel) this.progressLabel.textContent = '停止中；不再送下一步，等待目前寫入結束後保留待處理文字。';
+    this.abortController = true;
+    if (this._run?.controller) {
+      this._run.controller.abort();
+    }
+    this.isPushing = false;
+    this.setRunningUi(false);
+    if (this.progressLabel) {
+      this.progressLabel.textContent = '已中止推文發送。未送出段落已為您保留。';
+    }
+    if (this.progressCountdown) {
+      this.progressCountdown.textContent = '已中止';
+    }
   }
 
-  sleep(ms, signal) {
-    return new Promise((resolve, reject) => {
-      const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); };
-      const abort = () => { cleanup(); reject(new Error('已停止發送')); };
+  sleep(ms, signal = null) {
+    if (signal?.aborted) return Promise.resolve();
+    return new Promise((resolve) => {
+      const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); };
+      const onAbort = () => { cleanup(); resolve(); };
       const timer = setTimeout(() => { cleanup(); resolve(); }, ms);
-      if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, { once: true });
+      if (signal) signal.addEventListener('abort', onAbort, { once: true });
     });
   }
 }

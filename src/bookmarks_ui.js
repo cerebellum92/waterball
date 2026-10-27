@@ -1,4 +1,5 @@
 // Bookmarks UI Controller for Waterball BBS
+import { extractHostFromAddress } from './tab_manager.js';
 
 export class BookmarksUI {
   constructor({
@@ -50,7 +51,13 @@ export class BookmarksUI {
       this.addBookmarkBtn.addEventListener('click', () => {
         const addr = this.addressInput?.value?.trim();
         if (!addr) return;
-        const name = addr.split(':')[0].replace(/.*@/, '') || '我的 BBS 站台';
+        const host = extractHostFromAddress(addr);
+        let name = '我的 BBS 站台';
+        if (host.includes('ptt.cc')) name = '批踢踢實業坊';
+        else if (host.includes('ptt2.cc')) name = '批踢踢兔';
+        else if (host.includes('gamer')) name = '巴哈姆特';
+        else if (host.includes('duckdns') || host.includes('ncku')) name = '成大物治';
+        else if (host) name = host;
         this.settingsManager.addBookmark({
           name,
           address: addr,

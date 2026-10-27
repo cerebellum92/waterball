@@ -7,6 +7,49 @@ import { resolveEnv, getShortcutTooltip } from './shortcuts_config.js';
 
 let tabCounter = 1;
 
+export function extractHostFromAddress(address) {
+  if (!address || typeof address !== 'string') return '';
+  let clean = address.trim().replace(/^[a-z0-9+.-]+:\/\//i, '');
+  clean = clean.replace(/^[^@/]+@/, '');
+  clean = clean.split(/[/?#]/)[0];
+  if (clean.startsWith('[') && clean.includes(']')) {
+    clean = clean.replace(/^\[([^\]]+)\].*$/, '$1');
+  } else {
+    const colonIdx = clean.lastIndexOf(':');
+    if (colonIdx !== -1) {
+      clean = clean.substring(0, colonIdx);
+    }
+  }
+  return clean.toLowerCase();
+}
+
+export function resolveBookmarkName(address, bookmarks = []) {
+  if (!address || !Array.isArray(bookmarks) || bookmarks.length === 0) return null;
+  const raw = address.trim();
+  const host = extractHostFromAddress(raw);
+
+  const exact = bookmarks.find((b) => b.address?.trim() === raw);
+  if (exact?.name) return exact.name;
+
+  if (host) {
+    const hostMatch = bookmarks.find((b) => {
+      const bHost = extractHostFromAddress(b.address);
+      return bHost && bHost === host;
+    });
+    if (hostMatch?.name) return hostMatch.name;
+
+    if (host.includes('ptt.cc')) {
+      const pttMatch = bookmarks.find((b) => {
+        const bHost = extractHostFromAddress(b.address);
+        return bHost && bHost.includes('ptt.cc');
+      });
+      if (pttMatch?.name) return pttMatch.name;
+    }
+  }
+
+  return null;
+}
+
 export class Tab {
   constructor(options = {}) {
     this.id = options.id || `tab-${Date.now()}-${tabCounter++}`;
@@ -15,6 +58,7 @@ export class Tab {
     this.encoding = options.encoding || 'big5';
     this.status = 'disconnected'; // 'disconnected' | 'connecting' | 'connected'
     this.unread = false;
+    this.bookmarkName = options.bookmarkName || null;
 
     // Independent Terminal Buffer & Parser
     this.buf = new TermBuf(80, 24);
@@ -78,12 +122,14 @@ export class TabManager {
     });
 
     const defaultAddress = getDefaultAddress();
+    const defaultBmName = resolveBookmarkName(defaultAddress, settingsManager?.bookmarks) || '批踢踢實業坊';
 
     this.tabSwitcherNewBtn?.addEventListener('click', () => {
       const newTab = this.createTab({
-        title: '批踢踢實業坊',
+        title: defaultBmName,
         address: defaultAddress,
         encoding: 'big5',
+        bookmarkName: defaultBmName,
       });
       this.switchTab(newTab.id);
       this.closeTabSwitcher();
@@ -91,9 +137,10 @@ export class TabManager {
 
     // Create initial first tab
     const firstTab = this.createTab({
-      title: '批踢踢實業坊',
+      title: defaultBmName,
       address: defaultAddress,
       encoding: 'big5',
+      bookmarkName: defaultBmName,
     });
     this.switchTab(firstTab.id);
   }
@@ -219,10 +266,13 @@ export class TabManager {
 
     if (this.tabs.length === 0) {
       // If all tabs closed, create a fresh new tab
+      const defaultAddress = getDefaultAddress();
+      const defaultBmName = resolveBookmarkName(defaultAddress, settingsManager?.bookmarks) || '批踢踢實業坊';
       const freshTab = this.createTab({
-        title: '批踢踢實業坊',
-        address: getDefaultAddress(),
+        title: defaultBmName,
+        address: defaultAddress,
         encoding: 'big5',
+        bookmarkName: defaultBmName,
       });
       this.switchTab(freshTab.id);
     } else {
@@ -240,13 +290,19 @@ export class TabManager {
     const tab = this.getTabById(tabId);
     if (tab) {
       tab.status = status;
-      if (status === 'connected') {
-        const cleanHost = tab.address.split(':')[0].replace(/.*@/, '');
-        if (cleanHost.includes('ptt.cc')) tab.title = '批踢踢實業坊';
-        else if (cleanHost.includes('ptt2.cc')) tab.title = '批踢踢兔';
-        else if (cleanHost.includes('duckdns') || cleanHost.includes('ncku')) tab.title = '成大物治';
-        else if (cleanHost.includes('gamer')) tab.title = '巴哈姆特';
-        else tab.title = cleanHost;
+      if (status === 'connected' || status === 'connecting') {
+        const bmName = tab.bookmarkName || resolveBookmarkName(tab.address, settingsManager?.bookmarks);
+        if (bmName) {
+          tab.title = bmName;
+          tab.bookmarkName = bmName;
+        } else {
+          const cleanHost = extractHostFromAddress(tab.address);
+          if (cleanHost.includes('ptt.cc')) tab.title = '批踢踢實業坊';
+          else if (cleanHost.includes('ptt2.cc')) tab.title = '批踢踢兔';
+          else if (cleanHost.includes('duckdns') || cleanHost.includes('ncku')) tab.title = '成大物治';
+          else if (cleanHost.includes('gamer')) tab.title = '巴哈姆特';
+          else if (cleanHost) tab.title = cleanHost;
+        }
       }
       this.renderTabBar();
       if (this.activeTabId === tabId) {
