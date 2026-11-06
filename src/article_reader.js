@@ -3,7 +3,8 @@ import { blacklistManager } from './blacklist.js';
 import { writeClipboardText } from './platform.js';
 import { userTagsManager, TAG_COLORS } from './user_tags.js';
 import { repairBrokenUrl, bbsColumns } from './url_repair.js';
-import { extractAidsFromLine, boardFromHeaderLine } from './aid_helper.js';
+import { extractAidsFromLine, boardFromHeaderLine, filenameToAid, validBoard } from './aid_helper.js';
+import { fetchArticleSummary } from './ai_summary_client.js';
 
 export class ArticleParser {
   static parseFromBuf(buf) {
@@ -27,6 +28,11 @@ export class ArticleParser {
     let title = '';
     let time = '';
     let board = '';
+    let articleId = '';
+    let webUrl = '';
+    const articleUrlCandidates = [];
+    let footerStart = -1;
+    let reachedPushes = false;
 
     const bodyBlocks = [];
     const pushList = [];
@@ -40,24 +46,32 @@ export class ArticleParser {
       // Detect BBS Article Headers (作者 / 標題 / 時間 / 看板)
       if (inHeader) {
         if (i < 5) board = boardFromHeaderLine(line) || board;
-        if (/^作者(?:\s*[:：]\s*|\s+)(.+)/.test(line)) {
-          author = line.match(/^作者(?:\s*[:：]\s*|\s+)(.+)/)[1].trim();
+        const authorMatch = line.match(/^\s*作者(?:\s*[:：]\s*|\s+)(.+)/);
+        if (authorMatch) {
+          const rawAuthor = authorMatch[1].trim();
+          const boardSplit = rawAuthor.match(/^(.*?)\s+看板(?:\s*[:：]\s*|\s+《?)([a-zA-Z0-9_-]{1,32})/);
+          if (boardSplit) {
+            author = boardSplit[1].trim();
+            if (!board || board === 'BBS') board = validBoard(boardSplit[2]) || board;
+          } else {
+            author = rawAuthor;
+          }
           continue;
         }
-        if (/^標題(?:\s*[:：]\s*|\s+)(.+)/.test(line)) {
-          title = line.match(/^標題(?:\s*[:：]\s*|\s+)(.+)/)[1].trim();
+        if (/^\s*標題(?:\s*[:：]\s*|\s+)(.+)/.test(line)) {
+          title = line.match(/^\s*標題(?:\s*[:：]\s*|\s+)(.+)/)[1].trim();
           continue;
         }
-        if (/^時間(?:\s*[:：]\s*|\s+)(.+)/.test(line)) {
-          time = line.match(/^時間(?:\s*[:：]\s*|\s+)(.+)/)[1].trim();
+        if (/^\s*時間(?:\s*[:：]\s*|\s+)(.+)/.test(line)) {
+          time = line.match(/^\s*時間(?:\s*[:：]\s*|\s+)(.+)/)[1].trim();
           continue;
         }
-        if (/^看板\s*[:：]\s*(.+)/.test(line)) {
-          board = line.match(/^看板\s*[:：]\s*(.+)/)[1].trim();
+        if (/^\s*看板\s*[:：]\s*(.+)/.test(line)) {
+          board = line.match(/^\s*看板\s*[:：]\s*(.+)/)[1].trim();
           continue;
         }
         // If empty line or separator line after header, exit header mode
-        if (line.startsWith('───────────────────') || line.startsWith('═══════════════════') || line === '') {
+        if (line.trimStart().startsWith('───────────────────') || line.trimStart().startsWith('═══════════════════') || line.trim() === '') {
           inHeader = false;
           continue;
         }
@@ -68,11 +82,20 @@ export class ArticleParser {
         continue;
       }
 
+      // Only exact standalone footer lines before comments may identify this article.
+      // Bare links and quoted/comment text are never navigation identities.
+      if (/^\s*([推噓→])\s+[a-zA-Z0-9_-]+\s*[:：]/.test(line)) reachedPushes = true;
+      if (!reachedPushes && /^\s*※\s*發信站\s*[:：]/.test(line)) footerStart = i;
+      const explicitUrlMatch = !reachedPushes && line.match(/^\s*※\s*文章網址\s*[:：]\s*(https?:\/\/(?:www\.)?ptt\.cc\/bbs\/([a-zA-Z0-9_-]{1,32})\/(M\.\d{1,10}\.A(?:\.[0-9A-Fa-f]{3})?)\.html)\s*$/i);
+      if (explicitUrlMatch && (!board || board === 'BBS' || board.trim().toLowerCase() === explicitUrlMatch[2].toLowerCase())) {
+        articleUrlCandidates.push({ url: explicitUrlMatch[1], board: explicitUrlMatch[2], id: explicitUrlMatch[3], line: i });
+      }
+
       // Detect PTT Push Comments (推 / 噓 / →)
       // Format: "推 user: comment message                 08/15 22:30"
       // or "噓 user: comment message                 08/15 22:30"
       // or "→ user: comment message                 08/15 22:30"
-      const pushMatch = line.match(/^([推噓→])\s+([a-zA-Z0-9_-]+)\s*[:：]\s*(.*)$/);
+      const pushMatch = line.match(/^\s*([推噓→])\s+([a-zA-Z0-9_-]+)\s*[:：]\s*(.*)$/);
       if (pushMatch) {
         const tag = pushMatch[1];
         const user = pushMatch[2];
@@ -142,12 +165,24 @@ export class ArticleParser {
       if (repair) applyRepair(first, second, repair);
     }
 
+    const candidates = articleUrlCandidates.filter(c => c.line > footerStart);
+    const identities = new Set(candidates.map(c => `${c.board.toLowerCase()}:${c.id.toUpperCase()}`));
+    if (identities.size === 1 && (footerStart >= 0 || board)) {
+      const candidate = candidates[0];
+      webUrl = candidate.url;
+      articleId = candidate.id;
+      if (!board || board === 'BBS') board = candidate.board;
+    }
+
     return {
       author: author || 'BBS 使用者',
       title: title || 'BBS 文章',
       time: time || '',
       board: board || 'BBS',
       aidBoard: board || null, // BBS is a display placeholder, never a navigation target.
+      aid: articleId ? filenameToAid(articleId) : null,
+      articleId: articleId || '',
+      webUrl: webUrl || '',
       bodyBlocks,
       pushList,
       pushStats,
@@ -211,6 +246,16 @@ export class ArticleReaderModal {
     this.currentFilter = 'all';
     this.pushSearchQuery = '';
     this.highlightedUser = null;
+    let savedFontSize = 16;
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const parsed = Number.parseInt(localStorage.getItem('bbsterm_reader_font_size'), 10);
+        if (Number.isFinite(parsed) && parsed >= 12 && parsed <= 26) {
+          savedFontSize = parsed;
+        }
+      }
+    } catch {}
+    this.fontSize = savedFontSize;
     let savedMerge = false;
     try {
       savedMerge = typeof localStorage !== 'undefined' && localStorage.getItem('bbsterm_reader_merge_pushes') === 'true';
@@ -243,21 +288,36 @@ export class ArticleReaderModal {
         <div class="reader-nav-right">
           <div class="font-size-controls">
             <button id="reader-font-dec" title="縮小字體">A-</button>
-            <span id="reader-font-val">16px</span>
+            <span id="reader-font-val">${this.fontSize}px</span>
             <button id="reader-font-inc" title="放大字體">A+</button>
           </div>
+          <button id="reader-summary-btn" class="btn-reader-action btn-reader-summary" title="使用 AI 生成文章重點與推文懶人包">✨ AI 懶人包</button>
           <button id="reader-jump-push-btn" class="btn-reader-action" title="快速捲動至推文區">💬 跳至留言</button>
           <button id="reader-copy-btn" class="btn-reader-action" title="複製文章連結與內容">📋 複製內容</button>
         </div>
       </div>
       <div class="reader-body-scroll" id="reader-scroll-container">
-        <div class="reader-container">
+        <div class="reader-container" id="reader-container">
           <div class="reader-meta-card">
             <h1 id="reader-title" class="reader-title">載入中...</h1>
             <div class="reader-meta-row">
               <div class="meta-item"><span class="meta-label">作者</span> <span id="reader-author" class="meta-val"></span></div>
               <div class="meta-item"><span class="meta-label">時間</span> <span id="reader-time" class="meta-val"></span></div>
             </div>
+          </div>
+          <div id="reader-ai-summary-card" class="reader-ai-summary-card hidden">
+            <div class="summary-card-header">
+              <div class="summary-card-title">
+                <span class="summary-sparkle">✨</span>
+                <span class="summary-title-text">AI 重點懶人包</span>
+                <span id="summary-badge" class="summary-badge hidden"></span>
+              </div>
+              <div class="summary-card-actions">
+                <button type="button" id="summary-refresh-btn" class="summary-btn-action" title="強制重新請求 AI 分析">🔄 重新分析</button>
+                <button type="button" id="summary-close-btn" class="summary-btn-close" title="收合懶人包">✕</button>
+              </div>
+            </div>
+            <div id="summary-card-body" class="summary-card-body"></div>
           </div>
           <div id="reader-article-content" class="reader-article-content"></div>
           <div id="reader-push-section" class="reader-push-section">
@@ -320,6 +380,9 @@ export class ArticleReaderModal {
     document.getElementById('reader-font-dec')?.addEventListener('click', () => this.adjustFontSize(-2));
     document.getElementById('reader-font-inc')?.addEventListener('click', () => this.adjustFontSize(2));
     document.getElementById('reader-copy-btn')?.addEventListener('click', () => this.copyArticle());
+    document.getElementById('reader-summary-btn')?.addEventListener('click', () => this.toggleSummary());
+    document.getElementById('summary-close-btn')?.addEventListener('click', () => this.hideSummary());
+    document.getElementById('summary-refresh-btn')?.addEventListener('click', () => this.loadSummary(true));
 
     // Jump to push section
     document.getElementById('reader-jump-push-btn')?.addEventListener('click', () => {
@@ -388,14 +451,48 @@ export class ArticleReaderModal {
         }
       }
     });
+
+    this.applyFontSize();
+  }
+
+  applyFontSize() {
+    const fontVal = document.getElementById('reader-font-val');
+    if (fontVal) fontVal.textContent = `${this.fontSize}px`;
+
+    const container = document.getElementById('reader-container')
+      || document.getElementById('reader-scroll-container')?.querySelector?.('.reader-container')
+      || document.querySelector?.('.reader-container');
+    if (container) {
+      if (container.style?.setProperty) {
+        container.style.setProperty('--reader-font-size', `${this.fontSize}px`);
+      } else if (container.style) {
+        container.style['--reader-font-size'] = `${this.fontSize}px`;
+      }
+    }
+
+    const content = document.getElementById('reader-article-content');
+    if (content) {
+      content.style.fontSize = `${this.fontSize}px`;
+    }
+
+    const summaryCard = document.getElementById('reader-ai-summary-card');
+    if (summaryCard) {
+      if (summaryCard.style?.setProperty) {
+        summaryCard.style.setProperty('--reader-font-size', `${this.fontSize}px`);
+      } else if (summaryCard.style) {
+        summaryCard.style['--reader-font-size'] = `${this.fontSize}px`;
+      }
+    }
   }
 
   adjustFontSize(delta) {
     this.fontSize = Math.max(12, Math.min(26, this.fontSize + delta));
-    const fontVal = document.getElementById('reader-font-val');
-    if (fontVal) fontVal.textContent = `${this.fontSize}px`;
-    const content = document.getElementById('reader-article-content');
-    if (content) content.style.fontSize = `${this.fontSize}px`;
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('bbsterm_reader_font_size', String(this.fontSize));
+      }
+    } catch {}
+    this.applyFontSize();
   }
 
   openLightbox(url) {
@@ -451,7 +548,7 @@ export class ArticleReaderModal {
   }
 
   isArticleScreen(lines) {
-    const headerCheck = lines.slice(0, 5).some((l) => /^作者\s*[:：]|^標題\s*[:：]|^看板\s*[:：]/.test(l));
+    const headerCheck = lines.slice(0, 5).some((l) => /^\s*(?:作者(?:\s*[:：]\s*|\s+)|標題(?:\s*[:：]\s*|\s+)|看板(?:\s*[:：]\s*|\s+))/.test(l) || boardFromHeaderLine(l) !== null);
     const footerCheck = lines.slice(20, 24).some((l) => /瀏覽\s+第\s+\d+\/\d+\s+頁|目前顯示\s*[:：]|\(\s*\d+%\)|\(y\)回應|\(F\)轉寄|※\s*文章網址/.test(l));
     return headerCheck || footerCheck;
   }
@@ -480,7 +577,7 @@ export class ArticleReaderModal {
     });
   }
 
-  async crawlFullArticle(tab, onProgress) {
+  async crawlFullArticle(tab, onProgress, onPageLines) {
     if (!this.sendToTab || !this.getConnectionSession) throw new Error('文章傳輸介面尚未初始化');
     const session = await this.getConnectionSession(tab.id);
     const send = data => this.sendToTab(tab.id, data, session);
@@ -488,7 +585,7 @@ export class ArticleReaderModal {
     const fallbackLines = [];
 
     // Rewind to top: Send Home key ('\x1b[1~')
-    const updatePromise = this.waitForBufferUpdate(tab, 250);
+    const updatePromise = this.waitForBufferUpdate(tab, 400);
     await send('\x1b[1~');
     await updatePromise;
 
@@ -497,6 +594,7 @@ export class ArticleReaderModal {
     let lastScreenHash = '';
 
     while (pageCount < 100) {
+      if (this.isOpen === false) break;
       pageCount++;
       const screen = this.getScreenLines(tab.buf);
       const contentRows = screen.slice(0, 23); // lines 0..22
@@ -534,7 +632,11 @@ export class ArticleReaderModal {
         }
       }
 
-      const totalLinesCount = allLinesMap.size > 0 ? allLinesMap.size : fallbackLines.length;
+      const currentAccumulatedLines = allLinesMap.size > 0
+        ? Array.from(allLinesMap.keys()).sort((a, b) => a - b).map(k => allLinesMap.get(k))
+        : [...fallbackLines];
+
+      const totalLinesCount = currentAccumulatedLines.length;
       onProgress?.(pageCount, totalLinesCount);
 
       // Check end of article condition
@@ -547,19 +649,28 @@ export class ArticleReaderModal {
         if (currP >= totalP) isLastPage = true;
       }
       if (footer.includes('100%') || isLastPage) {
-        break;
+        isLastPage = true;
       }
 
       const currentHash = contentRows.join('\n');
       if (currentHash === lastScreenHash) {
         consecutiveUnchanged++;
         if (consecutiveUnchanged >= 2) {
-          break;
+          isLastPage = true;
         }
       } else {
         consecutiveUnchanged = 0;
       }
       lastScreenHash = currentHash;
+
+      // Progressive update callback for streaming UI rendering
+      if (onPageLines) {
+        onPageLines(currentAccumulatedLines, { pageCount, isLastPage });
+      }
+
+      if (isLastPage) {
+        break;
+      }
 
       // Send Space / PageDown and wait for buffer update event from BBS
       const waitNext = this.waitForBufferUpdate(tab, 350);
@@ -576,12 +687,26 @@ export class ArticleReaderModal {
   }
 
   clearPushSection() {
+    this.hideSummary();
+    this.summaryLoadedFor = null;
+    const body = document.getElementById('summary-card-body');
+    if (body) body.innerHTML = '';
+    const badge = document.getElementById('summary-badge');
+    if (badge) {
+      badge.className = 'summary-badge hidden';
+      badge.textContent = '';
+    }
+    const summaryBtn = document.getElementById('reader-summary-btn');
+    if (summaryBtn) summaryBtn.classList.remove('loading');
+
     this.currentArticle = null;
     this.revealedPushes = new Set();
     this.articleBodyRevealed = false;
     this.highlightedUser = null;
     this.pushSearchQuery = '';
     this.currentFilter = 'all';
+    this._renderedBodyKey = null;
+    this._renderedPushCount = -1;
 
     const searchInput = document.getElementById('push-search-input');
     if (searchInput) searchInput.value = '';
@@ -623,6 +748,7 @@ export class ArticleReaderModal {
 
     this.modalEl.classList.remove('hidden');
     this.isOpen = true;
+    this.applyFontSize();
     this.clearPushSection();
 
     const titleEl = document.getElementById('reader-title');
@@ -637,26 +763,30 @@ export class ArticleReaderModal {
     const isArticle = this.isArticleScreen(screenLines);
 
     if (isArticle && tab.isConnected) {
-      if (titleEl) titleEl.textContent = '📖 正在載入完整長文與所有推文...';
-      if (authorEl) authorEl.textContent = '讀取中...';
-      if (timeEl) timeEl.textContent = '';
-      if (boardEl) boardEl.textContent = 'BBS';
-      if (contentEl) {
-        contentEl.innerHTML = `
-          <div class="reader-loading-box">
-            <div class="reader-spinner"></div>
-            <div id="reader-loading-text">正在自動掃描文章分頁...</div>
-          </div>
-        `;
+      // Check if current screen already contains article header (fast preview)
+      const hasImmediateHeader = screenLines.slice(0, 5).some((l) =>
+        /^\s*(?:作者(?:\s*[:：]\s*|\s+)|標題(?:\s*[:：]\s*|\s+)|看板(?:\s*[:：]\s*|\s+))/.test(l) || boardFromHeaderLine(l) !== null
+      );
+      if (hasImmediateHeader) {
+        const initialArticle = ArticleParser.parseLines(screenLines);
+        this.renderArticle(initialArticle, { isStreaming: true, pageCount: 1, isLastPage: false });
+      } else {
+        if (titleEl) titleEl.textContent = '📖 正在載入文章...';
+        if (authorEl) authorEl.textContent = '讀取中...';
+        if (timeEl) timeEl.textContent = '';
+        if (boardEl) boardEl.textContent = 'BBS';
       }
 
       let fullLines;
       try {
-        fullLines = await this.crawlFullArticle(tab, (page, totalLines) => {
-          const loadingText = document.getElementById('reader-loading-text');
-          if (loadingText) {
-            loadingText.textContent = `正在快速抓取第 ${page} 頁 (已累積 ${totalLines} 行)...`;
-          }
+        fullLines = await this.crawlFullArticle(tab, null, (currentLines, status) => {
+          if (this.isOpen === false) return;
+          const article = ArticleParser.parseLines(currentLines);
+          this.renderArticle(article, {
+            isStreaming: !status.isLastPage,
+            pageCount: status.pageCount,
+            isLastPage: status.isLastPage,
+          });
         });
       } catch (error) {
         this.onShowToast?.(`文章讀取已停止：${error.message || error}`);
@@ -664,18 +794,22 @@ export class ArticleReaderModal {
         return;
       }
 
+      if (this.isOpen === false) return;
       const article = ArticleParser.parseLines(fullLines);
-      this.renderArticle(article);
+      this.renderArticle(article, { isStreaming: false, isLastPage: true });
     } else {
       const article = ArticleParser.parseLines(screenLines);
       this.renderArticle(article);
     }
   }
 
-  renderArticle(article) {
+  renderArticle(article, options = {}) {
+    const { isStreaming = false, pageCount = 1, isLastPage = false } = options;
     if (this.currentArticle !== article) {
-      this.revealedPushes = new Set();
-      this.articleBodyRevealed = false;
+      if (!isStreaming || !this.currentArticle) {
+        this.revealedPushes = new Set();
+        this.articleBodyRevealed = false;
+      }
     }
     this.currentArticle = article;
     this.revealedPushes ||= new Set();
@@ -743,42 +877,46 @@ export class ArticleReaderModal {
     const isArticleBlacklisted = isAuthorBlacklisted || Boolean(matchedTitleKw);
     const articleReason = isAuthorBlacklisted ? `作者 ${authorUser} 已列入黑名單` : `標題包含黑名單關鍵字「${matchedTitleKw}」`;
 
-    // Render Body Blocks
+    // Render Body Blocks (only when body actually changes to preserve scroll & image stability)
     const contentEl = document.getElementById('reader-article-content');
     if (contentEl) {
-      contentEl.innerHTML = '';
-      contentEl.classList.remove('blacklisted-article-dim');
-      contentEl.style.fontSize = `${this.fontSize}px`;
+      const bodyKey = (article.bodyBlocks || []).map((b) => b.text || '').join('\n');
+      if (this._renderedBodyKey !== bodyKey) {
+        this._renderedBodyKey = bodyKey;
+        contentEl.innerHTML = '';
+        contentEl.classList.remove('blacklisted-article-dim');
+        this.applyFontSize();
 
-      if (isArticleBlacklisted && (mode === 'mask' || mode === 'hide')) {
-        const maskBanner = document.createElement('div');
-        maskBanner.className = 'article-masked-banner';
-        maskBanner.innerHTML = `
-          <span>🛡️ 此文章符合您的黑名單規則（${this.escapeHtml(articleReason)}）</span>
-          <button type="button" class="btn-reveal-article">點擊顯示內文</button>
-        `;
-        contentEl.appendChild(maskBanner);
+        if (isArticleBlacklisted && (mode === 'mask' || mode === 'hide')) {
+          const maskBanner = document.createElement('div');
+          maskBanner.className = 'article-masked-banner';
+          maskBanner.innerHTML = `
+            <span>🛡️ 此文章符合您的黑名單規則（${this.escapeHtml(articleReason)}）</span>
+            <button type="button" class="btn-reveal-article">點擊顯示內文</button>
+          `;
+          contentEl.appendChild(maskBanner);
 
-        const bodyContainer = document.createElement('div');
-        bodyContainer.className = `article-masked-body${this.articleBodyRevealed ? '' : ' hidden'}`;
-        contentEl.appendChild(bodyContainer);
+          const bodyContainer = document.createElement('div');
+          bodyContainer.className = `article-masked-body${this.articleBodyRevealed ? '' : ' hidden'}`;
+          contentEl.appendChild(bodyContainer);
 
-        maskBanner.querySelector('.btn-reveal-article')?.addEventListener('click', (e) => {
-          const isHidden = bodyContainer.classList.toggle('hidden');
-          this.articleBodyRevealed = !isHidden;
-          e.target.textContent = isHidden ? '點擊顯示內文' : '隱藏內文';
-        });
+          maskBanner.querySelector('.btn-reveal-article')?.addEventListener('click', (e) => {
+            const isHidden = bodyContainer.classList.toggle('hidden');
+            this.articleBodyRevealed = !isHidden;
+            e.target.textContent = isHidden ? '點擊顯示內文' : '隱藏內文';
+          });
 
-        const revealButton = maskBanner.querySelector('.btn-reveal-article');
-        if (revealButton && this.articleBodyRevealed) revealButton.textContent = '隱藏內文';
-        this.renderBodyBlocks(article.bodyBlocks, bodyContainer);
-      } else {
-        if (isArticleBlacklisted && mode === 'dim') {
-          contentEl.classList.add('blacklisted-article-dim');
+          const revealButton = maskBanner.querySelector('.btn-reveal-article');
+          if (revealButton && this.articleBodyRevealed) revealButton.textContent = '隱藏內文';
+          this.renderBodyBlocks(article.bodyBlocks, bodyContainer);
         } else {
-          contentEl.classList.remove('blacklisted-article-dim');
+          if (isArticleBlacklisted && mode === 'dim') {
+            contentEl.classList.add('blacklisted-article-dim');
+          } else {
+            contentEl.classList.remove('blacklisted-article-dim');
+          }
+          this.renderBodyBlocks(article.bodyBlocks, contentEl);
         }
-        this.renderBodyBlocks(article.bodyBlocks, contentEl);
       }
     }
 
@@ -786,11 +924,15 @@ export class ArticleReaderModal {
     const pushStatsEl = document.getElementById('push-stats');
     if (pushStatsEl) {
       const { push, boo, arrow } = article.pushStats;
+      const totalPushes = push + boo + arrow;
+      const statusNotice = isStreaming
+        ? ` <span class="push-loading-status" title="背景正持續翻頁取得推文">⏳ 讀取後續推文中 (第 ${pageCount} 頁，已載入 ${totalPushes} 則)...</span>`
+        : ` <span class="push-total">共 ${totalPushes} 則留言</span>`;
       pushStatsEl.innerHTML = `
         <span class="push-badge push">推 ${push}</span>
         <span class="push-badge boo">噓 ${boo}</span>
         <span class="push-badge arrow">→ ${arrow}</span>
-        <span class="push-total">共 ${push + boo + arrow} 則留言</span>
+        ${statusNotice}
       `;
     }
 
@@ -812,8 +954,11 @@ export class ArticleReaderModal {
     if (countArrow) countArrow.textContent = String(article.pushStats.arrow);
     if (countAuthor) countAuthor.textContent = String(authorPushes);
 
-    // Render Push List with Filters & Floor Numbers
-    this.renderPushList();
+    // Render Push List with Filters & Floor Numbers (update when push count changes or finished)
+    if (this._renderedPushCount !== totalPushes || isLastPage || !isStreaming) {
+      this._renderedPushCount = totalPushes;
+      this.renderPushList();
+    }
   }
 
   renderBodyBlocks(blocks, targetContainer) {
@@ -1295,9 +1440,143 @@ export class ArticleReaderModal {
     return html + this.escapeHtml(str.slice(end));
   }
 
+  toggleSummary() {
+    const card = document.getElementById('reader-ai-summary-card');
+    if (!card) return;
+    if (card.classList.contains('hidden')) {
+      card.classList.remove('hidden');
+      if (this.summaryLoadedFor !== this.currentArticle) {
+        this.loadSummary(false);
+      }
+    } else {
+      card.classList.add('hidden');
+    }
+  }
+
+  hideSummary() {
+    const card = document.getElementById('reader-ai-summary-card');
+    if (card) card.classList.add('hidden');
+  }
+
+  async loadSummary(forceRefresh = false) {
+    if (!this.currentArticle) return;
+    const requestedArticle = this.currentArticle;
+    const requestToken = this.summaryRequestToken = Symbol('summary');
+    const card = document.getElementById('reader-ai-summary-card');
+    const body = document.getElementById('summary-card-body');
+    const badge = document.getElementById('summary-badge');
+    const summaryBtn = document.getElementById('reader-summary-btn');
+    const refreshBtn = document.getElementById('summary-refresh-btn');
+
+    if (card) card.classList.remove('hidden');
+    if (badge) badge.classList.add('hidden');
+    if (summaryBtn) summaryBtn.classList.add('loading');
+    if (refreshBtn) refreshBtn.disabled = true;
+
+    if (body) {
+      body.innerHTML = `
+        <div class="summary-loading">
+          <div class="reader-spinner"></div>
+          <div class="summary-loading-text">Gemini 正在速讀文章與鄉民推文，請稍候...</div>
+        </div>
+      `;
+    }
+
+    try {
+      const res = await fetchArticleSummary(requestedArticle, { forceRefresh });
+      if (this.currentArticle !== requestedArticle || this.summaryRequestToken !== requestToken) return;
+      if (summaryBtn) summaryBtn.classList.remove('loading');
+      if (refreshBtn) refreshBtn.disabled = false;
+
+      if (!res || !res.success || !res.data) {
+        if (body) {
+          body.innerHTML = `
+            <div class="summary-error">
+              <span class="summary-error-icon">⚠️</span>
+              <span class="summary-error-text">${this.escapeHtml(res?.message || 'AI 摘要生成失敗，請稍後再試')}</span>
+              <button type="button" class="btn-summary-retry" id="summary-retry-btn">重試</button>
+            </div>
+          `;
+          document.getElementById('summary-retry-btn')?.addEventListener('click', () => this.loadSummary(true));
+        }
+        return;
+      }
+
+      this.summaryLoadedFor = requestedArticle;
+      const { quickSummary, keyPoints, sentiment, sarcasmAnalysis, pushCount, sampledCount, truncated } = res.data;
+
+      if (badge) {
+        badge.classList.remove('hidden');
+        if (res.cached) {
+          const timeAgo = res.cachedAt ? Math.max(1, Math.round((Date.now() - res.cachedAt) / 60000)) : 1;
+          badge.className = 'summary-badge cached';
+          if (res.throttled) {
+            badge.textContent = `⚡ 5 分鐘內已檢查 (共 ${pushCount} 則推文)`;
+          } else {
+            badge.textContent = `⚡ ${timeAgo} 分鐘前快取 (共 ${pushCount} 則推文)`;
+          }
+        } else if (res.verified === false || res.data?.source === 'client_fallback' || res.source === 'client_fallback') {
+          badge.className = 'summary-badge fallback';
+          badge.textContent = `📱 好讀版即時分析 (PTT 網頁離線)`;
+        } else {
+          badge.className = 'summary-badge fresh';
+          badge.textContent = `✨ 即時分析 (共 ${pushCount} 則推文)`;
+        }
+      }
+
+      const keyPointsHtml = Array.isArray(keyPoints) && keyPoints.length > 0
+        ? `<ul class="summary-points-list">${keyPoints.map((p) => `<li>${this.escapeHtml(p)}</li>`).join('')}</ul>`
+        : `<p class="summary-empty-text">（無額外重點條列）</p>`;
+
+      if (body) {
+        body.innerHTML = `
+          <div class="summary-section summary-disclaimer">AI 對風向與反串的解讀僅供參考。<button type="button" class="btn-summary-retry" id="summary-view-original-btn">回看原文與推文</button> ${truncated ? `文章或推文已截取／抽樣（${Number(sampledCount) || 0}／${Number(pushCount) || 0} 則推文）。` : ''}</div>
+          <div class="summary-section summary-section-quick">
+            <div class="summary-section-label">📌 30秒速讀</div>
+            <div class="summary-section-content">${this.escapeHtml(quickSummary)}</div>
+          </div>
+          <div class="summary-section summary-section-points">
+            <div class="summary-section-label">💡 重點整理</div>
+            <div class="summary-section-content">${keyPointsHtml}</div>
+          </div>
+          <div class="summary-section summary-section-sentiment">
+            <div class="summary-section-label">📊 鄉民風向與爭議</div>
+            <div class="summary-section-content">${this.escapeHtml(sentiment)}</div>
+          </div>
+          ${sarcasmAnalysis?.isSarcastic && sarcasmAnalysis?.explanation ? `
+          <div class="summary-section summary-section-sarcasm">
+            <div class="summary-section-label">🎭 鄉民反串與諷刺辨識</div>
+            <div class="summary-section-content">${this.escapeHtml(sarcasmAnalysis.explanation)}</div>
+          </div>
+          ` : ''}
+        `;
+        document.getElementById('summary-view-original-btn')?.addEventListener('click', () => {
+          this.hideSummary();
+          document.getElementById('reader-scroll-container')?.scrollTo({ top: 0, behavior: 'smooth' });
+          summaryBtn?.focus();
+        });
+      }
+    } catch (error) {
+      if (this.currentArticle !== requestedArticle || this.summaryRequestToken !== requestToken) return;
+      if (summaryBtn) summaryBtn.classList.remove('loading');
+      if (refreshBtn) refreshBtn.disabled = false;
+      if (body) {
+        body.innerHTML = `
+          <div class="summary-error">
+            <span class="summary-error-icon">⚠️</span>
+            <span class="summary-error-text">${this.escapeHtml(error.message || 'AI 摘要分析發生異常')}</span>
+            <button type="button" class="btn-summary-retry" id="summary-retry-btn">重試</button>
+          </div>
+        `;
+        document.getElementById('summary-retry-btn')?.addEventListener('click', () => this.loadSummary(true));
+      }
+    }
+  }
+
   close() {
     this.modalEl.classList.add('hidden');
     this.closeLightbox();
+    this.hideSummary();
     this.clearPushSection();
     this.isOpen = false;
   }

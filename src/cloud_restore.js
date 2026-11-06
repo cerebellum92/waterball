@@ -24,6 +24,9 @@ export function checkedCloudConfig(raw) {
     protocolVersion: 4, serviceId: raw.serviceId, bindingVersion: raw.bindingVersion,
     configRevision: raw.configRevision, lifecycleVersion: raw.lifecycleVersion,
     status: raw.status, serverTime: raw.serverTime, leaseExpiresAt: raw.leaseExpiresAt,
+    discordDeliveryIssue: raw.discordDeliveryIssue === true,
+    discordVersion: Number.isSafeInteger(raw.discordVersion) && raw.discordVersion >= 0 ? raw.discordVersion : null,
+    discordEnabled: raw.discord?.enabled === true || raw.discordEnabled === true,
     updatedAt: raw.updatedAt, entitlement: raw.entitlement, rules: validation.rules.filter(rule => rule.enabled),
     telegram: { chatId: raw.telegram.chatId, silent: raw.telegram.silent, enabled: raw.telegram.enabled },
     syncCapabilities: Array.isArray(raw.syncCapabilities) ? raw.syncCapabilities.filter(v => v === 'mergeRules') : [],
@@ -39,13 +42,16 @@ export function checkedSelfHostedConfig(raw) {
       !Number.isSafeInteger(raw.lifecycleVersion) || raw.lifecycleVersion < 0 ||
       !['active', 'paused', 'expired'].includes(raw.status) ||
       !isRecord(raw.telegram) || typeof raw.telegram.chatId !== 'string' ||
-      !(raw.telegram.chatId === '' && raw.status !== 'active' || /^\d+$/.test(raw.telegram.chatId)) ||
+      !(raw.telegram.chatId === '' && (raw.status !== 'active' || raw.discord?.enabled === true || raw.discordEnabled === true) || /^\d+$/.test(raw.telegram.chatId)) ||
       typeof raw.telegram.enabled !== 'boolean' || typeof raw.telegram.silent !== 'boolean') {
     throw new Error('自架設定格式不完整或不合法，本機規則保持不變');
   }
   return {
     mode: 'selfHosted', serviceId: null, bindingVersion: null,
     configRevision: raw.configRevision, lifecycleVersion: raw.lifecycleVersion,
+    discordDeliveryIssue: raw.discordDeliveryIssue === true,
+    discordVersion: Number.isSafeInteger(raw.discordVersion) && raw.discordVersion >= 0 ? raw.discordVersion : null,
+    discordEnabled: raw.discord?.enabled === true || raw.discordEnabled === true,
     status: raw.status, leaseExpiresAt: null, rules: validation.rules.filter(rule => rule.enabled),
     telegram: { chatId: raw.telegram.chatId, enabled: raw.telegram.enabled, silent: raw.telegram.silent },
   };

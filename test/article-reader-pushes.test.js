@@ -116,6 +116,7 @@ globalThis.document ||= {
   body: new MockElement('body'),
   createElement: (tag) => new MockElement(tag),
   getElementById: () => null,
+  querySelector: () => null,
   querySelectorAll: () => [],
 };
 globalThis.localStorage ||= {
@@ -563,4 +564,163 @@ test('clearPushSection immediately empties push list, stats, filter counts, sear
   assert.equal(countPush.textContent, '0');
   assert.ok(filterBtnAll.classList.contains('active'));
   assert.ok(!filterBtnPush.classList.contains('active'));
+});
+
+test('reader extracts the complete current PTT article URL', async () => {
+  const parsed = ArticleParser.parseLines([
+    '作者  User (讀者)  看板  Baseball', '標題  測試文章', '時間  日期', '',
+    '內文', '※ 文章網址: https://www.ptt.cc/bbs/Baseball/M.1793727494.A.D45.html',
+  ]);
+  assert.equal(parsed.webUrl, 'https://www.ptt.cc/bbs/Baseball/M.1793727494.A.D45.html');
+  assert.equal(parsed.articleId, 'M.1793727494.A.D45');
+});
+
+test('reader ignores cross-board quoted URLs and preserves matching board identity', async () => {
+  const lines = [
+    '作者: someone (某人) 看板: HatePolitics',
+    '標題: [討論] 政治討論文',
+    '時間: Wed Nov  4 12:00:00 2026',
+    '───────────────────────────────────────',
+    '這是一篇政黑文章，內文引用了八卦板文章：',
+    '※ 文章網址: https://www.ptt.cc/bbs/Gossiping/M.999.A.888.html',
+    '以上是引文，以下是本文真實網址：',
+    '※ 發信站: 批踢踢實業坊(ptt.cc)',
+    '※ 文章網址: https://www.ptt.cc/bbs/HatePolitics/M.111.A.222.html',
+  ];
+
+  const parsed = ArticleParser.parseLines(lines);
+  assert.equal(parsed.board, 'HatePolitics');
+  assert.equal(parsed.webUrl, 'https://www.ptt.cc/bbs/HatePolitics/M.111.A.222.html');
+  assert.equal(parsed.articleId, 'M.111.A.222');
+});
+
+test('reader prioritizes explicit 文章網址 over same-board quoted bare URL in body', async () => {
+  const lines = [
+    '作者: someone (某人) 看板: Gossiping',
+    '標題: Re: [問卦] 回文討論',
+    '時間: Wed Nov  4 12:00:00 2026',
+    '───────────────────────────────────────',
+    '※ 引述《other (他人)》之銘言：',
+    '引述內文包含同看板文章網址：https://www.ptt.cc/bbs/Gossiping/M.1111111111.A.111.html',
+    '以下是本文作者自身論述內容...',
+    '※ 發信站: 批踢踢實業坊(ptt.cc)',
+    '※ 文章網址: https://www.ptt.cc/bbs/Gossiping/M.2222222222.A.222.html',
+  ];
+
+  const parsed = ArticleParser.parseLines(lines);
+  assert.equal(parsed.board, 'Gossiping');
+  assert.equal(parsed.webUrl, 'https://www.ptt.cc/bbs/Gossiping/M.2222222222.A.222.html');
+  assert.equal(parsed.articleId, 'M.2222222222.A.222');
+});
+
+test('adjustFontSize scales font and updates container, content and AI summary card', () => {
+  const fontVal = new MockElement('span');
+  const content = new MockElement('div');
+  const summaryCard = new MockElement('div');
+  const container = new MockElement('div');
+  const elements = {
+    'reader-font-val': fontVal,
+    'reader-article-content': content,
+    'reader-ai-summary-card': summaryCard,
+    'reader-scroll-container': { querySelector: () => container },
+  };
+  const origGetElementById = document.getElementById;
+  document.getElementById = (id) => elements[id] || null;
+
+  try {
+    const reader = Object.create(ArticleReaderModal.prototype);
+    reader.fontSize = 16;
+    reader.applyFontSize();
+
+    assert.equal(fontVal.textContent, '16px');
+    assert.equal(content.style.fontSize, '16px');
+    assert.equal(container.style['--reader-font-size'], '16px');
+    assert.equal(summaryCard.style['--reader-font-size'], '16px');
+
+    // Increase font size
+    reader.adjustFontSize(2);
+    assert.equal(reader.fontSize, 18);
+    assert.equal(fontVal.textContent, '18px');
+    assert.equal(content.style.fontSize, '18px');
+    assert.equal(container.style['--reader-font-size'], '18px');
+    assert.equal(summaryCard.style['--reader-font-size'], '18px');
+    assert.equal(localStorage.getItem('bbsterm_reader_font_size'), '18');
+
+    // Bounds checking: max 26, min 12
+    reader.adjustFontSize(20);
+    assert.equal(reader.fontSize, 26);
+    reader.adjustFontSize(-30);
+    assert.equal(reader.fontSize, 12);
+  } finally {
+    document.getElementById = origGetElementById;
+  }
+});
+
+test('article identity ignores push URLs, quoted footer lines and bare links', () => {
+  const prefix = ['作者  User (讀者)  看板  Baseball', '標題  測試', '時間  日期', ''];
+  const real = 'https://www.ptt.cc/bbs/Baseball/M.2.A.222.html';
+  const old = 'https://www.ptt.cc/bbs/Baseball/M.1.A.111.html';
+  const parsed = ArticleParser.parseLines([...prefix, old, `> ※ 文章網址: ${old}`, '※ 發信站: 批踢踢實業坊(ptt.cc)', `※ 文章網址: ${real}`, `推 someone: 文章網址: ${old}`, `※ 文章網址: ${old}`]);
+  assert.equal(parsed.webUrl, real);
+  assert.equal(ArticleParser.parseLines([...prefix, old]).webUrl, '');
+  assert.equal(ArticleParser.parseLines([...prefix, `※ 文章網址: ${old}`, `※ 文章網址: ${real}`]).webUrl, '');
+  assert.equal(ArticleParser.parseLines(['', old, `※ 文章網址: ${real}`]).webUrl, '');
+});
+
+test('article identity and headers accept terminal leading whitespace and split author/board', () => {
+  const prefix = [
+    ' 作者  BigCarp (BigCarp)                                          看板  Stock',
+    ' 標題  台指期 空單平倉',
+    ' 時間  Fri Nov  6 00:45:14 2026',
+    '',
+  ];
+  const real = 'https://www.ptt.cc/bbs/Stock/M.1793897116.A.060.html';
+  const parsed = ArticleParser.parseLines([
+    ...prefix,
+    '1. 標的：小型台指期',
+    ' ※ 發信站: 批踢踢實業坊(ptt.cc), 來自: 42.72.138.241 (臺灣)',
+    ` ※ 文章網址: ${real}`,
+    ' 推 InfoWars    : 厲害了兄弟 11/06 00:45',
+  ]);
+  assert.equal(parsed.author, 'BigCarp (BigCarp)');
+  assert.equal(parsed.title, '台指期 空單平倉');
+  assert.equal(parsed.time, 'Fri Nov  6 00:45:14 2026');
+  assert.equal(parsed.board, 'Stock');
+  assert.equal(parsed.webUrl, real);
+  assert.equal(parsed.articleId, 'M.1793897116.A.060');
+  assert.equal(parsed.aid, '#1gxBAS1W');
+  assert.equal(parsed.pushList.length, 1);
+  assert.equal(parsed.pushList[0].user, 'InfoWars');
+  assert.equal(parsed.pushList[0].tag, '推');
+  assert.equal(parsed.pushList[0].content, '厲害了兄弟');
+});
+
+test('crawlFullArticle streams lines progressively and notifies page updates', async () => {
+  const reader = Object.create(ArticleReaderModal.prototype);
+  const tab = { id: 'stream-tab', buf: {} };
+  const writes = [];
+  reader.getConnectionSession = async id => 'stream-session';
+  reader.waitForBufferUpdate = async () => {};
+  let currentStep = 0;
+  reader.getScreenLines = () => {
+    currentStep++;
+    return Array.from({ length: 24 }, (_, row) => {
+      if (row === 23) {
+        return currentStep >= 2 ? '瀏覽 第 2/2 頁 (100%)' : '瀏覽 第 1/2 頁 ( 50%)';
+      }
+      return `Page ${currentStep} Row ${row}`;
+    });
+  };
+  reader.sendToTab = async (...args) => writes.push(args);
+
+  const updates = [];
+  await reader.crawlFullArticle(tab, null, (lines, status) => {
+    updates.push({ totalLines: lines.length, page: status.pageCount, isLastPage: status.isLastPage });
+  });
+
+  assert.equal(updates.length, 2);
+  assert.equal(updates[0].page, 1);
+  assert.equal(updates[0].isLastPage, false);
+  assert.equal(updates[1].page, 2);
+  assert.equal(updates[1].isLastPage, true);
 });

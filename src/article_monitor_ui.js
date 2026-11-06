@@ -3,6 +3,7 @@
 import {
   articleMonitorManager,
   normalizePttArticleUrl,
+  isValidDiscordWebhookUrl,
   DEFAULT_OFFICIAL_WORKER_URL,
 } from './article_monitor.js';
 import {
@@ -12,6 +13,7 @@ import {
 } from './platform.js';
 import { describeRestorePreview } from './cloud_restore.js';
 import { makeMergePlan } from './cloud_merge.js';
+import { normalizePushServiceUrl } from './cloud_push_client.js';
 
 const FONT_SCALES = [
   { id: 'standard', label: '標準', class: 'font-scale-standard' },
@@ -81,6 +83,19 @@ export class ArticleMonitorUI {
     this.tgSaveBtn = document.getElementById('monitor-tg-save-btn');
     this.tgStatusEl = document.getElementById('monitor-tg-status');
 
+    this.discordEnabledInput = document.getElementById('monitor-discord-enabled');
+    this.discordWebhookInput = document.getElementById('monitor-discord-webhook-url');
+    this.discordToggleUrlBtn = document.getElementById('monitor-discord-toggle-url-btn');
+    this.discordSaveBtn = document.getElementById('monitor-discord-save-btn');
+    this.discordTestBtn = document.getElementById('monitor-discord-test-btn');
+    this.discordStatusEl = document.getElementById('monitor-discord-status');
+
+    this.pushChannelSelect = document.getElementById('monitor-push-channel-select');
+    this.sectionTelegram = document.getElementById('push-section-telegram');
+    this.sectionDiscord = document.getElementById('push-section-discord');
+    this.sectionLocal = document.getElementById('push-section-local');
+    this.sectionSelfHosted = document.getElementById('push-section-selfhosted');
+
     this.tabCloudBtn = document.getElementById('monitor-tab-cloud-btn');
     this.paneCloud = document.getElementById('monitor-pane-cloud');
     this.cloudEnabledInput = document.getElementById('monitor-cloud-enabled');
@@ -93,6 +108,7 @@ export class ArticleMonitorUI {
     this.cloudAutoMergeInput = document.getElementById('monitor-cloud-auto-merge');
     this.cloudTestBtn = document.getElementById('monitor-cloud-test-btn');
     this.cloudSaveBtn = document.getElementById('monitor-cloud-save-btn');
+    this.selfhostDiscordStartBtn = document.getElementById('monitor-selfhost-discord-start');
     this.cloudStatusEl = document.getElementById('monitor-cloud-status');
     this.cloudReadBtn = document.getElementById('monitor-cloud-read-btn');
     this.cloudRestoreBtn = document.getElementById('monitor-cloud-restore-btn');
@@ -108,6 +124,8 @@ export class ArticleMonitorUI {
     // Listen to manager changes
     this.manager.addListener(() => {
       this.updateToolbarBadge();
+      if (this.manager.discordLastError && this.manager.discordLastError !== this.shownDiscordError && this.discordStatusEl) this.showDiscordStatus('error', this.manager.discordLastError);
+      this.shownDiscordError = this.manager.discordLastError;
       if (this.isOpen()) {
         this.renderHistory();
         this.renderRules();
@@ -234,6 +252,41 @@ export class ArticleMonitorUI {
     // Advanced settings share the same lifecycle-aware save path.
     this.cloudSaveBtn?.addEventListener('click', () => this.tgSaveBtn?.click());
 
+    // Discord-only self-hosting has its own lifecycle, independent of Telegram.
+    this.selfhostDiscordStartBtn?.addEventListener('click', async () => {
+      const m = this.manager;
+      let workerUrl;
+      try { workerUrl = normalizePushServiceUrl(this.cloudUrlInput?.value || ''); }
+      catch { this.showCloudStatus('error', '請填寫合法的 HTTPS 自架服務網址。'); return; }
+      const secret = String(this.cloudSecretInput?.value || '').trim();
+      const old = m.getCloudSyncConfig();
+      const discord = m.getDiscordConfig();
+      if (!workerUrl || workerUrl === DEFAULT_OFFICIAL_WORKER_URL || !secret || !discord.enabled || !isValidDiscordWebhookUrl(discord.webhookUrl)) {
+        this.showCloudStatus('error', '請先儲存已啟用的 Discord Webhook，並填入自架網址及同步密鑰。'); return;
+      }
+      if (old.workerUrl && old.workerUrl.replace(/\/+$/, '') !== workerUrl && (old.deviceToken || old.syncSecret)) {
+        this.showCloudStatus('error', '請先確認舊推播服務已暫停，再切換服務。'); return;
+      }
+      this.selfhostDiscordStartBtn.disabled = true;
+      try {
+        const remote = await m.cloudClient.request(workerUrl, '/sync', 'GET', secret);
+        if (!remote.success || remote.config?.mode !== 'selfHosted' || !['active', 'paused'].includes(remote.config?.status)) {
+          this.showCloudStatus('error', '無法確認自架服務狀態，尚未啟用。'); return;
+        }
+        m.saveCloudSyncConfig({ ...old, enabled: true, workerUrl, syncSecret: secret,
+          autoSync: Boolean(this.cloudAutoSyncInput?.checked), serverMode: 'selfHosted' });
+        if (!m.saveDiscordConfig(discord, { sync: false })) {
+          this.showCloudStatus('error', '無法保存 Discord 設定，尚未啟用。'); return;
+        }
+        const result = await m.syncToCloud({ workerUrl, syncSecret: secret,
+          ...(remote.config.status === 'paused' ? { lifecycleAction: 'resume' } : {}), userInitiated: true });
+        this.showCloudStatus(result?.success ? 'success' : 'error', result?.success
+          ? '自架推播已啟用；Discord 設定已同步。'
+          : `自架推播尚未確認啟用：${result?.message || '請檢查服務設定'}`);
+      } catch { this.showCloudStatus('error', '自架推播尚未確認啟用，請檢查連線與設定。'); }
+      finally { this.selfhostDiscordStartBtn.disabled = false; }
+    });
+
     // Cloudflare test connection button
     this.cloudTestBtn?.addEventListener('click', async () => {
       const workerUrl = String(this.cloudUrlInput?.value || DEFAULT_OFFICIAL_WORKER_URL).trim();
@@ -255,7 +308,7 @@ export class ArticleMonitorUI {
           this.showCloudStatus('error', `❌ 測試失敗：${res?.message || '未知錯誤'}`);
         }
       } catch (e) {
-        this.showCloudStatus('error', `❌ 測試發生異常：${e}`);
+        this.showCloudStatus('error', '❌ 測試發生異常，請檢查連線與設定。');
       } finally {
         if (this.cloudTestBtn) {
           this.cloudTestBtn.textContent = '🧪 測試伺服器連線';
@@ -313,7 +366,7 @@ export class ArticleMonitorUI {
           this.showCloudStatus('error', `❌ 同步失敗：${res?.message || '未知錯誤'}`);
         }
       } catch (e) {
-        this.showCloudStatus('error', `❌ 同步異常：${e}`);
+        this.showCloudStatus('error', '❌ 同步異常，請檢查連線與設定。');
       } finally {
         if (this.cloudSyncBtn) {
           this.cloudSyncBtn.textContent = '🔄 手動立即同步規則';
@@ -346,6 +399,71 @@ export class ArticleMonitorUI {
       const isPassword = this.tgTokenInput.type === 'password';
       this.tgTokenInput.type = isPassword ? 'text' : 'password';
       this.tgToggleTokenBtn.textContent = isPassword ? '🙈' : '👁️';
+    });
+
+    // Push channel selector dropdown
+    this.pushChannelSelect?.addEventListener('change', () => {
+      this.switchPushChannel(this.pushChannelSelect.value);
+    });
+
+    // Toggle Discord webhook URL visibility
+    this.discordToggleUrlBtn?.addEventListener('click', () => {
+      if (!this.discordWebhookInput) return;
+      const isPassword = this.discordWebhookInput.type === 'password';
+      this.discordWebhookInput.type = isPassword ? 'text' : 'password';
+      this.discordToggleUrlBtn.textContent = isPassword ? '🙈' : '👁️';
+    });
+
+    // Save Discord Webhook configuration
+    this.discordSaveBtn?.addEventListener('click', () => {
+      const enabled = Boolean(this.discordEnabledInput?.checked);
+      const webhookUrl = String(this.discordWebhookInput?.value || '').trim();
+
+      if (enabled && !webhookUrl) {
+        this.showDiscordStatus('error', '❌ 啟用 Discord 推播前，請先填入您的「Discord Webhook 網址」！');
+        this.discordWebhookInput?.focus();
+        return;
+      }
+
+      if (webhookUrl && !isValidDiscordWebhookUrl(webhookUrl)) {
+        this.showDiscordStatus('error', '❌ Webhook 網址格式不正確，應為 https://discord.com/api/webhooks/...');
+        this.discordWebhookInput?.focus();
+        return;
+      }
+
+      const saved = this.manager.saveDiscordConfig({ enabled, webhookUrl });
+      this.showDiscordStatus(saved ? 'success' : 'error', saved ? (this.manager.cloudSyncConfig?.enabled ? '✅ 已儲存。請同步雲端設定以套用 Discord 變更。' : '✅ Discord 推播設定已成功儲存！') : '❌ 本機儲存失敗，Discord 設定未變更。');
+    });
+
+    // Test Discord Webhook
+    this.discordTestBtn?.addEventListener('click', async () => {
+      const webhookUrl = String(this.discordWebhookInput?.value || '').trim();
+      if (!webhookUrl) {
+        this.showDiscordStatus('error', '❌ 請先填入 Discord Webhook 網址後再進行測試！');
+        this.discordWebhookInput?.focus();
+        return;
+      }
+
+      if (!isValidDiscordWebhookUrl(webhookUrl)) {
+        this.showDiscordStatus('error', '❌ Webhook 網址格式不正確，應為 https://discord.com/api/webhooks/...');
+        this.discordWebhookInput?.focus();
+        return;
+      }
+
+      this.showDiscordStatus('loading', '⏳ 正在發送測試卡片至 Discord 頻道...');
+      if (this.discordTestBtn) this.discordTestBtn.disabled = true;
+      try {
+        const res = await this.manager.testDiscord(webhookUrl);
+        if (res?.success) {
+          this.showDiscordStatus('success', '🎉 測試成功！已發送測試卡片至您的 Discord 頻道，請至 Discord 查看。');
+        } else {
+          this.showDiscordStatus('error', `❌ 測試發送失敗：${res?.message || '未知錯誤'}`);
+        }
+      } catch (e) {
+        this.showDiscordStatus('error', '❌ 發送失敗，請檢查連線或設定。');
+      } finally {
+        if (this.discordTestBtn) this.discordTestBtn.disabled = false;
+      }
     });
 
     // Save Telegram & Push config button (One-Click Save & Sync)
@@ -422,7 +540,7 @@ export class ArticleMonitorUI {
           this.showTelegramStatus('error', `⚠️ 本機設定已儲存，雲端尚未確認：${res?.message || '請檢查伺服器網址'}`);
           return;
         } catch (e) {
-          this.showTelegramStatus('error', `⚠️ 本機設定已儲存，但無法連線至推播伺服器：${e}`);
+          this.showTelegramStatus('error', '⚠️ 本機設定已儲存，但無法連線至推播伺服器。');
           return;
         }
       }
@@ -458,7 +576,7 @@ export class ArticleMonitorUI {
           this.showTelegramStatus('error', `❌ 測試失敗：${res?.message || '請確認是否已對官方機器人按過 Start 與綁定碼是否正確'}`);
         }
       } catch (e) {
-        this.showTelegramStatus('error', `❌ 測試發生異常：${e}`);
+        this.showTelegramStatus('error', '❌ 測試發生異常，請檢查連線與設定。');
       } finally {
         if (this.tgTestBtn) {
           this.tgTestBtn.textContent = '📱 發送測試私訊';
@@ -796,10 +914,40 @@ export class ArticleMonitorUI {
       if (result.success && operation === 'rebind' && this.rebindCodeInput) this.rebindCodeInput.value = '';
       const message = result.success ? result.warning || (operation === 'pair' ? result.message || '配對成功，已讀取雲端設定；雲端規則未變更。' : operation === 'apply' ? result.message || '已套用到雲端。' : operation === 'rebind' ? 'Telegram 已更換；其他裝置需要重新配對。' : result.message || '操作完成。') : result.message || '操作失敗，本機草稿保留。';
       this.showTelegramStatus(result.success ? 'success' : 'error', message);
-    } catch (e) { this.showTelegramStatus('error', `操作未確認：${e.message}。請重新配對或讀取雲端狀態確認，勿自動重送。`); }
+    } catch { this.showTelegramStatus('error', '操作未確認。請重新配對或讀取雲端狀態確認，勿自動重送。'); }
     finally { this.officialBusy = false; for (const button of [this.tgSaveBtn, this.cloudSyncBtn, this.cloudReadBtn, this.cloudRestoreBtn, this.cloudReplaceBtn, this.rebindBtn, this.cloudDraftBtn]) if (button) button.disabled = false; }
   }
+  switchPushChannel(channel) {
+    const target = ['telegram', 'discord', 'local', 'selfhosted'].includes(channel) ? channel : 'telegram';
+    if (this.pushChannelSelect) this.pushChannelSelect.value = target;
+    const sections = [
+      { id: 'telegram', el: this.sectionTelegram },
+      { id: 'discord', el: this.sectionDiscord },
+      { id: 'local', el: this.sectionLocal },
+      { id: 'selfhosted', el: this.sectionSelfHosted },
+    ];
+    sections.forEach((s) => {
+      if (s.el) {
+        if (s.id === target) s.el.classList.remove('hidden');
+        else s.el.classList.add('hidden');
+      }
+    });
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('waterball_monitor_push_channel_tab', target);
+      }
+    } catch (_) {}
+  }
+
   loadTelegramForm() {
+    let savedChannel = 'telegram';
+    try {
+      if (typeof localStorage !== 'undefined') {
+        savedChannel = localStorage.getItem('waterball_monitor_push_channel_tab') || 'telegram';
+      }
+    } catch (_) {}
+    this.switchPushChannel(savedChannel);
+
     if (this.localNotifInput) {
       this.localNotifInput.checked = Boolean(this.manager.isLocalNotifEnabled());
     }
@@ -812,16 +960,40 @@ export class ArticleMonitorUI {
       this.tgStatusEl.className = 'tg-status-banner hidden';
       this.tgStatusEl.textContent = '';
     }
+
+    const discordConfig = this.manager.getDiscordConfig();
+    if (this.discordEnabledInput) this.discordEnabledInput.checked = Boolean(discordConfig.enabled);
+    if (this.discordWebhookInput) this.discordWebhookInput.value = discordConfig.webhookUrl || '';
+    if (this.discordStatusEl) {
+      if (this.manager.discordLastError) this.showDiscordStatus('error', this.manager.discordLastError);
+      else if (this.manager.cloudSyncConfig?.remoteConfig?.discordDeliveryIssue) this.showDiscordStatus('error', '雲端 Discord 推播未確認送達，請檢查 Webhook 設定及頻道。');
+      else { this.discordStatusEl.className = 'tg-status-banner hidden'; this.discordStatusEl.textContent = ''; }
+    }
+
     this.loadCloudForm();
   }
 
   showTelegramStatus(type, msg) {
+    if (this.pushChannelSelect?.value === 'selfhosted' && this.cloudStatusEl) { this.showCloudStatus(type, msg); return; }
     if (!this.tgStatusEl) return;
     this.tgStatusEl.className = `tg-status-banner ${type}`;
     this.tgStatusEl.textContent = msg;
     this.tgStatusEl.classList.remove('hidden');
     try {
       this.tgStatusEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    } catch {}
+    if (msg && typeof this.onShowToast === 'function') {
+      this.onShowToast(msg);
+    }
+  }
+
+  showDiscordStatus(type, msg) {
+    if (!this.discordStatusEl) return;
+    this.discordStatusEl.className = `tg-status-banner ${type}`;
+    this.discordStatusEl.textContent = msg;
+    this.discordStatusEl.classList.remove('hidden');
+    try {
+      this.discordStatusEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     } catch {}
     if (msg && typeof this.onShowToast === 'function') {
       this.onShowToast(msg);
@@ -860,7 +1032,7 @@ export class ArticleMonitorUI {
       }
     }
     if (this.rebindBtn) this.rebindBtn.disabled = !official || !config.deviceToken;
-    const summary = document.getElementById('monitor-cloud-summary');
+    const summary = typeof document !== 'undefined' ? document.getElementById('monitor-cloud-summary') : null;
     if (summary) summary.textContent = config.requiresPairing ? '綁定已變更或憑證失效，請重新配對。本機草稿保留。' : config.remoteConfig ? `Telegram：${config.remoteConfig.telegram.chatId}｜雲端版本 ${config.configRevision}｜${config.remoteConfig.rules.length} 條規則｜${config.serverStatus}${config.mergeBlocked ? `｜同步已暫停：${config.mergeBlocked}` : config.restorePending ? '｜雲端規則已下載，等待還原確認' : config.dirty ? '｜本機有未同步草稿' : ''}${config.pendingRequest ? '｜前次操作結果待確認' : ''}` : '尚未讀取雲端設定；配對與下載不會上傳規則。';
     if (this.cloudStatusEl) {
       this.cloudStatusEl.className = 'tg-status-banner hidden';

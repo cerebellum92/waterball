@@ -1,5 +1,5 @@
-import { notificationArticles, notificationMatches, coversArticle, notificationDue, reserveNotification, coalesceNotifications, digestPayload, revalidateNotification } from '../shared/notification-policy.js';
-import { validateAndSanitizeRules, matchArticleWithRule, fetchBoardPages, canonicalBoard, cleanBotToken, positiveInteger, articleKey, pushCount, escapeHtml, MIN_BOARD_INTERVAL_MS, TIER_ROUNDS, httpError, isRecord, isDeletedArticleTitle } from '../shared/push-rules.js';
+import { notificationArticles, notificationMatches, coversArticle, notificationDue, reserveNotification, coalesceNotifications, digestPayload, revalidateNotification, discordArticlePayload, discordDigestPayload } from '../shared/notification-policy.js';
+import { validateAndSanitizeRules, matchArticleWithRule, fetchBoardPages, canonicalBoard, cleanBotToken, positiveInteger, articleKey, pushCount, escapeHtml, MIN_BOARD_INTERVAL_MS, TIER_ROUNDS, httpError, isRecord, isDeletedArticleTitle, isValidDiscordWebhookUrl, normalizeDiscordWebhookUrl } from '../shared/push-rules.js';
 import { readBoundedBody, CORS_HEADERS } from '../shared/worker-http.js';
 
 const json = (status, data) => new Response(JSON.stringify(data), { status, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
@@ -11,7 +11,7 @@ async function authenticated(request, env) {
   for (let i = 0; i < aa.length; i++) diff |= aa[i] ^ bb[i];
   if (!/^Bearer\s+/i.test(supplied) || diff) throw httpError(401, '自架同步密鑰不正確');
 }
-const initial = () => ({ schemaVersion: 1, rules: [], telegram: { chatId: '', botToken: '', enabled: false, silent: false }, status: 'paused', configRevision: 0, lifecycleVersion: 0, epoch: 1, boards: {}, cooldowns: {}, pending: [], candidates: {}, delivered: {}, receipts: {}, lastPttAt: 0, pttCoolingUntil: 0, telegramNextAt: 0, rate: { at: 0, count: 0 } });
+const initial = () => ({ schemaVersion: 1, rules: [], telegram: { chatId: '', botToken: '', enabled: false, silent: false }, discord: { enabled: false, webhookUrl: '' }, status: 'paused', configRevision: 0, lifecycleVersion: 0, epoch: 1, boards: {}, cooldowns: {}, pending: [], candidates: {}, delivered: {}, receipts: {}, lastPttAt: 0, pttCoolingUntil: 0, telegramNextAt: 0, rate: { at: 0, count: 0 } });
 
 export default {
   async fetch(request, env) {
@@ -50,7 +50,7 @@ export class ArticleTracker {
       await tx.put('state', draft); return result;
     });
   }
-  config(s) { return { rules: s.rules, telegram: { chatId: s.telegram.chatId, enabled: s.status === 'active', silent: s.telegram.silent }, configRevision: s.configRevision, lifecycleVersion: s.lifecycleVersion, status: s.status, mode: 'selfHosted', leaseExpiresAt: null, pendingCount: s.pending.length, monitoring: Object.entries(s.boards).map(([board, b]) => ({ board, nextCheckAt: b.nextDueAt, lastError: b.lastError || null, backfilling: Boolean(b.backfill), catchUp: b.lastCatchUp || null })) }; }
+  config(s) { return { rules: s.rules, telegram: { chatId: s.telegram.chatId, enabled: s.status === 'active', silent: s.telegram.silent }, discord: s.discord ? { enabled: Boolean(s.discord.enabled), webhookUrl: s.discord.webhookUrl ? '***' : '' } : { enabled: false, webhookUrl: '' }, discordVersion: s.discordVersion || 0, configRevision: s.configRevision, lifecycleVersion: s.lifecycleVersion, status: s.status, mode: 'selfHosted', leaseExpiresAt: null, pendingCount: s.pending.length, discordDeliveryIssue: Boolean(s.discordLastError), monitoring: Object.entries(s.boards).map(([board, b]) => ({ board, nextCheckAt: b.nextDueAt, lastError: b.lastError || null, backfilling: Boolean(b.backfill), catchUp: b.lastCatchUp || null })) }; }
   async arm() {
     const s = await this.read();
     if (s.status !== 'active' || !s.rules.some(r => r.enabled)) { await this.ctx.storage.deleteAlarm(); return; }
@@ -74,8 +74,25 @@ export class ArticleTracker {
       if (pathname === '/pair') throw httpError(400, '自架服務不使用官方 WB2 配對碼，請填入您自己的 SYNC_SECRET');
       if (pathname === '/notification-test') {
         const s = await this.read();
-        const response = await this.send('✅ Waterball 自架推播測試', s.epoch, true);
-        return json(200, { success: response.ok, message: response.ok ? '測試訊息已送達' : response.error });
+        let tgRes = { ok: false };
+        if (s.telegram?.deliveryEnabled !== false && s.telegram?.chatId && s.telegram?.botToken) {
+          tgRes = await this.send('✅ Waterball 自架推播測試', s.epoch, true);
+        }
+        let dcRes = { ok: false };
+        if (s.discord?.enabled && s.discord?.webhookUrl) {
+          dcRes = await this.sendDiscord({
+            username: 'Waterball 水球',
+            embeds: [{
+              title: '🎉 Waterball 自架推播連線測試成功！',
+              description: '這是一則來自自架 Cloudflare Worker 的測試通知。',
+              color: 0x2ECC71,
+              timestamp: new Date().toISOString(),
+            }],
+          });
+        }
+        const hasTg = Boolean(s.telegram?.deliveryEnabled !== false && s.telegram?.chatId && s.telegram?.botToken), hasDiscord = Boolean(s.discord?.enabled && s.discord?.webhookUrl);
+        const success = (hasTg || hasDiscord) && (!hasTg || tgRes.ok) && (!hasDiscord || dcRes.ok);
+        return json(200, { success, channels: { ...(hasTg ? { telegram: { success: Boolean(tgRes.ok) } } : {}), ...(hasDiscord ? { discord: { success: Boolean(dcRes.ok) } } : {}) }, message: success ? '測試訊息已確認送達' : '部分測試訊息未確認送達，請檢查各管道設定' });
       }
       if (!['/sync', '/lifecycle'].includes(pathname)) throw httpError(404, 'Not Found');
       if (typeof data.requestId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{7,79}$/.test(data.requestId)) throw httpError(400, 'requestId 格式不正確');
@@ -85,16 +102,28 @@ export class ArticleTracker {
         if (receipt) { if (receipt.fingerprint !== fingerprint || receipt.response.configRevision !== s.configRevision || receipt.response.lifecycleVersion !== s.lifecycleVersion) throw httpError(409, '此操作已被後續變更取代'); return receipt.response; }
         if (pathname === '/sync') {
           if (data.baseRevision !== s.configRevision) throw httpError(409, '設定版本衝突');
+          if (data.discord !== undefined && (data.baseDiscordVersion !== undefined ? !Number.isSafeInteger(data.baseDiscordVersion) || data.baseDiscordVersion !== (s.discordVersion || 0) : (s.discordVersion || 0) !== 0 || s.discord?.enabled)) throw httpError(409, 'Discord 設定已變更；請重新讀取並確認');
           const validation = validateAndSanitizeRules(data.rules);
           if (!validation.valid) throw httpError(400, validation.message);
           if (new Set(validation.rules.filter(r => r.enabled).map(r => r.board.toLowerCase())).size > this.maxBoards) throw httpError(400, `最多 ${this.maxBoards} 板`);
-          const t = data.telegram;
-          if (!isRecord(t) || typeof t.enabled !== 'boolean' || typeof t.chatId !== 'string' || !/^-?\d+$/.test(t.chatId) || (t.silent !== undefined && typeof t.silent !== 'boolean') || (t.botToken !== undefined && typeof t.botToken !== 'string')) throw httpError(400, '自架 Telegram 設定格式不正確');
-          const botToken = cleanBotToken(t.botToken || this.env.BOT_TOKEN);
-          if (!/^\d+:[A-Za-z0-9_-]{10,}$/.test(botToken)) throw httpError(400, '請設定您的個人 Bot Token');
-          if (s.telegram.chatId && s.telegram.chatId !== t.chatId) { s.epoch++; s.boards = {}; s.pending = []; s.candidates = {}; s.delivered = {}; }
           s.rules = validation.rules; s.configRevision++;
-          s.telegram = { chatId: t.chatId, botToken, silent: t.silent === true, enabled: s.status === 'active' };
+          const t = data.telegram;
+          if (t !== undefined) {
+            if (!isRecord(t) || typeof t.enabled !== 'boolean' || typeof t.chatId !== 'string' || !/^(?:-?\d+)?$/.test(t.chatId) || (t.silent !== undefined && typeof t.silent !== 'boolean') || (t.botToken !== undefined && typeof t.botToken !== 'string')) throw httpError(400, '自架 Telegram 設定格式不正確');
+            const botToken = cleanBotToken(t.botToken || this.env.BOT_TOKEN);
+            if (t.enabled && !/^\d+:[A-Za-z0-9_-]{10,}$/.test(botToken) && !data.discord?.enabled) throw httpError(400, '請設定您的個人 Bot Token');
+            if (s.telegram.chatId && s.telegram.chatId !== t.chatId) { s.epoch++; s.boards = {}; s.pending = []; s.candidates = {}; s.delivered = {}; }
+            s.telegram = { chatId: t.chatId, botToken, silent: t.silent === true, enabled: s.status === 'active', deliveryEnabled: t.enabled }; s.telegramBlocked = false;
+          }
+          const d = data.discord;
+          if (d !== undefined) {
+            if (!isRecord(d) || typeof d.enabled !== 'boolean' || typeof d.webhookUrl !== 'string') throw httpError(400, '自架 Discord 設定格式不正確');
+            if ((d.enabled && !d.webhookUrl) || (d.webhookUrl && !isValidDiscordWebhookUrl(d.webhookUrl))) throw httpError(400, 'Discord Webhook 網址格式不正確');
+            if (s.discord?.enabled !== Boolean(d.enabled && d.webhookUrl) || s.discord?.webhookUrl !== normalizeDiscordWebhookUrl(d.webhookUrl)) s.discordVersion = (s.discordVersion || 0) + 1;
+            s.discordBlocked = false; s.discordLastError = null;
+            s.discord = { enabled: Boolean(d.enabled && d.webhookUrl), webhookUrl: normalizeDiscordWebhookUrl(d.webhookUrl) };
+          }
+          if ((s.status === 'active' || ['activate', 'resume'].includes(data.action)) && !(s.discord?.enabled && isValidDiscordWebhookUrl(s.discord.webhookUrl)) && !(s.telegram?.deliveryEnabled !== false && s.telegram?.chatId && /^\d+:[A-Za-z0-9_-]{10,}$/.test(s.telegram.botToken))) throw httpError(400, '請先設定有效的 Telegram 或 Discord 推播管道');
           const boards = new Set(s.rules.filter(r => r.enabled).map(r => r.board.toLowerCase()));
           for (const b of Object.keys(s.boards)) if (!boards.has(b)) delete s.boards[b];
           for (const b of boards) s.boards[b] ||= { initialized: false, tier: 1, quietStreak: 0, nextDueAt: this.clock(), seen: [], observed: {} };
@@ -102,6 +131,7 @@ export class ArticleTracker {
         if (data.action) {
           if (!['activate', 'resume', 'pause', 'renew'].includes(data.action)) throw httpError(400, '未知操作');
           if (data.lifecycleVersion !== s.lifecycleVersion) throw httpError(409, '推播狀態版本衝突');
+          if (['activate', 'resume'].includes(data.action) && !(s.discord?.enabled && isValidDiscordWebhookUrl(s.discord.webhookUrl)) && !(s.telegram?.deliveryEnabled !== false && s.telegram?.chatId && /^\d+:[A-Za-z0-9_-]{10,}$/.test(s.telegram.botToken))) throw httpError(400, '請先設定有效的 Telegram 或 Discord 推播管道');
           if (data.action !== 'renew') {
             s.status = data.action === 'pause' ? 'paused' : 'active'; s.telegram.enabled = s.status === 'active';
             s.epoch++; s.pending = []; s.candidates = {};
@@ -114,7 +144,7 @@ export class ArticleTracker {
           return valid ? [valid] : [];
         });
         for (const [key, candidate] of Object.entries(s.candidates)) if (!s.rules.some(r => r.minPushes > 0 && matchArticleWithRule(candidate.article, { ...r, minPushes: 0 }, true))) delete s.candidates[key];
-        const response = { success: true, mode: 'selfHosted', status: s.status, configRevision: s.configRevision, lifecycleVersion: s.lifecycleVersion, leaseExpiresAt: null, rule_count: s.rules.length, updated_at: this.clock() };
+        const response = { success: true, mode: 'selfHosted', discordVersion: s.discordVersion || 0, discordEnabled: Boolean(s.discord?.enabled), status: s.status, configRevision: s.configRevision, lifecycleVersion: s.lifecycleVersion, leaseExpiresAt: null, rule_count: s.rules.length, updated_at: this.clock() };
         s.receipts[data.requestId] = { fingerprint, response };
         for (const key of Object.keys(s.receipts).slice(0, Math.max(0, Object.keys(s.receipts).length - 32))) delete s.receipts[key];
         return response;
@@ -130,7 +160,7 @@ export class ArticleTracker {
         const response = await this.fetchHttp(url, { ...init, signal: controller.signal, redirect: 'manual' });
         if (response.status >= 300 && response.status < 400) throw new Error('HTTP redirects are not allowed');
         const bytes = await readBoundedBody(response, 2 * 1024 * 1024);
-        return { status: response.status, ok: response.ok, text: bytes ? new TextDecoder().decode(bytes) : '' };
+        return { status: response.status, ok: response.ok, text: bytes ? new TextDecoder().decode(bytes) : '', retryAfter: response.headers?.get?.('Retry-After') };
       })(), deadline]);
     } finally { clearTimeout(timer); }
   }
@@ -177,9 +207,11 @@ export class ArticleTracker {
         }
         if (!progress.first && !s.delivered[key] && (isNew || candidate) && this.clock() - progress.createdAt < 1800000) {
           if (s.rules.some(r => matchArticleWithRule(a, r, isNew || Boolean(candidate)))) {
-            if (!s.pending.some(j => coversArticle(j, a))) {
-              if (s.pending.length >= 500) { b.fanout = progress; b.nextDueAt = this.clock() + 1000; return; }
-              s.pending.push({ id: key, article: a, epoch: s.epoch, attempts: 0, createdAt: progress.createdAt, nextAttemptAt: this.clock(), catchUpLimited: Boolean(result.catchUp?.truncated) });
+            if (!s.pending.some(j => j.kind !== 'discord' && coversArticle(j, a))) {
+              if (s.pending.length + (s.discord?.enabled && !s.discordBlocked ? 2 : 1) > 500) { b.fanout = progress; b.nextDueAt = this.clock() + 1000; return; }
+              const job = { id: key, article: a, epoch: s.epoch, attempts: 0, createdAt: progress.createdAt, nextAttemptAt: this.clock(), catchUpLimited: Boolean(result.catchUp?.truncated) };
+              if (s.telegram?.deliveryEnabled !== false && s.telegram?.chatId && s.telegram?.botToken && !s.telegramBlocked) s.pending.push(job);
+              if (s.discord?.enabled && !s.discordBlocked) s.pending.push({ ...job, id: `${key}:discord`, kind: 'discord', discordVersion: s.discordVersion || 0 });
             }
             delete s.candidates[key];
           } else if (s.rules.some(r => r.minPushes > 0 && matchArticleWithRule(a, { ...r, minPushes: 0 }, true))) {
@@ -229,19 +261,44 @@ export class ArticleTracker {
     if (status === 429) { const retryAfter = Number.isFinite(data.parameters?.retry_after) && data.parameters.retry_after > 0 ? Math.min(86400, data.parameters.retry_after) : 5; await this.commit(d => { d.telegramNextAt = this.clock() + retryAfter * 1000; }); return { ok: false, retryAfter }; }
     return { ok: false, permanent: [400, 401, 403, 404].includes(status), blocked: status === 403, error: data.description || `Telegram HTTP ${status}` };
   }
+  async sendDiscord(payload) {
+    const s = await this.read();
+    if (!s.discord?.enabled || !isValidDiscordWebhookUrl(s.discord?.webhookUrl)) return { ok: false, error: 'Discord 未啟用或未設定 Webhook' };
+    try {
+      const res = await this.http(`${s.discord.webhookUrl}?wait=true`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(typeof payload === 'function' ? payload() : payload),
+      });
+      if (res.status === 200) return { ok: true };
+      if (res.status >= 200 && res.status < 300) return { ok: false, permanent: true, error: 'Discord 未確認送達' };
+      if (res.status === 429) { let data = {}; try { data = JSON.parse(res.text); } catch {} const n = Number(res.retryAfter ?? data.retry_after); return { ok: false, retryAfter: Number.isFinite(n) && n > 0 ? n : 60, error: 'Discord 頻率限制' }; }
+      return { ok: false, status: res.status, permanent: res.status >= 400 && res.status < 500, error: `Discord HTTP ${res.status}` };
+    } catch { return { ok: false, permanent: true, error: 'Discord 連線結果未知，請檢查頻道' }; }
+  }
   validNotification(s, job) {
-    return s.status === 'active' && job.epoch === s.epoch && job.attempts < 5 && this.clock() - job.createdAt < 1800000 && notificationMatches(job, s.rules);
+    return (job.kind !== 'discord' || (s.discord?.enabled && !s.discordBlocked && isValidDiscordWebhookUrl(s.discord.webhookUrl) && job.discordVersion === (s.discordVersion || 0))) && s.status === 'active' && job.epoch === s.epoch && job.attempts < 5 && this.clock() - job.createdAt < 1800000 && notificationMatches(job, s.rules);
   }
   async deliver() {
-    await this.commit(s => { s.pending = coalesceNotifications(s.pending, this.clock(), () => s, j => this.validNotification(s, j)); });
+    await this.commit(s => { s.pending = coalesceNotifications(s.pending, this.clock(), j => j.kind === 'discord' ? { delivered: s.discordDelivered || {} } : s, j => this.validNotification(s, j)); });
     const ids = (await this.read()).pending.sort((a, b) => a.nextAttemptAt - b.nextAttemptAt).slice(0, 5).map(j => j.id);
     for (const id of ids) {
       const s = await this.read(), job = s.pending.find(j => j.id === id);
       if (!job || job.nextAttemptAt > this.clock()) continue;
       const valid = this.validNotification(s, job);
       if (!valid) { await this.commit(d => { d.pending = d.pending.filter(j => j.id !== id); }); continue; }
-      const due = notificationDue(s.notificationStarts, this.clock());
+      const due = Math.max(notificationDue(job.kind === 'discord' ? s.discordNotificationStarts : s.notificationStarts, this.clock()), job.kind === 'discord' ? (s.discordNextAt || 0) : 0);
       if (due > this.clock()) { await this.commit(d => { const current = d.pending.find(j => j.id === id); current.nextAttemptAt = due; }); continue; }
+      if (job.kind === 'discord') {
+        await this.commit(d => { const current = d.pending.find(j => j.id === id); current.attempts++; current.sealed = true; current.nextAttemptAt = this.clock() + this.timeoutMs + 30000; d.discordNotificationStarts = (d.discordNotificationStarts || []).filter(at => at > this.clock() - 300000); d.discordNotificationStarts.push(this.clock()); d.discordNextAt = this.clock() + 1100; });
+        const result = await this.sendDiscord(job.digest ? discordDigestPayload(job) : discordArticlePayload(job.article));
+        await this.commit(d => { const current = d.pending.find(j => j.id === id); if (!current) return;
+          if (result.ok) { d.discordLastError = null; d.discordDelivered ||= {}; for (const a of notificationArticles(job)) d.discordDelivered[articleKey(a)] = this.clock(); }
+          if (result.ok || result.permanent || current.attempts >= 5) { if (!result.ok) d.discordLastError = result.error; if (result.status === 401 || result.status === 404) d.discordBlocked = true; d.pending = d.pending.filter(j => j.id !== id); }
+          else { d.discordLastError = result.error; current.nextAttemptAt = this.clock() + (result.retryAfter || 60) * 1000; d.discordNextAt = current.nextAttemptAt; }
+        });
+        continue;
+      }
       await this.commit(d => { const current = d.pending.find(j => j.id === id); current.attempts++; current.nextAttemptAt = this.clock() + this.timeoutMs + 30000; });
       const a = job.article;
       const link = `https://www.ptt.cc/bbs/${encodeURIComponent(a.board)}/${encodeURIComponent(a.id)}.html`;
@@ -250,7 +307,7 @@ export class ArticleTracker {
       if (job.digest) msg = digestPayload(job, s.telegram.chatId, s.telegram.silent).text;
       let response;
       try { response = await this.send(msg, job.epoch, false, job, job.digest ? {} : { reply_markup: { inline_keyboard: [[{ text: '📖 開啟 PTT', url: link }]] } }); }
-      catch (e) { response = { ok: false, error: e.message }; }
+      catch { response = { ok: false, error: 'Telegram 網路連線失敗' }; }
       await this.commit(d => {
         const current = d.pending.find(j => j.id === id); if (!current) return;
         if (response.throttled) current.attempts--;
@@ -258,7 +315,8 @@ export class ArticleTracker {
           for (const a of notificationArticles(job)) d.delivered[articleKey(a)] = this.clock();
           d.lastDelivery = { at: this.clock(), presentation: job.digest ? 'digest' : 'article', articleCount: notificationArticles(job).length };
         }
-        if (response.blocked) { d.status = 'paused'; d.telegram.enabled = false; d.epoch++; d.lifecycleVersion++; d.pending = []; }
+        if (response.blocked && !d.discord?.enabled) { d.status = 'paused'; d.telegram.enabled = false; d.epoch++; d.lifecycleVersion++; d.pending = []; }
+        else if (response.blocked) { d.telegramBlocked = true; d.pending = d.pending.filter(j => j.kind === 'discord'); }
         else if (response.ok || response.cancelled || response.permanent || current.attempts >= 5) d.pending = d.pending.filter(j => j.id !== id);
         else current.nextAttemptAt = this.clock() + (response.retryAfter ? response.retryAfter * 1000 : Math.min(300000, 30000 * 2 ** (current.attempts - 1)));
       });
@@ -275,6 +333,7 @@ export class ArticleTracker {
         }
         for (const [key, c] of Object.entries(s.candidates)) if (c.expiresAt <= this.clock()) delete s.candidates[key];
         for (const [key, at] of Object.entries(s.delivered)) if (this.clock() - at > 2 * 86400000) delete s.delivered[key];
+        for (const [key, at] of Object.entries(s.discordDelivered || {})) if (this.clock() - at > 2 * 86400000) delete s.discordDelivered[key];
         for (const [board, at] of Object.entries(s.cooldowns)) if (!s.boards[board] && this.clock() - at >= 180000) delete s.cooldowns[board];
         s.pending = s.pending.filter(j => j.epoch === s.epoch && this.clock() - j.createdAt < 1800000 && j.attempts < 5);
       });

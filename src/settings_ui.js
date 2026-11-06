@@ -10,6 +10,7 @@ export class SettingsUI {
     imagePreview,
     notificationManager,
     updateChecker,
+    updateModal,
     elements,
     onBookmarksRender,
     onUserTagsRender,
@@ -23,6 +24,7 @@ export class SettingsUI {
     this.imagePreview = imagePreview;
     this.notificationManager = notificationManager;
     this.updateChecker = updateChecker;
+    this.updateModal = updateModal;
     this.elements = elements;
     this.onBookmarksRender = onBookmarksRender || (() => {});
     this.onUserTagsRender = onUserTagsRender || (() => {});
@@ -145,6 +147,7 @@ export class SettingsUI {
           if (res.hasUpdate) {
             updateStatusMsg.className = 'update-status-msg has-new';
             updateStatusMsg.innerHTML = `🎉 發現新版本 <strong>${res.latestVersion}</strong>！<br><a href="${res.releaseUrl}" target="_blank" style="color:inherit;text-decoration:underline;margin-top:4px;display:inline-block;">👉 前往 GitHub 下載安裝包 (${res.publishedAt})</a>`;
+            this.updateModal?.show(res, { force: true });
           } else {
             updateStatusMsg.className = 'update-status-msg';
             updateStatusMsg.innerHTML = `✅ 目前使用的 <strong>${res.currentVersion}</strong> 已是最新版本！`;

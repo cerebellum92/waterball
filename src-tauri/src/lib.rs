@@ -625,6 +625,7 @@ async fn send_telegram_message(
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| format!("無法建立 HTTP 客戶端: {}", e))?;
 
@@ -664,7 +665,7 @@ async fn send_telegram_message(
         .body(json_body)
         .send()
         .await
-        .map_err(|e| format!("發送至 Telegram 失敗 (網路連線錯誤): {}", e))?;
+        .map_err(|e| format!("發送至 Telegram 失敗 (網路連線錯誤): {}", e.without_url()))?;
 
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
@@ -685,17 +686,90 @@ async fn send_telegram_message(
         let friendly_msg = if status.as_u16() == 404 {
             "Telegram 回應錯誤 (HTTP 404 Not Found)：Telegram 伺服器找不到此機器人。請確認 Bot Token 是否完整複製自 @BotFather（Token 格式應如 123456789:ABCdef...，不可有前後多餘字元）。".to_string()
         } else if status.as_u16() == 400 && err_detail.to_lowercase().contains("chat not found") {
-            format!("Telegram 回應錯誤：找不到 Chat ID「{}」。請先在 Telegram 點入您的機器人對話框並點擊「Start」，否則機器人無法主動發送訊息給您！", clean_chat_id)
+            "Telegram 回應錯誤：找不到 Chat ID。請先在 Telegram 的機器人對話框點擊 Start。".to_string()
         } else if status.as_u16() == 401 {
             "Telegram 回應錯誤 (HTTP 401 Unauthorized)：Bot Token 無效或已被撤銷，請向 @BotFather 重新獲取 Token。".to_string()
         } else {
-            format!("Telegram 回應錯誤 (HTTP {}): {}", status, err_detail)
+            format!("Telegram 回應錯誤 (HTTP {})", status)
         };
 
         Ok(TelegramSendResult {
             success: false,
             message: friendly_msg,
         })
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DiscordSendResult {
+    pub success: bool,
+    pub message: String,
+    pub status: Option<u16>,
+    pub retry_after_ms: Option<u64>,
+}
+
+fn is_valid_discord_webhook_url(raw_url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(raw_url) else { return false; };
+    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some()
+        || url.port().is_some() || url.query().is_some() || url.fragment().is_some() {
+        return false;
+    }
+    if !matches!(url.host_str(), Some("discord.com" | "discordapp.com" | "ptb.discord.com" | "canary.discord.com")) {
+        return false;
+    }
+    let Some(rest) = url.path().strip_prefix("/api/webhooks/") else { return false; };
+    let mut parts = rest.split('/');
+    let (Some(id), Some(token)) = (parts.next(), parts.next()) else { return false; };
+    !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) && !token.is_empty()
+        && token.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        && parts.next().is_none()
+}
+
+#[tauri::command]
+async fn send_discord_webhook(webhook_url: String, payload_json: String) -> Result<DiscordSendResult, String> {
+    let result = |success, message: &str, status, retry_after_ms| DiscordSendResult {
+        success, message: message.to_string(), status, retry_after_ms,
+    };
+    let clean_url = webhook_url.trim();
+    if !is_valid_discord_webhook_url(clean_url) {
+        return Ok(result(false, "Discord Webhook 網址格式不正確", None, None));
+    }
+    if payload_json.len() > 65536 || serde_json::from_str::<serde_json::Value>(&payload_json).is_err() {
+        return Ok(result(false, "Payload 格式無效或超過 64KB", None, None));
+    }
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none()).build()
+        .map_err(|_| "無法建立 HTTP 客戶端".to_string())?;
+    let mut url = reqwest::Url::parse(clean_url).map_err(|_| "Discord 網址格式不正確".to_string())?;
+    url.query_pairs_mut().append_pair("wait", "true");
+    let mut resp = client.post(url).header("Content-Type", "application/json").body(payload_json)
+        .send().await.map_err(|_| "Discord 網路連線失敗，訊息是否送達未知".to_string())?;
+    let status = resp.status().as_u16();
+    let mut retry = resp.headers().get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| v.is_finite() && *v >= 0.0)
+        .map(|v| (v * 1000.0).ceil().min(u64::MAX as f64) as u64);
+    if status == 429 && retry.is_none() {
+        let mut body = Vec::new();
+        while let Ok(Some(chunk)) = resp.chunk().await {
+            if body.len() + chunk.len() > 8192 { break; }
+            body.extend_from_slice(&chunk);
+        }
+        retry = serde_json::from_slice::<serde_json::Value>(&body).ok()
+            .and_then(|v| v.get("retry_after").and_then(|n| n.as_f64()))
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .map(|v| (v * 1000.0).ceil().min(u64::MAX as f64) as u64);
+    }
+    if status == 200 {
+        Ok(result(true, "訊息發送成功！", Some(status), None))
+    } else if (200..300).contains(&status) {
+        Ok(result(false, "Discord 未確認訊息已儲存，請至頻道確認。", Some(status), None))
+    } else if status == 429 {
+        Ok(result(false, "Discord 頻率限制，將稍後重試。", Some(status), retry))
+    } else if status == 401 || status == 404 {
+        Ok(result(false, "Discord Webhook 無效或已被刪除。", Some(status), None))
+    } else {
+        Ok(result(false, &format!("Discord 回應錯誤 (HTTP {})", status), Some(status), None))
     }
 }
 
@@ -727,7 +801,7 @@ async fn cloud_push_request(
     url.set_query(None);
     url.set_fragment(None);
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::none())
         .build().map_err(|e| e.to_string())?;
     let mut request = match method.as_str() {
@@ -739,20 +813,31 @@ async fn cloud_push_request(
     if !secret_key.is_empty() {
         request = request.header("Authorization", format!("Bearer {}", secret_key.trim()));
     }
-    let mut response = request.send().await.map_err(|e| e.to_string())?;
+    let mut response = request.send().await.map_err(|_| "推播伺服器網路連線失敗".to_string())?;
     let status = response.status();
     if response.content_length().unwrap_or(0) > 1024 * 1024 {
         return Err("伺服器回應超過 1 MiB 上限".to_string());
     }
     let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+    while let Some(chunk) = response.chunk().await.map_err(|_| "讀取推播伺服器回應失敗".to_string())? {
         if body.len() + chunk.len() > 1024 * 1024 {
             return Err("伺服器回應超過 1 MiB 上限".to_string());
         }
         body.extend_from_slice(&chunk);
     }
-    let mut value: serde_json::Value = serde_json::from_slice(&body)
-        .map_err(|_| "伺服器未回傳合法 JSON".to_string())?;
+    let mut value: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(_) => {
+            let msg = if status.as_u16() == 502 || status.as_u16() == 504 {
+                format!("伺服器連線逾時 (HTTP {})，請稍後重試", status.as_u16())
+            } else if !status.is_success() {
+                format!("伺服器回應異常 (HTTP {})，請稍後重試", status.as_u16())
+            } else {
+                "伺服器未回傳合法資料，請稍後重試".to_string()
+            };
+            return Err(msg);
+        }
+    };
     let object = value.as_object_mut().ok_or_else(|| "伺服器回應格式錯誤".to_string())?;
     if !status.is_success() || object.get("success").and_then(|v| v.as_bool()) != Some(true) {
         object.insert("success".to_string(), serde_json::Value::Bool(false));
@@ -998,6 +1083,7 @@ pub fn run() {
             set_remember_window_state,
             fetch_ptt_board_articles,
             send_telegram_message,
+            send_discord_webhook,
             sync_to_cloudflare_worker,
             cloud_push_request,
             test_cloudflare_worker,
@@ -1098,6 +1184,28 @@ mod tests {
         assert!(json.contains("\"disable_notification\":true"));
         assert!(json.contains("\"inline_keyboard\""));
         assert!(json.contains("開啟 PTT 好讀版"));
+    }
+
+    #[test]
+    fn test_is_valid_discord_webhook_url() {
+        assert!(super::is_valid_discord_webhook_url("https://discord.com/api/webhooks/123456789/abcdef"));
+        assert!(super::is_valid_discord_webhook_url("https://discordapp.com/api/webhooks/987654321/fedcba"));
+        assert!(super::is_valid_discord_webhook_url("https://ptb.discord.com/api/webhooks/111222333/xyz_123-abc"));
+        assert!(super::is_valid_discord_webhook_url("https://canary.discord.com/api/webhooks/444555666/token"));
+
+        // Invalid: non-https
+        assert!(!super::is_valid_discord_webhook_url("http://discord.com/api/webhooks/123/abc"));
+        // Invalid: wrong host
+        assert!(!super::is_valid_discord_webhook_url("https://evil-discord.com/api/webhooks/123/abc"));
+        assert!(!super::is_valid_discord_webhook_url("https://discord.evil.com/api/webhooks/123/abc"));
+        // Invalid: wrong path
+        assert!(!super::is_valid_discord_webhook_url("https://discord.com/api/users/@me"));
+        assert!(!super::is_valid_discord_webhook_url("https://discord.com/api/webhooks/"));
+        // Invalid: malformed url
+        assert!(!super::is_valid_discord_webhook_url("not_a_url"));
+        for url in ["https://discord.com:8443/api/webhooks/123/token", "https://user@discord.com/api/webhooks/123/token", "https://discord.com/api/webhooks/123/token/slack", "https://discord.com/api/webhooks/123/token?wait=true", "https://discord.com/api/webhooks/abc", "https://discord.com/api/webhooks/123/token#fragment"] {
+            assert!(!super::is_valid_discord_webhook_url(url), "{}", url);
+        }
     }
 
     #[test]

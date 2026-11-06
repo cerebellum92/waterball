@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ArticleMonitorManager, formatTelegramArticleMessage, normalizePttArticleUrl } from '../src/article_monitor.js';
+import {
+  ArticleMonitorManager,
+  formatTelegramArticleMessage,
+  normalizePttArticleUrl,
+  isValidDiscordWebhookUrl,
+  normalizeDiscordWebhookUrl,
+  formatDiscordArticlePayload,
+  createDiscordTestPayload,
+} from '../src/article_monitor.js';
 
 class MockStorage {
   constructor() {
@@ -225,6 +233,170 @@ test('ArticleMonitorManager forwards alert to Telegram when enabled', async () =
   assert.equal(sentMessages.length, 2);
   assert.equal(sentMessages[1].botToken, '123456:test_token');
   assert.ok(sentMessages[1].text.includes('連線測試成功'));
+});
+
+test('isValidDiscordWebhookUrl and normalizeDiscordWebhookUrl validate and sanitize URLs correctly', () => {
+  // Valid Discord Webhook URLs
+  assert.equal(isValidDiscordWebhookUrl('https://discord.com/api/webhooks/123456789/abcdef_gh-123'), true);
+  assert.equal(isValidDiscordWebhookUrl('https://discordapp.com/api/webhooks/987654321/secret_token'), true);
+  assert.equal(isValidDiscordWebhookUrl('https://ptb.discord.com/api/webhooks/111222333/canary_token'), true);
+  assert.equal(isValidDiscordWebhookUrl('https://canary.discord.com/api/webhooks/444555666/canary_token'), true);
+
+  // Normalization strips query params and extra trailing slashes
+  assert.equal(
+    normalizeDiscordWebhookUrl('https://discord.com/api/webhooks/123456789/abcdef?wait=true'),
+    'https://discord.com/api/webhooks/123456789/abcdef'
+  );
+
+  // Invalid: non-https
+  assert.equal(isValidDiscordWebhookUrl('http://discord.com/api/webhooks/123/abc'), false);
+  assert.equal(normalizeDiscordWebhookUrl('http://discord.com/api/webhooks/123/abc'), '');
+
+  // Invalid: evil domains
+  assert.equal(isValidDiscordWebhookUrl('https://evil-discord.com/api/webhooks/123/abc'), false);
+  assert.equal(isValidDiscordWebhookUrl('https://discord.com.attacker.com/api/webhooks/123/abc'), false);
+
+  // Invalid: wrong path
+  assert.equal(isValidDiscordWebhookUrl('https://discord.com/api/users/@me'), false);
+  assert.equal(isValidDiscordWebhookUrl('https://discord.com/api/webhooks/'), false);
+
+  // Invalid: empty or non-string
+  assert.equal(isValidDiscordWebhookUrl(''), false);
+  assert.equal(isValidDiscordWebhookUrl(null), false);
+  assert.equal(isValidDiscordWebhookUrl(undefined), false);
+});
+
+test('formatDiscordArticlePayload builds correct embed structure and dynamic colors', () => {
+  // Test 爆文 (Gold: 0xF1C40F)
+  const itemGold = { board: 'Stock', title: '台積電法說會大爆發', author: 'analyst', nrec: '爆', link: '/bbs/Stock/1.html' };
+  const payloadGold = formatDiscordArticlePayload(itemGold);
+  assert.equal(payloadGold.username, 'Waterball 水球');
+  assert.ok(payloadGold.embeds.length === 1);
+  assert.equal(payloadGold.embeds[0].title, '台積電法說會大爆發');
+  assert.equal(payloadGold.embeds[0].color, 0xF1C40F);
+  assert.equal(payloadGold.embeds[0].fields[0].value, '[Stock](https://www.ptt.cc/bbs/Stock/index.html)');
+  assert.equal(payloadGold.embeds[0].fields[1].value, 'analyst');
+  assert.equal(payloadGold.embeds[0].fields[2].value, '爆推');
+
+  // Test 噓文 (Red: 0xE74C3C)
+  const itemRed = { board: 'Gossiping', title: '爭議事件報導', author: 'someone', nrec: 'XX', link: '/bbs/Gossiping/2.html' };
+  const payloadRed = formatDiscordArticlePayload(itemRed);
+  assert.equal(payloadRed.embeds[0].color, 0xE74C3C);
+
+  // Test 普通推文 (Green: 0x2ECC71)
+  const itemGreen = { board: 'Lifeismoney', title: '特價優惠情報', author: 'buyer', nrec: '35', link: '/bbs/Lifeismoney/3.html' };
+  const payloadGreen = formatDiscordArticlePayload(itemGreen);
+  assert.equal(payloadGreen.embeds[0].color, 0x2ECC71);
+
+  // Test 0推或無推文 (Blue: 0x3498DB)
+  const itemBlue = { board: 'C_Chat', title: '新番閒聊', author: 'otaku', nrec: '', link: '/bbs/C_Chat/4.html' };
+  const payloadBlue = formatDiscordArticlePayload(itemBlue);
+  assert.equal(payloadBlue.embeds[0].color, 0x3498DB);
+
+  // Test createDiscordTestPayload
+  const testPayload = createDiscordTestPayload();
+  assert.ok(testPayload.embeds[0].title.includes('測試成功'));
+});
+
+test('ArticleMonitorManager persists and loads Discord config', () => {
+  const storage = new MockStorage();
+  const manager = new ArticleMonitorManager(storage);
+
+  assert.deepEqual(manager.getDiscordConfig(), { enabled: false, webhookUrl: '' });
+
+  manager.saveDiscordConfig({
+    enabled: true,
+    webhookUrl: 'https://discord.com/api/webhooks/123456789/abcdef_token?wait=true',
+  });
+
+  // Stored URL should be normalized without query params
+  const config = manager.getDiscordConfig();
+  assert.equal(config.enabled, true);
+  assert.equal(config.webhookUrl, 'https://discord.com/api/webhooks/123456789/abcdef_token');
+
+  // Reload in a new manager instance
+  const manager2 = new ArticleMonitorManager(storage);
+  assert.deepEqual(manager2.getDiscordConfig(), {
+    enabled: true,
+    webhookUrl: 'https://discord.com/api/webhooks/123456789/abcdef_token',
+  });
+});
+
+test('ArticleMonitorManager forwards alert to Discord when enabled', async () => {
+  const storage = new MockStorage();
+  let currentFeed = [
+    { id: 'art_1', board: 'Lifeismoney', title: '[情報] 舊特價情報', author: 'olduser', nrec: '10', link: '/1' },
+  ];
+  const sentDiscordMessages = [];
+
+  const manager = new ArticleMonitorManager(
+    storage,
+    async () => currentFeed,
+    null,
+    null,
+    async (webhookUrl, payload) => {
+      sentDiscordMessages.push({ webhookUrl, payload });
+      return { success: true, message: 'ok' };
+    }
+  );
+
+  manager.addRule({ board: 'Lifeismoney', keywords: ['[情報]'] });
+
+  // 1. Initial baseline check
+  await manager.checkBoard('Lifeismoney');
+  assert.equal(sentDiscordMessages.length, 0);
+
+  // 2. Enable Discord Webhook
+  manager.saveDiscordConfig({
+    enabled: true,
+    webhookUrl: 'https://discord.com/api/webhooks/123456789/my_webhook',
+  });
+
+  // Add new matching article
+  currentFeed = [
+    ...currentFeed,
+    { id: 'art_new', board: 'Lifeismoney', title: '[情報] 買一送一超值優惠', author: 'saver', nrec: '12', link: '/2' },
+  ];
+
+  await manager.checkBoard('Lifeismoney');
+  assert.equal(sentDiscordMessages.length, 1);
+  assert.equal(sentDiscordMessages[0].webhookUrl, 'https://discord.com/api/webhooks/123456789/my_webhook');
+  assert.equal(sentDiscordMessages[0].payload.embeds[0].title, '[情報] 買一送一超值優惠');
+  assert.equal(sentDiscordMessages[0].payload.embeds[0].fields[1].value, 'saver');
+
+  // 3. Test testDiscord
+  const testRes = await manager.testDiscord('https://discord.com/api/webhooks/123456789/my_webhook');
+  assert.equal(testRes.success, true);
+  assert.equal(sentDiscordMessages.length, 2);
+  assert.ok(sentDiscordMessages[1].payload.embeds[0].title.includes('測試成功'));
+
+  // 4. Test invalid webhook url rejection in testDiscord
+  const invalidRes = await manager.testDiscord('https://attacker.com/webhook');
+  assert.equal(invalidRes.success, false);
+  assert.ok(invalidRes.message.includes('正確的 Discord Webhook 網址'));
+});
+
+test('ArticleMonitorManager sendDiscordRawMessage fallback works with fetch', async () => {
+  const storage = new MockStorage();
+  let fetchCall = null;
+  const mockFetch = async (url, options) => {
+    fetchCall = { url, options };
+    return {
+      status: 200,
+      ok: true,
+    };
+  };
+
+  const manager = new ArticleMonitorManager(storage, null, null, null, null);
+  manager.customFetch = mockFetch;
+
+  const res = await manager.sendDiscordRawMessage(
+    'https://discord.com/api/webhooks/123/token',
+    { test: true }
+  );
+  assert.equal(res.success, true);
+  assert.equal(fetchCall.url, 'https://discord.com/api/webhooks/123/token?wait=true');
+  assert.equal(fetchCall.options.method, 'POST');
 });
 
 test('index.html integrity: all modals are properly closed and not nested', async () => {
@@ -617,4 +789,392 @@ test('ArticleMonitorUI handles font scaling initialization and cycling', async (
   }
 });
 
+test('ArticleMonitorUI handles Discord form loading, validation and saving', async () => {
+  const { ArticleMonitorUI } = await import('../src/article_monitor_ui.js');
+  const storage = new MockStorage();
+  const manager = new ArticleMonitorManager(storage);
 
+  const discordEnabledInput = { checked: false };
+  const discordWebhookInput = { value: '', type: 'password', focus: () => {} };
+  const discordStatusEl = { className: 'hidden', textContent: '', classList: { remove: () => {} } };
+  let shownToast = null;
+
+  const ui = Object.create(ArticleMonitorUI.prototype);
+  ui.manager = manager;
+  ui.discordEnabledInput = discordEnabledInput;
+  ui.discordWebhookInput = discordWebhookInput;
+  ui.discordStatusEl = discordStatusEl;
+  ui.localNotifInput = { checked: true };
+  ui.tgEnabledInput = { checked: false };
+  ui.tgTokenInput = { value: '' };
+  ui.tgChatIdInput = { value: '', style: {} };
+  ui.tgSilentInput = { checked: false };
+  ui.cloudEnabledInput = { checked: false };
+  ui.cloudUrlInput = { value: '' };
+  ui.cloudSecretInput = { value: '' };
+  ui.cloudAutoSyncInput = { checked: false, disabled: false };
+  ui.cloudAutoMergeInput = { checked: false, disabled: false, closest: () => ({ hidden: false }) };
+  ui.isOfficialForm = () => false;
+  ui.onShowToast = (msg) => { shownToast = msg; };
+
+  // 1. Initial load
+  ui.loadTelegramForm();
+  assert.equal(discordEnabledInput.checked, false);
+  assert.equal(discordWebhookInput.value, '');
+
+  // 2. Save invalid URL with enabled=true
+  discordEnabledInput.checked = true;
+  discordWebhookInput.value = 'https://invalid-host.com/webhook';
+  if (discordEnabledInput.checked && !isValidDiscordWebhookUrl(discordWebhookInput.value)) {
+    ui.showDiscordStatus('error', '❌ Webhook 網址格式不正確');
+  }
+  assert.ok(discordStatusEl.textContent.includes('格式不正確'));
+  assert.ok(shownToast.includes('格式不正確'));
+
+  // 3. Save valid URL
+  const validUrl = 'https://discord.com/api/webhooks/123456789/valid_token';
+  discordWebhookInput.value = validUrl;
+  manager.saveDiscordConfig({ enabled: true, webhookUrl: validUrl });
+  ui.showDiscordStatus('success', '✅ Discord 推播設定已成功儲存！');
+
+  assert.equal(manager.getDiscordConfig().enabled, true);
+  assert.equal(manager.getDiscordConfig().webhookUrl, validUrl);
+
+  // 4. Reload form and verify populated values
+  discordEnabledInput.checked = false;
+  discordWebhookInput.value = '';
+  ui.loadTelegramForm();
+  assert.equal(discordEnabledInput.checked, true);
+  assert.equal(discordWebhookInput.value, validUrl);
+});
+
+
+
+
+test('Discord URL boundaries and normalization reject alternate destinations', () => {
+  for (const url of ['https://user@discord.com/api/webhooks/123/token', 'https://discord.com:8443/api/webhooks/123/token', 'https://discord.com/api/webhooks/123/token/slack', 'https://discord.com/api/webhooks/123/token?thread_id=10', 'https://discord.com/api/webhooks/123/token#x']) assert.equal(isValidDiscordWebhookUrl(url), false, url);
+  assert.equal(normalizeDiscordWebhookUrl('https://discord.com/api/webhooks/123/token/?wait=true'), 'https://discord.com/api/webhooks/123/token');
+});
+
+test('Discord batch summarizes and reports failures without exposing returned secrets', async () => {
+  const sent = [];
+  const manager = new ArticleMonitorManager(new MockStorage(), null, null, null, async (url, payload) => { sent.push(payload); return { success: false, status: 404, message: url }; });
+  manager.saveDiscordConfig({ enabled: true, webhookUrl: 'https://discord.com/api/webhooks/123/token' });
+  const items = Array.from({length: 5}, (_, i) => ({ board: 'Stock', title: `Article ${i}`, link: `/bbs/Stock/${i}.html` }));
+  manager.enqueueDiscordAlerts(items);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].embeds[0].title, /5 篇/);
+  assert.deepEqual(sent[0].allowed_mentions, { parse: [] });
+  assert.match(manager.discordLastError, /失效/);
+  assert.doesNotMatch(manager.discordLastError, /token/);
+});
+
+test('Discord storage failure and hostile native error do not claim success or reveal a token', async () => {
+  const storage = new MockStorage();
+  storage.setItem = () => { throw new Error('token'); };
+  const manager = new ArticleMonitorManager(storage);
+  assert.equal(manager.saveDiscordConfig({ enabled: true, webhookUrl: 'https://discord.com/api/webhooks/123/token' }), false);
+  global.window = { __TAURI__: { core: { invoke: async () => { throw new Error('https://discord.com/api/webhooks/123/token'); } } } };
+  try { const result = await manager.testDiscord('https://discord.com/api/webhooks/123/token'); assert.equal(result.success, false); assert.doesNotMatch(result.message, /token/); }
+  finally { delete global.window; }
+});
+
+test('Discord embeds respect limits and reject external article URLs', () => {
+  const payload = formatDiscordArticlePayload({ board: 'Stock', title: 'a'.repeat(400), author: 'b'.repeat(1200), nrec: '-1', link: 'https://evil.example/' });
+  assert.equal(payload.embeds[0].title.length, 256);
+  assert.equal(payload.embeds[0].fields[1].value.length, 1024);
+  assert.equal(payload.embeds[0].color, 0xE74C3C);
+  assert.match(payload.embeds[0].url, /^https:\/\/www\.ptt\.cc\//);
+});
+
+test('Discord form click handlers validate and report persistence failures', async () => {
+  const { ArticleMonitorUI } = await import('../src/article_monitor_ui.js');
+  const manager = new ArticleMonitorManager(new MockStorage());
+  const listeners = {};
+  const button = name => ({ addEventListener: (event, handler) => { listeners[name] = handler; }, disabled: false });
+  const ui = Object.create(ArticleMonitorUI.prototype);
+  ui.manager = manager;
+  ui.discordEnabledInput = { checked: true };
+  ui.discordWebhookInput = { value: 'https://bad.example/', focus() {} };
+  ui.discordStatusEl = { className: '', textContent: '', classList: { remove() {} } };
+  ui.discordSaveBtn = button('save'); ui.discordTestBtn = button('test');
+  ui.onShowToast = () => {};
+  ui.initEventListeners();
+  listeners.save();
+  assert.match(ui.discordStatusEl.textContent, /格式不正確/);
+  assert.equal(manager.getDiscordConfig().enabled, false);
+  ui.discordWebhookInput.value = 'https://discord.com/api/webhooks/123/token';
+  listeners.save();
+  assert.equal(manager.getDiscordConfig().enabled, true);
+  manager.storage.setItem = () => { throw new Error('failed'); };
+  listeners.save();
+  assert.match(ui.discordStatusEl.textContent, /儲存失敗/);
+  manager.testDiscord = async () => ({ success: false, message: 'network' });
+  await listeners.test();
+  assert.equal(ui.discordTestBtn.disabled, false);
+  assert.match(ui.discordStatusEl.textContent, /測試發送失敗/);
+});
+
+test('Discord serializes retries after a rate limit without blocking scanning', async () => {
+  const sent = [];
+  const manager = new ArticleMonitorManager(new MockStorage(), null, null, null, async (url, payload) => {
+    sent.push(payload);
+    return sent.length === 1 ? { success: false, status: 429, retry_after_ms: 1 } : { success: true };
+  });
+  manager.saveDiscordConfig({ enabled: true, webhookUrl: 'https://discord.com/api/webhooks/123/token' });
+  manager.enqueueDiscordAlerts([{ board: 'Stock', title: 'first', link: '/1' }, { board: 'Stock', title: 'second', link: '/2' }]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(sent.length, 1);
+  assert.match(manager.discordLastError, /頻率限制/);
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  assert.equal(sent.length, 3);
+  assert.equal(sent[1].embeds[0].title, 'first');
+  assert.equal(sent[2].embeds[0].title, 'second');
+});
+
+test('cloud server error messages redact stored and supplied credentials', () => {
+  const manager = new ArticleMonitorManager(new MockStorage());
+  manager.saveTelegramConfig({ botToken: '123456:abcdefghijklmnop', chatId: '12' }, { sync: false });
+  manager.saveCloudSyncConfig({ syncSecret: 'sync-secret-value', deviceToken: 'device-secret-value' });
+  manager.saveDiscordConfig({ webhookUrl: 'https://discord.com/api/webhooks/123/token' });
+  const message = manager.cloudClient.safeMessage('sync-secret-value device-secret-value 123456:abcdefghijklmnop https://discord.com/api/webhooks/123/token other-token', 'other-token');
+  for (const secret of ['sync-secret-value', 'device-secret-value', '123456:abcdefghijklmnop', 'https://discord.com/api/webhooks/123/token', 'other-token']) assert.equal(message.includes(secret), false);
+});
+
+test('Discord wait confirmation does not treat an unconfirmed 204 as success', async () => {
+  const manager = new ArticleMonitorManager(new MockStorage());
+  manager.customFetch = async () => ({ status: 204 });
+  const result = await manager.testDiscord('https://discord.com/api/webhooks/123/token');
+  assert.equal(result.success, false);
+});
+
+test('ArticleMonitorManager suppresses local desktop Discord alerts when cloud push is active', async () => {
+  const sent = [];
+  const manager = new ArticleMonitorManager(
+    new MockStorage(),
+    null,
+    null,
+    null,
+    async (url, payload) => {
+      sent.push({ url, payload });
+      return { success: true };
+    }
+  );
+  manager.saveDiscordConfig({ enabled: true, webhookUrl: 'https://discord.com/api/webhooks/123/token' });
+  manager.saveCloudSyncConfig({ enabled: true, workerUrl: 'https://my-cloud-worker.workers.dev' });
+
+  // 1. Single alert via sendDiscordAlert should be suppressed (delegated to cloud)
+  const alertResult = await manager.sendDiscordAlert({ board: 'Stock', title: 'Test article', link: '/1' });
+  assert.equal(alertResult, null);
+  assert.equal(sent.length, 0);
+
+  // 2. Batch enqueueDiscordAlerts should also be suppressed to prevent duplicates
+  manager.enqueueDiscordAlerts([{ board: 'Stock', title: 'Test article', link: '/1' }]);
+  assert.equal(manager.discordQueue.length, 1);
+  assert.equal(sent.length, 0);
+  assert.match(manager.discordLastError, /尚未確認/);
+
+  // 3. Disabling cloud push restores local desktop Discord alerts
+  manager.saveCloudSyncConfig({ enabled: false, workerUrl: '' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(sent.length, 1);
+});
+
+test('Discord queue 429 retry exhaustion discards only failed job and preserves remaining queue', async () => {
+  const sent = [];
+  let attempts = 0;
+  const manager = new ArticleMonitorManager(
+    new MockStorage(),
+    null,
+    null,
+    null,
+    async (url, payload) => {
+      sent.push(payload.embeds[0].title);
+      attempts++;
+      // First article always fails with 429, no retry_after_ms header
+      if (payload.embeds[0].title === 'failing') {
+        return { success: false, status: 429, retry_after_ms: null };
+      }
+      return { success: true };
+    }
+  );
+  manager.saveDiscordConfig({ enabled: true, webhookUrl: 'https://discord.com/api/webhooks/123/token' });
+
+  manager.discordSleep = async () => {};
+  // Enqueue two alerts: one that fails 429 and one that succeeds
+  manager.discordQueue.push(
+    { webhookUrl: 'https://discord.com/api/webhooks/123/token', payload: { embeds: [{ title: 'failing' }] }, attempts: 0 },
+    { webhookUrl: 'https://discord.com/api/webhooks/123/token', payload: { embeds: [{ title: 'succeeding' }] }, attempts: 0 }
+  );
+
+  const drainPromise = manager.drainDiscordQueue();
+  await drainPromise;
+
+  // The failing job was discarded after 429, but succeeding was also delivered!
+  assert.deepEqual(sent, ['failing', 'succeeding']);
+  assert.equal(manager.discordQueue.length, 0);
+});
+
+test('createDiscordDigestPayload includes board tags and displays latest items first', async () => {
+  const { createDiscordDigestPayload } = await import('../src/discord_push.js');
+  const items = [
+    { board: 'Stock', title: '舊文章 1', link: '/bbs/Stock/1.html' },
+    { board: 'Lifeismoney', title: '中文章 2', link: '/bbs/Lifeismoney/2.html' },
+    { board: 'Gossiping', title: '最新文章 3', link: '/bbs/Gossiping/3.html' },
+  ];
+  const payload = createDiscordDigestPayload(items);
+  assert.equal(payload.embeds.length, 1);
+  assert.equal(payload.embeds[0].title, '📚 3 篇文章追蹤摘要');
+  // Check board tags in description
+  assert.ok(payload.embeds[0].description.includes('**[Gossiping]**'));
+  assert.ok(payload.embeds[0].description.includes('**[Lifeismoney]**'));
+  assert.ok(payload.embeds[0].description.includes('**[Stock]**'));
+  // Latest article (item[2]) should appear first in description
+  const gossipingIdx = payload.embeds[0].description.indexOf('[Gossiping]');
+  const stockIdx = payload.embeds[0].description.indexOf('[Stock]');
+  assert.ok(gossipingIdx < stockIdx, 'Latest article should appear before older articles');
+});
+
+test('ArticleMonitorUI switches push channel sections and remembers preference in storage', async () => {
+  const { ArticleMonitorUI } = await import('../src/article_monitor_ui.js');
+  const manager = new ArticleMonitorManager(new MockStorage());
+
+  const channelSelect = { value: 'telegram' };
+  const hiddenMap = { telegram: false, discord: true, local: true, selfhosted: true };
+  const mockSection = (id) => ({
+    classList: {
+      add: (cls) => { if (cls === 'hidden') hiddenMap[id] = true; },
+      remove: (cls) => { if (cls === 'hidden') hiddenMap[id] = false; },
+    },
+  });
+
+  const storageMap = new Map();
+  const originalLocalStorage = globalThis.localStorage;
+  globalThis.localStorage = {
+    getItem: (k) => storageMap.get(k) || null,
+    setItem: (k, v) => storageMap.set(k, String(v)),
+  };
+
+  try {
+    const ui = Object.create(ArticleMonitorUI.prototype);
+    ui.manager = manager;
+    ui.pushChannelSelect = channelSelect;
+    ui.sectionTelegram = mockSection('telegram');
+    ui.sectionDiscord = mockSection('discord');
+    ui.sectionLocal = mockSection('local');
+    ui.sectionSelfHosted = mockSection('selfhosted');
+
+    // Switch to discord
+    ui.switchPushChannel('discord');
+    assert.equal(channelSelect.value, 'discord');
+    assert.equal(hiddenMap.discord, false);
+    assert.equal(hiddenMap.telegram, true);
+    assert.equal(storageMap.get('waterball_monitor_push_channel_tab'), 'discord');
+
+    // Switch to local
+    ui.switchPushChannel('local');
+    assert.equal(channelSelect.value, 'local');
+    assert.equal(hiddenMap.local, false);
+    assert.equal(hiddenMap.discord, true);
+
+    // Switch to selfhosted
+    ui.switchPushChannel('selfhosted');
+    assert.equal(channelSelect.value, 'selfhosted');
+    assert.equal(hiddenMap.selfhosted, false);
+    assert.equal(hiddenMap.local, true);
+  } finally {
+    globalThis.localStorage = originalLocalStorage;
+  }
+});
+
+test('failed Discord persistence does not mutate config or start cloud sync', async () => {
+  const storage = new MockStorage(); const originalSet = storage.setItem.bind(storage);
+  storage.setItem = (key, value) => { if (key === 'bbsterm_monitor_discord') throw new Error('quota'); originalSet(key, value); };
+  let calls = 0; const manager = new ArticleMonitorManager(storage, null, null, async () => { calls++; return { success: true }; });
+  manager.saveCloudSyncConfig({ enabled: true, workerUrl: 'https://example.test', serverMode: 'selfHosted', autoSync: true, syncSecret: 'x'.repeat(32) });
+  const before = manager.getDiscordConfig();
+  assert.equal(manager.saveDiscordConfig({ enabled: true, webhookUrl: 'https://discord.com/api/webhooks/1/token' }), false);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(manager.getDiscordConfig(), before); assert.equal(calls, 0); assert.notEqual(manager.cloudSyncConfig.discordDirty, true);
+});
+
+test('queued local Discord sends pause while cloud handoff is unconfirmed', async () => {
+  let release; const sent = [];
+  const manager = new ArticleMonitorManager(new MockStorage(), null, null, null, async (_url, payload) => { sent.push(payload.embeds[0].title); if (sent.length === 1) return new Promise(r => { release = r; }); return { success: true }; });
+  manager.saveDiscordConfig({ enabled: true, webhookUrl: 'https://discord.com/api/webhooks/1/token' });
+  manager.enqueueDiscordAlerts([{ title: 'one' }, { title: 'two' }]);
+  manager.saveCloudSyncConfig({ ...manager.cloudSyncConfig, enabled: true, workerUrl: 'https://example.test' });
+  release({ success: true }); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(sent, ['one']); assert.equal(manager.discordQueue.length, 1);
+  manager.saveCloudSyncConfig({ ...manager.cloudSyncConfig, enabled: false }); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(sent, ['one', 'two']);
+});
+
+test('late 404 from old Discord config does not discard new config jobs', async () => {
+  let release; const sent = [];
+  const manager = new ArticleMonitorManager(new MockStorage(), null, null, null, async (url) => { sent.push(url); if (sent.length === 1) return new Promise(r => { release = r; }); return { success: true }; });
+  manager.saveDiscordConfig({ enabled: true, webhookUrl: 'https://discord.com/api/webhooks/1/old' });
+  manager.enqueueDiscordAlerts([{ title: 'old' }]);
+  manager.saveDiscordConfig({ enabled: true, webhookUrl: 'https://discord.com/api/webhooks/2/new' });
+  manager.enqueueDiscordAlerts([{ title: 'new' }]);
+  release({ success: false, status: 404 }); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(sent.length, 2); assert.ok(sent[1].endsWith('/2/new')); assert.equal(manager.discordQueue.length, 0);
+});
+
+test('Discord retry exhaustion honors the latest rate limit before the next job', async () => {
+  const delays = [], sent = []; const manager = new ArticleMonitorManager(new MockStorage(), null, null, null, async (_url, payload) => { sent.push(payload.embeds[0].title); return sent.length <= 4 ? { success: false, status: 429, retry_after_ms: 70000 } : { success: true }; });
+  manager.discordSleep = async ms => { delays.push(ms); };
+  manager.saveDiscordConfig({ enabled: true, webhookUrl: 'https://discord.com/api/webhooks/1/token' });
+  manager.discordQueue.push({ webhookUrl: manager.discordConfig.webhookUrl, payload: { embeds: [{ title: 'one' }] }, attempts: 0 }, { webhookUrl: manager.discordConfig.webhookUrl, payload: { embeds: [{ title: 'two' }] }, attempts: 0 });
+  await manager.drainDiscordQueue(); assert.deepEqual(delays, [70000, 70000, 70000, 70000]); assert.equal(sent.at(-1), 'two');
+});
+
+test('Discord digest sorts shuffled PTT timestamps newest first', async () => {
+  const { createDiscordDigestPayload } = await import('../src/discord_push.js');
+  const desc = createDiscordDigestPayload([{ id: 'M.200.A.X', title: 'middle' }, { id: 'M.300.A.X', title: 'newest' }, { id: 'M.100.A.X', title: 'oldest' }]).embeds[0].description;
+  assert.ok(desc.indexOf('newest') < desc.indexOf('middle')); assert.ok(desc.indexOf('middle') < desc.indexOf('oldest'));
+});
+
+test('only a confirmed active matching cloud version suppresses local Discord', () => {
+  const manager = new ArticleMonitorManager(new MockStorage());
+  manager.saveDiscordConfig({ enabled: true, webhookUrl: 'https://discord.com/api/webhooks/1/token' });
+  const remote = { status: 'active', discordVersion: 4, discordEnabled: true, discordDeliveryIssue: false };
+  manager.saveCloudSyncConfig({ ...manager.cloudSyncConfig, enabled: true, workerUrl: 'https://example.test', discordDirty: false, remoteConfig: remote, discordConfirmedOrigin: 'https://example.test', discordConfirmedVersion: 4 });
+  assert.equal(manager.discordDeliveryMode(), 'cloud');
+  manager.saveCloudSyncConfig({ ...manager.cloudSyncConfig, remoteConfig: { ...remote, discordVersion: 5 } });
+  assert.equal(manager.discordDeliveryMode(), 'pending');
+  manager.saveCloudSyncConfig({ ...manager.cloudSyncConfig, remoteConfig: { ...remote, discordEnabled: false } });
+  assert.equal(manager.discordDeliveryMode(), 'local');
+  manager.saveCloudSyncConfig({ ...manager.cloudSyncConfig, remoteConfig: { ...remote, status: 'paused' } });
+  assert.equal(manager.discordDeliveryMode(), 'pending');
+});
+
+test('self-hosted save feedback appears in the visible cloud section', async () => {
+  const { ArticleMonitorUI } = await import('../src/article_monitor_ui.js');
+  const ui = Object.create(ArticleMonitorUI.prototype);
+  ui.pushChannelSelect = { value: 'selfhosted' };
+  ui.cloudStatusEl = { className: '', textContent: '', classList: { remove() {} } };
+  ui.tgStatusEl = { className: '', textContent: '', classList: { remove() {} } };
+  ui.onShowToast = () => {};
+  ui.showTelegramStatus('error', 'test error');
+  assert.equal(ui.cloudStatusEl.textContent, 'test error');
+  assert.equal(ui.tgStatusEl.textContent, '');
+});
+
+test('extreme Discord retry delay pauses without sending remaining jobs early', async () => {
+  let calls = 0; const manager = new ArticleMonitorManager(new MockStorage(), null, null, null, async () => { calls++; return { success: false, status: 429, retry_after_ms: 1e100 }; });
+  manager.saveDiscordConfig({ enabled: true, webhookUrl: 'https://discord.com/api/webhooks/1/token' });
+  manager.enqueueDiscordAlerts([{ title: 'first' }, { title: 'second' }]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls, 1); assert.equal(manager.discordQueue.length, 1); assert.match(manager.discordLastError, /暫停/);
+});
+
+test('Discord digest escapes markdown and rejects PTT URLs with credentials or custom ports', async () => {
+  const { createDiscordDigestPayload, formatDiscordArticlePayload } = await import('../src/discord_push.js');
+  const item = { board: 'Stock', title: 'hello *bold* [bad](https://evil.test)', link: 'https://user@www.ptt.cc:8443/bbs/Stock/M.1.html' };
+  assert.equal(formatDiscordArticlePayload(item).embeds[0].url, 'https://www.ptt.cc/bbs/Stock/index.html');
+  const text = createDiscordDigestPayload([item]).embeds[0].description;
+  assert.ok(text.includes('\\*bold\\*')); assert.ok(text.includes('\\[bad\\]\\('));
+  assert.ok(!text.includes('user@www.ptt.cc'));
+});

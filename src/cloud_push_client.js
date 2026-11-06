@@ -19,14 +19,14 @@ export class CloudPushClient {
   }
   sync(options = {}) {
     const m = this.manager;
-    const payload = { rules: m.getRules().filter(r => r.enabled), telegram: m.getTelegramConfig(), ...(options.sendTestPush ? { sendTestPush: true } : {}) };
+    const payload = { rules: m.getRules().filter(r => r.enabled), telegram: m.getTelegramConfig(), ...(m.cloudSyncConfig.discordDirty ? { discord: m.getDiscordConfig() } : {}), ...(options.sendTestPush ? { sendTestPush: true } : {}) };
     if (options.enabled !== undefined) payload.telegram.enabled = Boolean(options.enabled);
     if (options.chatId !== undefined) payload.telegram.chatId = String(options.chatId).trim();
     const action = options.lifecycleAction;
     if (options.userInitiated) m.saveCloudSyncConfig({ ...m.cloudSyncConfig, conflict: false });
     if (action) { if (m.cloudSyncConfig.pendingAction !== action) this.dirty(); m.saveCloudSyncConfig({ ...m.cloudSyncConfig, pendingAction: action === 'pause' ? 'pause' : null }); }
     return new Promise(resolve => {
-      const entry = { serviceId: m.cloudSyncConfig.serviceId, bindingVersion: m.cloudSyncConfig.bindingVersion, options, payload, action, seq: m.cloudSyncConfig.dirtySeq || 0, service: options.workerUrl || m.cloudSyncConfig.workerUrl, resolvers: [resolve] };
+      const entry = { discordBaseVersion: m.cloudSyncConfig.discordBaseVersion, serviceId: m.cloudSyncConfig.serviceId, bindingVersion: m.cloudSyncConfig.bindingVersion, options, payload, action, seq: m.cloudSyncConfig.dirtySeq || 0, service: options.workerUrl || m.cloudSyncConfig.workerUrl, resolvers: [resolve] };
       const tail = this.queue.at(-1);
       const autoMerge = options.operation === 'merge' && !options.userInitiated && tail?.options.operation === 'merge' && !tail.options.userInitiated;
       if ((autoMerge || ((m.customCloudSync || m.cloudSyncConfig.serverMode === 'selfHosted') && !options.operation && !tail?.options.operation)) && !action && !options.testOnly && !options.sendTestPush && tail && !tail.action && !tail.options.testOnly && !tail.options.sendTestPush && tail.service === entry.service) { entry.resolvers.unshift(...tail.resolvers); this.queue[this.queue.length - 1] = entry; }
@@ -42,7 +42,7 @@ export class CloudPushClient {
         const entry = this.queue.shift();
         let result;
         try { result = await this.perform(entry); }
-        catch (e) { result = { success: false, message: `無法同步：${e.message}` }; }
+        catch (e) { result = { success: false, message: e?.code === 'DISCORD_CONFLICT' ? e.message : '無法同步，請檢查網路、網址與服務設定。' }; }
         if (result?.success !== true && entry.service === this.manager.cloudSyncConfig.workerUrl) {
           const c = this.manager.cloudSyncConfig;
           const readOnly = entry.options.operation === 'read';
@@ -56,22 +56,50 @@ export class CloudPushClient {
   }
   async request(base, endpoint, method, token, payload) {
     const url = `${base}${endpoint}`;
-    if (typeof window !== 'undefined' && window.__TAURI__?.core?.invoke) return window.__TAURI__.core.invoke('cloud_push_request', { workerUrl: url, secretKey: token || '', method, payloadJson: payload ? JSON.stringify(payload) : null });
+    if (typeof window !== 'undefined' && window.__TAURI__?.core?.invoke) {
+      const data = await window.__TAURI__.core.invoke('cloud_push_request', { workerUrl: url, secretKey: token || '', method, payloadJson: payload ? JSON.stringify(payload) : null });
+      if (typeof data?.message === 'string') data.message = this.safeMessage(data.message, token, payload);
+      return data;
+    }
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 15000);
     try {
       const response = await fetch(url, { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, ...(payload ? { body: JSON.stringify(payload) } : {}), signal: controller.signal, redirect: 'error' });
       const data = response.body?.getReader
         ? JSON.parse(new TextDecoder().decode(await readBoundedBody(response, 1024 * 1024)))
         : await response.json();
+      if (typeof data?.message === 'string') data.message = this.safeMessage(data.message, token, payload);
       return { ...data, success: response.ok && data?.success === true, httpStatus: response.status };
     } catch (e) { controller.abort(); throw e; }
     finally { clearTimeout(timer); }
+  }
+  safeMessage(value, token, payload) {
+    let message = String(value);
+    const m = this.manager;
+    for (const secret of [token, payload?.telegram?.botToken, m.telegramConfig?.botToken, m.discordConfig?.webhookUrl, m.cloudSyncConfig?.syncSecret, m.cloudSyncConfig?.deviceToken]) {
+      if (typeof secret === 'string' && secret.length >= 4) message = message.split(secret).join('[已隱藏]');
+    }
+    return message.replace(/https:\/\/(?:discord(?:app)?\.com|(?:ptb|canary)\.discord\.com)\/api\/webhooks\/[^\s]+/gi, '[Webhook 已隱藏]').replace(/\b\d{5,}:[A-Za-z0-9_-]{10,}/g, '[Bot Token 已隱藏]').slice(0, 1000);
   }
   adopt(result, base, seq) {
     const m = this.manager;
     if (normalizePushServiceUrl(m.cloudSyncConfig.workerUrl || base) !== base) return;
     m.saveCloudSyncConfig({ ...m.cloudSyncConfig, workerUrl: base, configRevision: result.configRevision, lifecycleVersion: result.lifecycleVersion, serverStatus: result.status, serverMode: result.mode || 'official', leaseExpiresAt: result.leaseExpiresAt, lastSyncTime: result.updated_at || Date.now(), pendingRequest: null, pendingAction: null, dirty: (m.cloudSyncConfig.dirtySeq || 0) !== seq, lastError: '' });
     if (m.cloudStorageError) result.warning = '雲端已確認，但本機儲存失敗；請釋出儲存空間並重新保存設定';
+  }
+  discordBase(entry, remote) {
+    if (!entry.payload.discord) return null;
+    const version = remote?.discordVersion;
+    if (!Number.isSafeInteger(version)) throw Object.assign(new Error('伺服器尚未支援 Discord 安全同步，請更新服務。'), { code: 'DISCORD_CONFLICT' });
+    const base = Number.isSafeInteger(entry.discordBaseVersion) ? entry.discordBaseVersion : (version === 0 && !remote.discordEnabled && !remote.discord?.enabled ? 0 : null);
+    if (base === null) throw Object.assign(new Error('請先讀取雲端 Discord 設定，再重新儲存以確認變更。'), { code: 'DISCORD_CONFLICT' });
+    if (base !== version) { const c = this.manager.cloudSyncConfig; this.manager.saveCloudSyncConfig({ ...c, discordConflictVersion: version, mergeBlocked: '雲端 Discord 設定已被其他裝置更改；請重新讀取並儲存 Discord 設定以確認。' }); throw Object.assign(new Error('雲端 Discord 設定已被其他裝置更改；請重新讀取後確認。'), { code: 'DISCORD_CONFLICT' }); }
+    return base;
+  }
+  confirmDiscord(payload, result, base) {
+    const m = this.manager;
+    if (!payload?.discord || !Number.isSafeInteger(result?.discordVersion) || JSON.stringify(payload.discord) !== JSON.stringify(m.getDiscordConfig())) return;
+    const c = m.cloudSyncConfig;
+    m.saveCloudSyncConfig({ ...c, discordDirty: false, discordBaseVersion: result.discordVersion, discordConfirmedOrigin: base, discordConfirmedVersion: result.discordVersion });
   }
   async perform(entry) {
     const m = this.manager, c = m.cloudSyncConfig;
@@ -134,13 +162,14 @@ export class CloudPushClient {
     const action = entry.action;
     const payload = action
       ? { protocolVersion: 4, action, requestId: requestId(), lifecycleVersion: remote.config.lifecycleVersion }
-      : { protocolVersion: 4, intent: 'replaceRules', requestId: requestId(), expiresAt: remote.config.serverTime + 5 * 60000, rules: entry.payload.rules, telegram: { silent: entry.payload.telegram.silent === true } };
+      : { protocolVersion: 4, intent: 'replaceRules', requestId: requestId(), expiresAt: remote.config.serverTime + 5 * 60000, rules: entry.payload.rules, telegram: { silent: entry.payload.telegram.silent === true }, ...(entry.payload.discord ? { discord: entry.payload.discord, baseDiscordVersion: this.discordBase(entry, remote.config) } : {}) };
     const endpoint = action ? '/lifecycle' : '/sync';
     m.saveCloudSyncConfig({ ...m.cloudSyncConfig, pendingRequest: { protocolVersion: 4, origin: base, endpoint, payload, seq: entry.seq }, pendingAction: null });
     if (m.cloudStorageError && action !== 'pause') throw new Error('本機無法保存操作，尚未變更雲端');
     const result = await this.request(base, endpoint, 'POST', token, payload);
     if (!result.success) return this.failed(result);
     this.adopt(result, base, entry.seq);
+    this.confirmDiscord(payload, result, base);
     await this.readOfficial(base, token, false);
     return result;
   }
@@ -188,8 +217,18 @@ export class CloudPushClient {
         m.saveCloudSyncConfig({ ...m.cloudSyncConfig, mergeBlocked: message });
         return { success: false, mergeRequired: true, plan, message };
       }
-      if (!plan.needsWrite) return m.completeCloudMerge(plan, remote.configRevision);
-      const payload = { protocolVersion: 4, intent: 'mergeRules', baseRevision: remote.configRevision, requestId: requestId(), expiresAt: remote.serverTime + 5 * 60000, rules: plan.rules, telegram: { silent: plan.silent } };
+      if (!plan.needsWrite && !entry.payload.discord) return m.completeCloudMerge(plan, remote.configRevision);
+      const discordConfig = entry.payload.discord;
+      const payload = {
+        protocolVersion: 4,
+        intent: 'mergeRules',
+        baseRevision: remote.configRevision,
+        requestId: requestId(),
+        expiresAt: remote.serverTime + 5 * 60000,
+        rules: plan.rules,
+        telegram: { silent: plan.silent },
+        ...(discordConfig ? { discord: discordConfig, baseDiscordVersion: this.discordBase(entry, remote) } : {}),
+      };
       const mergeContext = { origin: base, serviceId: plan.serviceId, bindingVersion: plan.bindingVersion, localRules: plan.localRules.filter(r => r.enabled), localSilent: plan.localSilent, disabled: plan.disabled };
       m.saveCloudSyncConfig({ ...m.cloudSyncConfig, mergeBlocked: null, pendingRequest: { protocolVersion: 4, origin: base, endpoint: '/sync', payload, mergeContext }, dirty: true });
       if (m.cloudStorageError) throw new Error('無法保存離線同步操作，雲端尚未變更');
@@ -198,7 +237,9 @@ export class CloudPushClient {
       if (!result.success) return this.failed(result);
       if (!Number.isSafeInteger(result.configRevision)) throw new Error('伺服器未回傳有效版本，請重新讀取確認');
       const acknowledged = m.completeCloudMerge(plan, result.configRevision);
+      this.confirmDiscord(payload, result, base);
       m.adoptCloudConfig({ ...remote, configRevision: result.configRevision, rules: plan.rules, telegram: { ...remote.telegram, silent: plan.silent }, status: result.status || remote.status });
+      await this.readOfficial(base, token, false);
       this.lastReadAttemptAt = Date.now();
       if (acknowledged.dirty && !m.cloudSyncConfig.mergeBlocked) this.scheduleMerge();
       return acknowledged;
@@ -273,12 +314,17 @@ export class CloudPushClient {
       if (previous.success !== true) return this.failed(previous);
       this.adopt(previous, base, pending.seq);
       if (pending.payload.action === 'pause' && entry.action === 'pause') return previous;
-      if (JSON.stringify(pending.payload.rules) === JSON.stringify(entry.payload.rules) && JSON.stringify(pending.payload.telegram) === JSON.stringify(entry.payload.telegram) && pending.payload.action === entry.action) return previous;
+      if (JSON.stringify(pending.payload.rules) === JSON.stringify(entry.payload.rules) && JSON.stringify(pending.payload.telegram) === JSON.stringify(entry.payload.telegram) && JSON.stringify(pending.payload.discord) === JSON.stringify(entry.payload.discord) && pending.payload.action === entry.action) return previous;
     }
     if (!Number.isInteger(m.cloudSyncConfig.configRevision) || !Number.isInteger(m.cloudSyncConfig.lifecycleVersion)) {
       const remote = await this.request(base, '/sync', 'GET', token);
       if (remote.success !== true) return this.failed(remote);
       m.saveCloudSyncConfig({ ...m.cloudSyncConfig, configRevision: remote.config?.configRevision || 0, lifecycleVersion: remote.config?.lifecycleVersion || 0, credentialOrigin: base, serverStatus: remote.config?.status || 'unpaired' });
+    }
+    if (payload.discord) {
+      const latest = await this.request(base, '/sync', 'GET', token);
+      if (!latest.success) return this.failed(latest);
+      payload.baseDiscordVersion = this.discordBase(entry, latest.config);
     }
     payload.baseRevision = m.cloudSyncConfig.configRevision;
     payload.lifecycleVersion = m.cloudSyncConfig.lifecycleVersion;
@@ -290,12 +336,14 @@ export class CloudPushClient {
       const result = await this.request(base, endpoint, 'POST', token, finalPayload);
       if (result.success !== true) return this.failed(result);
       this.adopt(result, base, entry.seq);
+      this.confirmDiscord(finalPayload, result, base);
+      if (finalPayload.discord) { const latest = await this.request(base, '/sync', 'GET', token); if (latest.success) m.adoptSelfHostedConfig(latest.config, base); }
       return result;
     } catch (e) {
       // Resume/renew must never be replayed later as an offline activity signal.
       const retry = entry.action && entry.action !== 'pause' ? null : m.cloudSyncConfig.pendingRequest;
-      m.saveCloudSyncConfig({ ...m.cloudSyncConfig, pendingRequest: retry, dirty: true, lastError: e.message });
-      return { success: false, message: entry.action === 'pause' ? '本機已關閉；雲端暫停待網路恢復後同步' : `無法連線至推播伺服器：${e.message}` };
+      m.saveCloudSyncConfig({ ...m.cloudSyncConfig, pendingRequest: retry, dirty: true, lastError: '無法連線至推播伺服器' });
+      return { success: false, message: entry.action === 'pause' ? '本機已關閉；雲端暫停待網路恢復後同步' : '無法連線至推播伺服器，請檢查網路與服務設定。' };
     }
   }
   failed(result) {

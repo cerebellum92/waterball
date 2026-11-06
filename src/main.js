@@ -9,6 +9,7 @@ import { notificationManager } from './notifications.js';
 import { exportModal } from './exporter.js';
 import { BoardSwitcherWidget } from './board_switcher.js';
 import { AidJumpModal } from './aid_jump_modal.js';
+import { UpdateModal } from './update_modal.js';
 import { UpdateChecker } from './updater.js';
 import { PushHelper } from './push_helper.js';
 import { blacklistManager } from './blacklist.js';
@@ -137,6 +138,7 @@ const tabManager = new TabManager(tabBar, terminalContainer, imeInput);
 
 // 2. Auxiliary Tool Widgets
 const updateChecker = new UpdateChecker();
+const updateModal = new UpdateModal();
 const searchWidget = new SearchWidget(() => tabManager.getActiveTab());
 const paletteWidget = new PaletteWidget((data) => connectionCtrl.sendData(data), () => tabManager.getActiveTab());
 const boardSwitcherWidget = new BoardSwitcherWidget((data) => connectionCtrl.sendData(data));
@@ -238,6 +240,7 @@ const settingsUI = new SettingsUI({
   imagePreview,
   notificationManager,
   updateChecker,
+  updateModal,
   elements: {
     settingsModal: document.getElementById('settings-modal'),
     settingsBtn,
@@ -1285,6 +1288,8 @@ setTimeout(async () => {
         updateStatusMsg.innerHTML = `🎉 發現新版本 <strong>${res.latestVersion}</strong>！<br><a href="${res.releaseUrl}" target="_blank" style="color:inherit;text-decoration:underline;margin-top:4px;display:inline-block;">👉 前往 GitHub 下載安裝包 (${res.publishedAt})</a>`;
         updateStatusMsg.classList.remove('hidden');
       }
+      // 3. Show update popup modal
+      updateModal.show(res);
     }
   } catch (err) {
     console.warn('[Updater] Background check failed:', err);

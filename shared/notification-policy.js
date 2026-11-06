@@ -32,7 +32,7 @@ export function coalesceNotifications(jobs, now, ownerFor, valid) {
   for (const job of jobs) {
     if (job.kind === 'reminder' || job.sealed || job.attempts !== 0 || !valid(job)) continue;
     // Keep old work from shortening a newly arrived article's TTL by almost 30 minutes.
-    const key = `${job.userKey || 'owner'}:${job.epoch}:${Math.floor(job.createdAt / NOTIFICATION_WINDOW_MS)}`;
+    const key = `${job.userKey || 'owner'}:${job.kind === 'discord' ? 'discord' : 'telegram'}:${job.epoch}:${Math.floor(job.createdAt / NOTIFICATION_WINDOW_MS)}`;
     const group = groups.get(key) || []; group.push(job); groups.set(key, group);
   }
   const removed = new Set(), replacements = [];
@@ -50,7 +50,7 @@ export function coalesceNotifications(jobs, now, ownerFor, valid) {
       if (!group.some(j => j.digest || removed.has(j.id))) continue;
       for (const j of group) removed.add(j.id);
       for (const a of all) {
-        const id = `${group[0].userKey || 'owner'}:${group[0].epoch}:${articleKey(a)}`;
+        const id = `${group[0].userKey || 'owner'}:${group[0].epoch}:${articleKey(a)}${group[0].kind === 'discord' ? ':discord' : ''}`;
         const original = group.find(j => coversArticle(j, a)) || group[0];
         replacements.push({
           ...original,
@@ -90,4 +90,65 @@ export function digestPayload(job, chatId, silent) {
     shown.map(a => `<b>[${escapeHtml(a.board.slice(0, 32))}]</b> <a href="https://www.ptt.cc/bbs/${encodeURIComponent(a.board)}/${encodeURIComponent(a.id)}.html">${escapeHtml(a.title.slice(0, 100))}</a>`).join('\n\n') +
     (articles.length > shown.length ? `\n\n其餘 ${articles.length - shown.length} 篇已合併計入本摘要，不再逐篇補送。` : '');
   return { chat_id: chatId, text, parse_mode: 'HTML', disable_notification: Boolean(silent), disable_web_page_preview: true, link_preview_options: { is_disabled: true } };
+}
+export function discordArticlePayload(article) {
+  const board = String(article.board || '').trim();
+  const title = Array.from(String(article.title || '').trim()).slice(0, 256).join('') || '（無標題）';
+  const author = Array.from(String(article.author || '').trim()).slice(0, 1024).join('') || '未知';
+  const nrec = String(article.nrec ? (article.nrec === '爆' ? '爆' : `${article.nrec}推`) : '0推').trim();
+  const link = `https://www.ptt.cc/bbs/${encodeURIComponent(board)}/${encodeURIComponent(article.id)}.html`;
+
+  let color = 0x3498DB;
+  if (article.nrec) {
+    const nrecStr = String(article.nrec);
+    const nrecNum = parseInt(nrecStr, 10);
+    if (nrecStr.includes('爆') || nrecNum >= 100) color = 0xF1C40F;
+    else if (nrecStr.includes('X') || nrecNum < 0) color = 0xE74C3C;
+    else if (nrecNum > 0) color = 0x2ECC71;
+  }
+
+  return {
+    allowed_mentions: { parse: [] },
+    username: 'Waterball 水球',
+    avatar_url: 'https://raw.githubusercontent.com/cerebellum92/waterball/main/icons/128x128.png',
+    embeds: [
+      {
+        title,
+        url: link,
+        description: '📢 PTT 新文章推播通知',
+        color,
+        fields: [
+          { name: '📌 看板', value: board ? `[${board}](https://www.ptt.cc/bbs/${board}/index.html)` : '未知', inline: true },
+          { name: '👤 作者', value: author, inline: true },
+          { name: '🔥 推文', value: nrec, inline: true },
+        ],
+        footer: { text: 'Waterball PTT 文章監控' },
+        timestamp: new Date().toISOString(),
+      },
+    ],
+  };
+}
+
+export function discordDigestPayload(job) {
+  const articles = notificationArticles(job);
+  const shown = articles.map((a, index) => ({ a, index })).sort((x, y) => (articlePublishedAt(y.a) || y.index) - (articlePublishedAt(x.a) || x.index)).slice(0, 5).map(x => x.a);
+  const escapeMarkdown = value => String(value).replace(/[\\`*_{}\[\]()<>~|]/g, '\\$&').replace(/[\r\n]+/g, ' ');
+  const desc = `本批共有 ${articles.length} 篇符合條件；以下列出最新 ${shown.length} 篇：\n` +
+    shown.map(a => `• **[${escapeMarkdown(a.board)}]** [${escapeMarkdown(Array.from(String(a.title || '（無標題）')).slice(0, 100).join(''))}](https://www.ptt.cc/bbs/${encodeURIComponent(a.board)}/${encodeURIComponent(a.id)}.html)`).join('\n') +
+    (articles.length > shown.length ? `\n\n*其餘 ${articles.length - shown.length} 篇已合併計入本摘要。*` : '');
+
+  return {
+    allowed_mentions: { parse: [] },
+    username: 'Waterball 水球',
+    avatar_url: 'https://raw.githubusercontent.com/cerebellum92/waterball/main/icons/128x128.png',
+    embeds: [
+      {
+        title: '📚 Waterball 追蹤摘要',
+        description: desc,
+        color: 0x3498DB,
+        footer: { text: 'Waterball PTT 文章監控' },
+        timestamp: new Date().toISOString(),
+      },
+    ],
+  };
 }

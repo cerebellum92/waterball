@@ -245,3 +245,78 @@ test('self-hosted preview and failed reads cannot turn background retry into an 
     assert.equal((await manager.cloudClient.retry()).success,true);assert.deepEqual(calls,['GET','GET']);assert.equal(manager.cloudSyncConfig.needsCloudRead,false);
   } finally {globalThis.fetch=original;}
 });
+
+test('Discord-only queue retries 429 and does not require Telegram credentials', async () => {
+  const f = fixture();
+  const webhookUrl = 'https://discord.com/api/webhooks/123/fake';
+  const setup = await f.request('/sync', 'POST', { rules: [rule()], discord: { enabled: true, webhookUrl }, requestId: 'discord_setup', baseRevision: 0, lifecycleVersion: 0, action: 'resume' });
+  assert.equal(setup.status, 200);
+  await f.object().alarm(); f.advance(180000);
+  f.response(url => new Response(url.includes('discord.com') ? '{}' : page([article('M.old'), article('M.new')])));
+  await f.object().alarm();
+  let state = await f.object().read(); assert.equal(state.pending.length, 1); assert.equal(state.pending[0].kind, 'discord');
+  f.response(() => new Response('{"retry_after":10}', { status: 429, headers: { 'Retry-After': '10' } }));
+  f.advance(1000); await f.object().deliver();
+  state = await f.object().read(); assert.equal(state.pending.length, 1); assert.equal(state.pending[0].nextAttemptAt, f.now() + 10000);
+  f.restart(); f.response(() => new Response('{}')); f.advance(10000); await f.object().deliver();
+  state = await f.object().read(); assert.equal(state.pending.length, 0); assert.ok(state.discordDelivered['stock:M.new']);
+  assert.ok(f.calls.filter(c => c.url.includes('discord.com')).every(c => c.url.endsWith('?wait=true')));
+});
+
+test('Self-hosted Telegram failure does not duplicate a successful Discord job', async () => {
+  const f = fixture(); await f.setup();
+  await f.request('/sync', 'POST', { rules: [rule()], discord: { enabled: true, webhookUrl: 'https://discord.com/api/webhooks/123/fake' }, requestId: 'discord_change', baseRevision: 1 });
+  await f.object().alarm(); f.advance(180000);
+  f.response(url => new Response(page([article('M.old'), article('M.new')])));
+  await f.object().alarm();
+  f.response(url => url.includes('discord.com') ? new Response('{}') : new Response('{"ok":false,"error_code":429,"parameters":{"retry_after":10}}', { status: 429 }));
+  f.advance(1000); await f.object().deliver();
+  assert.equal(f.calls.filter(c => c.url.includes('discord.com')).length, 1);
+  f.advance(10000); await f.object().deliver();
+  assert.equal(f.calls.filter(c => c.url.includes('discord.com')).length, 1);
+});
+
+test('Self-hosted Discord 404 is reported and stops repeat sends until configuration changes', async () => {
+  const f = fixture(); await f.setup();
+  await f.request('/sync', 'POST', { rules: [rule()], discord: { enabled: true, webhookUrl: 'https://discord.com/api/webhooks/123/fake' }, requestId: 'discord_invalid', baseRevision: 1 });
+  await f.object().alarm(); f.advance(180000);
+  f.response(() => new Response(page([article('M.old'), article('M.new')]))); await f.object().alarm();
+  f.response(url => url.includes('discord.com') ? new Response('', { status: 404 }) : new Response('{"ok":true}'));
+  f.advance(1000); await f.object().deliver();
+  const state = await f.object().read(); assert.equal(state.discordBlocked, true);
+  const status = await (await f.request()).json();
+  assert.equal(status.config.discordDeliveryIssue, true);
+  assert.equal(JSON.stringify(status).includes('/api/webhooks/123/fake'), false);
+});
+
+test('self-hosted Discord rejects stale version even with current rule revision', async () => {
+  const f = fixture(); await f.setup();
+  const first = await f.request('/sync', 'POST', { rules: [rule()], baseRevision: 1, requestId: 'discord_ver_a', baseDiscordVersion: 0, discord: { enabled: true, webhookUrl: 'https://discord.com/api/webhooks/1/first' } });
+  assert.equal(first.status, 200);
+  const stale = await f.request('/sync', 'POST', { rules: [rule()], baseRevision: 2, requestId: 'discord_ver_b', baseDiscordVersion: 0, discord: { enabled: true, webhookUrl: 'https://discord.com/api/webhooks/2/second' } });
+  assert.equal(stale.status, 409); const config = await (await f.request()).json();
+  assert.equal(config.config.discordVersion, 1); assert.equal(config.config.discord.webhookUrl, '***');
+});
+
+test('UI enables a fresh self-hosted Discord-only service', async () => {
+  const { ArticleMonitorUI } = await import('../src/article_monitor_ui.js');
+  const f = fixture(), values = new Map(), listeners = {};
+  const manager = new ArticleMonitorManager({ getItem: k => values.get(k) || null, setItem: (k, v) => values.set(k, v) });
+  manager.saveDiscordConfig({ enabled: true, webhookUrl: 'https://discord.com/api/webhooks/1/test' }, { sync: false });
+  const ui = Object.create(ArticleMonitorUI.prototype);
+  ui.manager = manager;
+  ui.cloudUrlInput = { value: 'https://private.example' }; ui.cloudSecretInput = { value: secret };
+  ui.cloudAutoSyncInput = { checked: false };
+  ui.selfhostDiscordStartBtn = { disabled: false, addEventListener: (_, fn) => { listeners.start = fn; } };
+  ui.showCloudStatus = (type, msg) => { ui.status = { type, msg }; };
+  ui.initEventListeners();
+  const original = globalThis.fetch;
+  globalThis.fetch = (url, init) => worker.fetch(new Request(url, init), f.env);
+  try {
+    await listeners.start();
+    const state = await f.object().read();
+    assert.equal(ui.status.type, 'success', ui.status.msg);
+    assert.equal(state.status, 'active'); assert.equal(state.discord.enabled, true);
+    assert.equal(state.telegram.deliveryEnabled, false);
+  } finally { globalThis.fetch = original; }
+});

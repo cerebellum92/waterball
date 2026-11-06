@@ -6,6 +6,24 @@ export const cleanBearerToken = value => String(value || '').replace(/^Bearer\s+
 export function cleanBotToken(value) {
   return String(value || '').trim().replace(/^.*\/bot/, '').replace(/\/sendMessage.*$/, '').replace(/^bot(?=\d)/i, '').replace(/^\/+|\/+$/g, '');
 }
+export function isValidDiscordWebhookUrl(url) {
+  if (typeof url !== 'string') return false;
+  try {
+    const parsed = new URL(url.trim());
+    if (parsed.protocol !== 'https:') return false;
+    const host = parsed.hostname.toLowerCase();
+    const validHost = ['discord.com', 'discordapp.com', 'ptb.discord.com', 'canary.discord.com'].includes(host);
+    if (!validHost || parsed.username || parsed.password || parsed.port || parsed.hash || parsed.search) return false;
+    return /^\/api\/webhooks\/\d+\/[A-Za-z0-9_-]+$/.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+export function normalizeDiscordWebhookUrl(url) {
+  if (!isValidDiscordWebhookUrl(url)) return '';
+  const parsed = new URL(url.trim());
+  return `${parsed.origin}${parsed.pathname}`;
+}
 export function httpError(statusCode, message) { return Object.assign(new Error(message), { statusCode }); }
 export function positiveInteger(value, fallback, min = 1, max = 100000) {
   const n = value === undefined || value === '' ? fallback : Number(value);

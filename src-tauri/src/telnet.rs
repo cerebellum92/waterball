@@ -117,7 +117,7 @@ pub struct BbsConnection {
     writer: Arc<std::sync::Mutex<Box<dyn Write + Send>>>,
     alive: Arc<AtomicBool>,
     charset: Arc<RwLock<BbsCharset>>,
-    is_ssh: bool,
+    ssh_session: Option<Arc<std::sync::Mutex<ssh2::Session>>>,
     last_activity: Arc<std::sync::Mutex<std::time::Instant>>,
 }
 
@@ -324,7 +324,7 @@ impl BbsConnection {
             writer,
             alive,
             charset,
-            is_ssh: false,
+            ssh_session: None,
             last_activity: Arc::new(std::sync::Mutex::new(std::time::Instant::now())),
         })
     }
@@ -397,7 +397,7 @@ impl BbsConnection {
             writer,
             alive,
             charset,
-            is_ssh: false,
+            ssh_session: None,
             last_activity,
         })
     }
@@ -486,6 +486,7 @@ impl BbsConnection {
                     .map_err(|e| format!("啟動 Shell 失敗: {}", e))?;
 
                 // Switch SSH session to non-blocking mode for full-duplex non-blocking IO and instant user key writing
+                sess.set_keepalive(false, 2);
                 sess.set_blocking(false);
 
                 Ok((Arc::new(std::sync::Mutex::new(channel)), Arc::new(std::sync::Mutex::new(sess))))
@@ -494,7 +495,7 @@ impl BbsConnection {
             let _ = tx.send(res);
         });
 
-        let (channel, _sess) = rx.await
+        let (channel, sess) = rx.await
             .map_err(|_| "SSH 連線被取消".to_string())??;
 
         app.attempt.ensure_current()?;
@@ -527,7 +528,7 @@ impl BbsConnection {
             writer,
             alive,
             charset,
-            is_ssh: true,
+            ssh_session: Some(sess),
             last_activity,
         })
     }
@@ -1120,22 +1121,26 @@ impl BbsConnection {
         if !self.alive.load(Ordering::Relaxed) {
             return false;
         }
-        let mut last = match self.last_activity.lock() {
-            Ok(l) => l,
+        let is_idle = match self.last_activity.lock() {
+            Ok(l) => l.elapsed() >= std::time::Duration::from_secs(interval_secs),
             Err(_) => return false,
         };
 
-        if last.elapsed() >= std::time::Duration::from_secs(interval_secs) {
-            if self.is_ssh {
-                // For SSH (PTT SSH, etc.), send NUL byte
-                let _ = self.send_raw(&[0x00]);
+        if is_idle {
+            if let Some(session) = &self.ssh_session {
+                // 1. Maintain SSH transport layer & NAT router connection
+                let _ = session.lock().ok().and_then(|session| session.keepalive_send().ok());
+
+                // 2. Prevent PTT BBS application idle timeout (Anti-Idle):
+                // Send Down Arrow followed by Up Arrow (\x1bOB\x1bOA).
+                // - Feeds real input to PTT mbbsd to reset application idle timer
+                // - Will NOT trigger mailbox jump (unlike 0x00 NUL)
+                // - Down + Up cancel each other out, restoring original cursor position
+                self.send_raw(b"\x1bOB\x1bOA").is_ok()
             } else {
-                // For Telnet (MapleBBS, Golden Island, PTT Telnet, Bahamut):
-                // Send Telnet IAC NOP (0xFF, 0xF1) - RFC 854 official heartbeat
-                let _ = self.send_raw(&[0xFF, 0xF1]);
+                // Telnet IAC NOP is consumed by the Telnet protocol handler.
+                self.send_raw(&[0xFF, 0xF1]).is_ok()
             }
-            *last = std::time::Instant::now();
-            true
         } else {
             false
         }
@@ -1151,6 +1156,39 @@ impl BbsConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keepalive_sends_terminal_arrow_pair_for_ssh_and_nop_for_telnet() {
+        struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let session = ssh2::Session::new().unwrap();
+        session.set_keepalive(false, 2);
+        let mut conn = BbsConnection {
+            session: 0, attempt: None,
+            writer: Arc::new(std::sync::Mutex::new(Box::new(Capture(wire.clone())))),
+            alive: Arc::new(AtomicBool::new(true)), charset: Arc::new(RwLock::new(BbsCharset::Big5)),
+            ssh_session: Some(Arc::new(std::sync::Mutex::new(session))),
+            last_activity: Arc::new(std::sync::Mutex::new(std::time::Instant::now())),
+        };
+        // For SSH: must write Down+Up arrow keys (\x1bOB\x1bOA) to terminal to reset BBS idle timer,
+        // and must NEVER send \x00 (NUL) which triggers jumping to mailbox.
+        assert!(conn.check_and_send_keepalive(0));
+        assert_eq!(*wire.lock().unwrap(), b"\x1bOB\x1bOA".to_vec());
+        assert!(!wire.lock().unwrap().contains(&0x00));
+
+        // For Telnet: must send IAC NOP (\xFF\xF1)
+        wire.lock().unwrap().clear();
+        conn.ssh_session = None;
+        assert!(conn.check_and_send_keepalive(0));
+        assert_eq!(*wire.lock().unwrap(), vec![0xff, 0xf1]);
+    }
 
     #[test]
     fn ssh_writer_flush_does_not_flush_incoming_channel_data() {
@@ -1217,7 +1255,7 @@ mod tests {
             attempt: None,
             writer: Arc::new(std::sync::Mutex::new(Box::new(PartialFailure { wire: wire.clone(), calls: 0 }))),
             alive: Arc::new(AtomicBool::new(true)), charset: Arc::new(RwLock::new(BbsCharset::Big5)),
-            is_ssh: true, last_activity: Arc::new(std::sync::Mutex::new(std::time::Instant::now())),
+            ssh_session: None, last_activity: Arc::new(std::sync::Mutex::new(std::time::Instant::now())),
         };
         assert!(conn.send_raw(&[0xa4, 0x40]).is_err());
         assert!(!conn.alive.load(Ordering::Relaxed));

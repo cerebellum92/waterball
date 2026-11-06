@@ -90,22 +90,46 @@ export function formatTelegramArticleMessage(item) {
   ].join('\n');
 }
 
+import {
+  isValidDiscordWebhookUrl,
+  normalizeDiscordWebhookUrl,
+  formatDiscordArticlePayload,
+  createDiscordTestPayload,
+  createDiscordDigestPayload,
+} from './discord_push.js';
+
+export {
+  isValidDiscordWebhookUrl,
+  normalizeDiscordWebhookUrl,
+  formatDiscordArticlePayload,
+  createDiscordTestPayload,
+  createDiscordDigestPayload,
+};
+
 export class ArticleMonitorManager {
   constructor(
     storage = (typeof localStorage !== 'undefined' ? localStorage : null),
     fetchFn = null,
     telegramSendFn = null,
-    cloudSyncFn = null
+    cloudSyncFn = null,
+    discordSendFn = null
   ) {
     this.storage = storage;
     this.customFetch = fetchFn;
     this.customTelegramSend = telegramSendFn;
     this.customCloudSync = cloudSyncFn;
+    this.customDiscordSend = discordSendFn;
     this.rules = this.loadRules();
     this.history = this.loadHistory();
     this.seenIds = this.loadSeenIds();
     this.localNotifEnabled = this.loadLocalNotifConfig();
     this.telegramConfig = this.loadTelegramConfig();
+    this.discordConfig = this.loadDiscordConfig();
+    this.discordQueue = [];
+    this.discordSending = false;
+    this.discordLastError = '';
+    this.discordBlockedUrl = '';
+    this.discordSleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     this.cloudSyncConfig = this.loadCloudSyncConfig();
     this.cloudClient = new CloudPushClient(this);
     this.initializedBoards = new Set();
@@ -264,7 +288,7 @@ export class ArticleMonitorManager {
         };
       }
     } catch (e) {
-      console.warn('Failed to load Telegram config:', e);
+      console.warn('Failed to load Telegram config');
     }
     return { enabled: false, botToken: '', chatId: '', silent: false };
   }
@@ -280,7 +304,7 @@ export class ArticleMonitorManager {
       try {
         this.storage.setItem('bbsterm_monitor_telegram', JSON.stringify(this.telegramConfig));
       } catch (e) {
-        console.warn('Failed to save Telegram config:', e);
+        console.warn('Failed to save Telegram config');
       }
     }
     if (markDirty) this.cloudClient.dirty();
@@ -293,6 +317,242 @@ export class ArticleMonitorManager {
 
   getTelegramConfig() {
     return { ...this.telegramConfig };
+  }
+
+  loadDiscordConfig() {
+    if (!this.storage) {
+      return { enabled: false, webhookUrl: '' };
+    }
+    try {
+      const raw = this.storage.getItem('bbsterm_monitor_discord');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return {
+          enabled: Boolean(parsed.enabled),
+          webhookUrl: String(parsed.webhookUrl || '').trim(),
+        };
+      }
+    } catch (e) {
+      console.warn('Failed to load Discord config');
+    }
+    return { enabled: false, webhookUrl: '' };
+  }
+
+  saveDiscordConfig(config, { sync = true, markDirty = true } = {}) {
+    const next = { enabled: Boolean(config.enabled), webhookUrl: normalizeDiscordWebhookUrl(config.webhookUrl) };
+    try {
+      if (!this.storage) return false;
+      this.storage.setItem('bbsterm_monitor_discord', JSON.stringify(next));
+    } catch { console.warn('Failed to save Discord config'); return false; }
+    this.discordConfig = next;
+    this.discordLastError = '';
+    this.discordBlockedUrl = '';
+    if (markDirty && this.cloudSyncConfig) {
+      const c = this.cloudSyncConfig;
+      const resolvedConflict = Number.isSafeInteger(c.discordConflictVersion) && c.remoteConfig?.discordVersion === c.discordConflictVersion;
+      const base = c.discordDirty && !resolvedConflict ? c.discordBaseVersion : c.remoteConfig?.discordVersion;
+      this.saveCloudSyncConfig({ ...c, ...(resolvedConflict ? { mergeBlocked: null } : {}), discordDirty: true, discordConflictVersion: null, discordBaseVersion: Number.isSafeInteger(base) ? base : null });
+      this.cloudClient.dirty();
+    }
+    this.notify();
+    if (sync && this.cloudSyncConfig?.enabled && this.cloudSyncConfig?.autoSync && this.cloudSyncConfig?.workerUrl && (this.customCloudSync || this.cloudSyncConfig.serverMode === 'selfHosted')) this.syncToCloud().catch(() => {});
+    if (markDirty && sync) this.cloudClient.scheduleMerge();
+    return true;
+  }
+
+  discordDeliveryMode() {
+    const c = this.cloudSyncConfig;
+    if (!c?.enabled || !c.workerUrl) return 'local';
+    const remote = c.remoteConfig;
+    if (!remote || !Number.isSafeInteger(remote.discordVersion) || c.discordDirty || c.requiresPairing || c.restorePending || c.pendingRequest || c.lastError) return 'pending';
+    let origin; try { origin = normalizePushServiceUrl(c.workerUrl); } catch { return 'pending'; }
+    if (remote.status !== 'active' || remote.discordDeliveryIssue || c.discordConfirmedOrigin !== origin || c.discordConfirmedVersion !== remote.discordVersion) return 'pending';
+    return remote.discordEnabled ? 'cloud' : 'local';
+  }
+
+  getDiscordConfig() {
+    return { ...this.discordConfig };
+  }
+
+  async sendDiscordRawMessage(webhookUrl, payload) {
+    const cleanUrl = normalizeDiscordWebhookUrl(webhookUrl);
+    if (!cleanUrl) {
+      return {
+        success: false,
+        message: '無效的 Discord Webhook 網址，格式應為 https://discord.com/api/webhooks/...',
+      };
+    }
+    if (this.customDiscordSend) {
+      return this.customDiscordSend(cleanUrl, payload);
+    }
+    if (typeof window !== 'undefined' && window.__TAURI__?.core?.invoke) {
+      try {
+        return await window.__TAURI__.core.invoke('send_discord_webhook', {
+          webhookUrl: cleanUrl,
+          payloadJson: JSON.stringify(payload),
+        });
+      } catch (e) {
+        return { success: false, message: 'Discord 網路連線失敗，訊息是否送達未知' };
+      }
+    }
+    const fetchImpl = this.customFetch || (typeof fetch !== 'undefined' ? fetch : null);
+    if (fetchImpl) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 10000);
+        let resp;
+        try {
+          resp = await fetchImpl(`${cleanUrl}?wait=true`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+            redirect: 'error',
+          });
+        } finally {
+          clearTimeout(timer);
+        }
+        if (resp.status === 200) {
+          return { success: true, message: '訊息發送成功！' };
+        }
+        if (resp.status === 429) {
+          const rawRetry = resp.headers?.get?.('Retry-After');
+          const seconds = rawRetry == null ? NaN : Number(rawRetry);
+          return {
+            success: false,
+            status: 429,
+            retry_after_ms: Number.isFinite(seconds) && seconds >= 0 ? Math.ceil(seconds * 1000) : null,
+            message: 'Discord 頻率限制。',
+          };
+        }
+        if (resp.status === 404 || resp.status === 401) {
+          return { success: false, status: resp.status, message: 'Discord Webhook 網址無效或已被刪除。' };
+        }
+        return { success: false, message: `Discord 回應錯誤 (HTTP ${resp.status})` };
+      } catch (e) {
+        const isBrowserOnly = typeof window !== 'undefined' && !window.__TAURI__ && !window.__TAURI_INTERNALS__;
+        if (isBrowserOnly) {
+          return {
+            success: false,
+            message: '瀏覽器環境受限於安全政策，不支援本機直接發送 Discord Webhook；請使用桌面版，或將 Webhook 設定同步至 24H 雲端推播伺服器。',
+          };
+        }
+        return { success: false, message: 'Discord 網路連線失敗，訊息是否送達未知' };
+      }
+    }
+    return { success: false, message: 'No HTTP client available' };
+  }
+
+  enqueueDiscordAlerts(items) {
+    if (!this.discordConfig.enabled || !this.discordConfig.webhookUrl || !items.length || this.discordBlockedUrl === this.discordConfig.webhookUrl) return;
+    if (this.discordDeliveryMode() === 'cloud') return;
+
+    const webhookUrl = this.discordConfig.webhookUrl;
+    const payloads = items.length < 4
+      ? items.map(formatDiscordArticlePayload)
+      : [createDiscordDigestPayload(items)];
+
+    for (const payload of payloads) {
+      if (this.discordQueue.length >= 100) {
+        this.discordLastError = 'Discord 佇列已滿，部分通知未送出。';
+        break;
+      }
+      this.discordQueue.push({ webhookUrl, payload, attempts: 0 });
+    }
+    if (this.discordDeliveryMode() === 'pending') { this.discordLastError = '雲端 Discord 接管尚未確認；通知暫留本次執行期間，請檢查同步狀態。'; this.notify(); }
+    this.drainDiscordQueue();
+  }
+
+  async drainDiscordQueue() {
+    if (this.discordSending) return;
+    this.discordSending = true;
+    try {
+      while (this.discordQueue.length) {
+        const mode = this.discordDeliveryMode();
+        if (mode === 'pending') break;
+        if (mode === 'cloud') { this.discordQueue = []; this.discordLastError = '雲端已接管；接管期間的通知請至雲端頻道確認。'; this.notify(); break; }
+        const job = this.discordQueue[0];
+        if (this.discordBlockedUrl === job.webhookUrl) break;
+        if (!this.discordConfig.enabled || this.discordConfig.webhookUrl !== job.webhookUrl) {
+          this.discordQueue.shift();
+          continue;
+        }
+        let result;
+        try {
+          result = await this.sendDiscordRawMessage(job.webhookUrl, job.payload);
+        } catch {
+          result = { success: false, message: 'Discord 發送失敗，訊息是否送達未知' };
+        }
+
+        if (this.discordQueue[0] !== job) continue;
+        if (!this.discordConfig.enabled || this.discordConfig.webhookUrl !== job.webhookUrl) { this.discordQueue.shift(); continue; }
+
+        // Handle 429 Rate Limit
+        if (result?.status === 429) {
+          const retryMs = Number.isFinite(result.retry_after_ms) ? result.retry_after_ms : null;
+          if (retryMs !== null && retryMs <= 3600000 && job.attempts++ < 3) {
+            this.discordLastError = 'Discord 頻率限制，將稍後重試。';
+            this.notify();
+            const delay = Math.max(1000, retryMs);
+            await this.discordSleep(delay);
+            continue;
+          }
+          // Never shorten a server-specified cooldown or schedule an unbounded timer.
+          if (retryMs !== null && retryMs > 86400000) {
+            this.discordQueue.shift(); this.discordBlockedUrl = job.webhookUrl;
+            this.discordLastError = 'Discord 限制時間過長，推播已暫停；請稍後檢查設定。'; this.notify(); break;
+          }
+          // Exhausted retries or missing retry header: discard only this job, do not wipe the entire queue
+          this.discordQueue.shift();
+          this.discordLastError = 'Discord 頻率限制，已略過重試失敗的訊息。';
+          this.notify();
+          const cooldown = retryMs !== null && retryMs >= 0 ? retryMs : 60000;
+          for (let left = Math.max(1000, cooldown); left > 0;) { const part = Math.min(left, 3600000); await this.discordSleep(part); left -= part; }
+          continue;
+        }
+
+        this.discordQueue.shift();
+        if (result?.success && this.discordLastError.includes('頻率限制')) {
+          this.discordLastError = '';
+          this.notify();
+        }
+        if (!result?.success) {
+          this.discordLastError = result?.status === 401 || result?.status === 404
+            ? 'Discord Webhook 已失效，請更新設定。'
+            : 'Discord 通知未確認送達，請檢查連線或設定。';
+          // Only fatal credential errors (401/404) block URL and purge queue
+          if (result?.status === 401 || result?.status === 404) {
+            this.discordBlockedUrl = job.webhookUrl;
+            this.discordQueue = this.discordQueue.filter(queued => queued.webhookUrl !== job.webhookUrl);
+          }
+          this.notify();
+        }
+      }
+    } finally {
+      this.discordSending = false;
+    }
+  }
+
+  async sendDiscordAlert(alertItem) {
+    if (!this.discordConfig?.enabled) return null;
+    if (this.discordDeliveryMode() !== 'local') return null;
+    const { webhookUrl } = this.discordConfig;
+    if (!webhookUrl) return null;
+
+    const payload = formatDiscordArticlePayload(alertItem);
+    return this.sendDiscordRawMessage(webhookUrl, payload);
+  }
+
+  async testDiscord(webhookUrl) {
+    const cleanUrl = normalizeDiscordWebhookUrl(webhookUrl);
+    if (!cleanUrl) {
+      return {
+        success: false,
+        message: '請填寫正確的 Discord Webhook 網址（例如：https://discord.com/api/webhooks/...）',
+      };
+    }
+    const payload = createDiscordTestPayload();
+    return this.sendDiscordRawMessage(cleanUrl, payload);
   }
 
   async sendTelegramRawMessage(botToken, chatId, text, silent = false, buttonUrl = null, buttonText = null) {
@@ -310,8 +570,7 @@ export class ArticleMonitorManager {
           buttonText: buttonText || null,
         });
       } catch (e) {
-        console.warn('[ArticleMonitor] Telegram send failed via Tauri:', e);
-        return { success: false, message: String(e) };
+        return { success: false, message: 'Telegram 發送失敗，請檢查網路連線。' };
       }
     }
     return { success: false, message: 'Tauri runtime not available' };
@@ -408,7 +667,7 @@ export class ArticleMonitorManager {
         };
       }
     } catch (e) {
-      console.warn('Failed to load Cloudflare sync config:', e);
+      console.warn('Failed to load Cloudflare sync config');
     }
     return { enabled: false, workerUrl: '', syncSecret: '', deviceToken: '', autoSync: true, botUsername: 'WaterballAlertBot', lastSyncTime: null };
   }
@@ -421,7 +680,7 @@ export class ArticleMonitorManager {
           this.retiredCredentials ||= new Map();
           for (const token of [old.deviceToken, old.syncSecret]) if (token && !this.retiredCredentials.has(token)) this.retiredCredentials.set(token, normalizePushServiceUrl(old.workerUrl));
           while (this.retiredCredentials.size > 10) this.retiredCredentials.delete(this.retiredCredentials.keys().next().value);
-          config = { ...config, deviceToken: '', credentialOrigin: '', pairedCode: '', configRevision: null, lifecycleVersion: null, pendingRequest: null, pendingAction: null, serviceId: null, bindingVersion: null, remoteConfig: null, serverMode: null, serverStatus: null, conflict: false, requiresPairing: false, restorePending: false, needsCloudRead: false, lastCloudReadAt: null, autoMerge: false, mergeBlocked: null,
+          config = { ...config, discordDirty: false, deviceToken: '', credentialOrigin: '', pairedCode: '', configRevision: null, lifecycleVersion: null, pendingRequest: null, pendingAction: null, serviceId: null, bindingVersion: null, remoteConfig: null, serverMode: null, serverStatus: null, conflict: false, requiresPairing: false, restorePending: false, needsCloudRead: false, lastCloudReadAt: null, autoMerge: false, mergeBlocked: null,
             syncSecret: config.syncSecret === old.syncSecret ? '' : config.syncSecret || '' };
         }
       } catch { config = { ...config, deviceToken: '', syncSecret: '', credentialOrigin: '' }; }
@@ -447,11 +706,12 @@ export class ArticleMonitorManager {
         this.storage.setItem('bbsterm_monitor_cloud_sync', JSON.stringify(this.cloudSyncConfig));
         this.cloudStorageError = '';
       } catch (e) {
-        this.cloudStorageError = e.message || '本機儲存失敗';
-        console.warn('Failed to save Cloudflare sync config:', e);
+        this.cloudStorageError = '本機儲存失敗';
+        console.warn('Failed to save Cloudflare sync config');
       }
     }
     this.notify();
+    if (this.discordQueue?.length && !this.discordSending) queueMicrotask(() => this.drainDiscordQueue());
   }
 
   getCloudSyncConfig() {
@@ -621,7 +881,7 @@ export class ArticleMonitorManager {
       const response = await this.cloudClient.request(base, '/sync', 'GET', token);
       if (response.success === true && Object.hasOwn(response, 'config')) return { success: true, message: '連線與身份驗證成功' };
       return { success: false, message: response.message || `連線失敗 (HTTP ${response.httpStatus})` };
-    } catch (e) { return { success: false, message: `連線失敗：${e.message}` }; }
+    } catch { return { success: false, message: '連線失敗，請檢查網路與服務設定。' }; }
   }
 
   addListener(fn) {
@@ -636,7 +896,7 @@ export class ArticleMonitorManager {
       try {
         listener(this);
       } catch (e) {
-        console.error('Error in monitor listener:', e);
+        console.error('Error in monitor listener');
       }
     }
   }
@@ -954,12 +1214,14 @@ export class ArticleMonitorManager {
 
           // Forward to Telegram if enabled (when personal botToken is provided locally)
           this.sendTelegramAlert(alertItem).catch((e) => {
-            console.warn('[ArticleMonitor] Telegram forward error:', e);
+            console.warn('[ArticleMonitor] Telegram forward error');
           });
+
         }
       }
     }
 
+    this.enqueueDiscordAlerts(newAlerts);
     this.initializedBoards.add(cleanBoard.toLowerCase());
     this.saveSeenIds();
     return newAlerts;

@@ -490,8 +490,8 @@
             <div class="about-hero">
               <div class="about-logo">💧</div>
               <div class="about-title">Waterball (水球)</div>
-              <div class="about-ver">版本 v0.1.9 &bull; 開源授權 GPL-3.0</div>
-              <div class="about-desc">
+              <div class="about-ver" id="about-app-ver">版本 v0.1.10 &bull; 開源授權 GPL-3.0</div>
+              <div class="about-desc" id="about-app-desc">
                 新世代跨平台 BBS 終端連線客戶端 (macOS / Windows / Linux / Chromebook)
                 <br>
                 <span style="color: var(--accent); font-weight: 600; margin-top: 4px; display: inline-block;">
@@ -500,7 +500,7 @@
               </div>
               <div class="about-actions">
                 <button id="btn-check-update" class="btn-primary" style="height: 28px; padding: 0 12px; font-size: 12px;">🔍 檢查新版本</button>
-                <a href="https://github.com/cerebellum92/waterball" target="_blank" class="about-link-btn" title="前往 GitHub 專案首頁">🌟 GitHub 開源專案</a>
+                <a href="https://github.com/cerebellum92/waterball" target="_blank" class="about-link-btn" id="about-repo-link" title="前往 GitHub 專案首頁">🌟 GitHub 開源專案</a>
                 <a href="https://github.com/cerebellum92/waterball/issues" target="_blank" class="about-link-btn" title="回報 Bug 或提供新功能建議">🐛 回報問題 / 建議</a>
               </div>
               <div id="update-status-msg" class="update-status-msg hidden"></div>
@@ -1135,6 +1135,44 @@
               <tr><td>熱鍵一覽表</td><td><kbd>F1</kbd></td><td>隨時開關本快捷鍵說明</td></tr>
             </table>
           </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Update Notification Modal -->
+  <div id="update-modal" class="modal-backdrop hidden" style="z-index: 1060;">
+    <div class="modal-dialog update-dialog">
+      <div class="modal-header">
+        <h2 style="display: flex; align-items: center; gap: 8px; margin: 0; font-size: 16px;">
+          <span>🎉</span> 發現新版本！
+        </h2>
+        <button id="update-modal-close-btn" class="modal-close close-btn" title="關閉 (ESC)">&times;</button>
+      </div>
+      <div class="modal-body update-modal-body" style="padding: 18px 20px; display: flex; flex-direction: column; gap: 12px;">
+        <div class="update-version-card">
+          <div>
+            <div class="update-ver-label">目前版本</div>
+            <div id="update-modal-current-ver" class="update-ver-tag current">v0.1.10</div>
+          </div>
+          <div style="font-size: 18px; color: var(--text-muted, #8e8e93);">➔</div>
+          <div>
+            <div class="update-ver-label">最新版本</div>
+            <div id="update-modal-latest-ver" class="update-ver-tag latest">v0.2.0</div>
+          </div>
+        </div>
+        <div id="update-modal-date" style="font-size: 12px; color: var(--text-muted, #8e8e93);"></div>
+        <div style="font-size: 13px; font-weight: 600; color: var(--text-primary); margin-top: 2px;">✨ 本次更新修正與新功能：</div>
+        <div id="update-modal-notes" class="update-notes-box"></div>
+      </div>
+      <div class="modal-footer update-modal-footer" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; border-top: 1px solid var(--border-color);">
+        <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted, #8e8e93); cursor: pointer; user-select: none;">
+          <input type="checkbox" id="update-modal-skip-cb" style="cursor: pointer;">
+          略過此版本
+        </label>
+        <div style="display: flex; gap: 10px;">
+          <button type="button" id="update-modal-dismiss-btn" class="btn-secondary" style="padding: 6px 14px; font-size: 13px;">稍後再說</button>
+          <button type="button" id="update-modal-download-btn" class="btn-primary" style="padding: 6px 16px; font-size: 13px; font-weight: 600;">立即前往下載 ↗</button>
         </div>
       </div>
     </div>
