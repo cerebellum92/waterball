@@ -707,6 +707,7 @@ export class ArticleReaderModal {
     this.currentFilter = 'all';
     this._renderedBodyKey = null;
     this._renderedPushCount = -1;
+    this.isCrawling = false;
 
     const searchInput = document.getElementById('push-search-input');
     if (searchInput) searchInput.value = '';
@@ -763,6 +764,7 @@ export class ArticleReaderModal {
     const isArticle = this.isArticleScreen(screenLines);
 
     if (isArticle && tab.isConnected) {
+      this.isCrawling = true;
       // Check if current screen already contains article header (fast preview)
       const hasImmediateHeader = screenLines.slice(0, 5).some((l) =>
         /^\s*(?:作者(?:\s*[:：]\s*|\s+)|標題(?:\s*[:：]\s*|\s+)|看板(?:\s*[:：]\s*|\s+))/.test(l) || boardFromHeaderLine(l) !== null
@@ -789,9 +791,12 @@ export class ArticleReaderModal {
           });
         });
       } catch (error) {
+        this.isCrawling = false;
         this.onShowToast?.(`文章讀取已停止：${error.message || error}`);
         this.renderArticle(ArticleParser.parseLines(this.getScreenLines(tab.buf)));
         return;
+      } finally {
+        this.isCrawling = false;
       }
 
       if (this.isOpen === false) return;
@@ -1440,12 +1445,18 @@ export class ArticleReaderModal {
     return html + this.escapeHtml(str.slice(end));
   }
 
+  getArticleIdentity(article) {
+    if (!article) return '';
+    return article.webUrl || (article.board && article.aid ? `${article.board}:${article.aid}` : '') || (article.board && article.articleId ? `${article.board}:${article.articleId}` : '') || `${article.board || ''}:${article.title || ''}:${article.author || ''}`;
+  }
+
   toggleSummary() {
     const card = document.getElementById('reader-ai-summary-card');
     if (!card) return;
     if (card.classList.contains('hidden')) {
       card.classList.remove('hidden');
-      if (this.summaryLoadedFor !== this.currentArticle) {
+      const currentId = this.getArticleIdentity(this.currentArticle);
+      if (!this.summaryLoadedFor || this.summaryLoadedFor !== currentId) {
         this.loadSummary(false);
       }
     } else {
@@ -1460,7 +1471,7 @@ export class ArticleReaderModal {
 
   async loadSummary(forceRefresh = false) {
     if (!this.currentArticle) return;
-    const requestedArticle = this.currentArticle;
+    const requestedIdentity = this.getArticleIdentity(this.currentArticle);
     const requestToken = this.summaryRequestToken = Symbol('summary');
     const card = document.getElementById('reader-ai-summary-card');
     const body = document.getElementById('summary-card-body');
@@ -1483,8 +1494,21 @@ export class ArticleReaderModal {
     }
 
     try {
-      const res = await fetchArticleSummary(requestedArticle, { forceRefresh });
-      if (this.currentArticle !== requestedArticle || this.summaryRequestToken !== requestToken) return;
+      // If webUrl is not yet known because we are streaming early pages, wait up to 3s for crawler to encounter the footer
+      let targetArticle = this.currentArticle;
+      if (!targetArticle.webUrl && !targetArticle.aid && this.isCrawling) {
+        for (let check = 0; check < 15; check++) {
+          await new Promise((r) => setTimeout(r, 200));
+          if (!this.isOpen || this.summaryRequestToken !== requestToken) return;
+          if (this.currentArticle && this.getArticleIdentity(this.currentArticle) !== requestedIdentity) return;
+          targetArticle = this.currentArticle || targetArticle;
+          if (targetArticle.webUrl || targetArticle.aid || !this.isCrawling) break;
+        }
+      }
+
+      const res = await fetchArticleSummary(targetArticle, { forceRefresh });
+      if (!this.isOpen || this.summaryRequestToken !== requestToken) return;
+      if (this.currentArticle && this.getArticleIdentity(this.currentArticle) !== requestedIdentity) return;
       if (summaryBtn) summaryBtn.classList.remove('loading');
       if (refreshBtn) refreshBtn.disabled = false;
 
@@ -1502,7 +1526,7 @@ export class ArticleReaderModal {
         return;
       }
 
-      this.summaryLoadedFor = requestedArticle;
+      this.summaryLoadedFor = requestedIdentity;
       const { quickSummary, keyPoints, sentiment, sarcasmAnalysis, pushCount, sampledCount, truncated } = res.data;
 
       if (badge) {
@@ -1557,7 +1581,8 @@ export class ArticleReaderModal {
         });
       }
     } catch (error) {
-      if (this.currentArticle !== requestedArticle || this.summaryRequestToken !== requestToken) return;
+      if (!this.isOpen || this.summaryRequestToken !== requestToken) return;
+      if (this.currentArticle && this.getArticleIdentity(this.currentArticle) !== requestedIdentity) return;
       if (summaryBtn) summaryBtn.classList.remove('loading');
       if (refreshBtn) refreshBtn.disabled = false;
       if (body) {
