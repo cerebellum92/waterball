@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export function checkPublicDesktop(root) {
-  for (const name of ['extension', 'src/extension', 'dist-extension', 'vite.extension.config.js', 'scripts/build-extension.mjs', 'src/websocket_transport.js', 'src/uao_encoder.js', 'server', 'cloudflare/worker.js', 'scripts/verify-worker-runtime.mjs']) {
+  for (const name of ['extension', 'src/extension', 'dist-extension', 'vite.extension.config.js', 'scripts/build-extension.mjs', 'src/websocket_transport.js', 'src/uao_encoder.js', 'server', 'cloudflare/worker.js', 'scripts/verify-worker-runtime.mjs', 'test']) {
     if (fs.existsSync(path.join(root, name))) throw new Error(`Desktop-only public checkout contains excluded path: ${name}`);
   }
   if (fs.readdirSync(root).some(name => /^waterball-extension.*\.zip$/.test(name))) throw new Error('Chrome ZIP in public checkout');
@@ -23,7 +23,7 @@ export function checkPublicDesktop(root) {
       }
     }
   };
-  for (const name of ['src', 'test', 'dist']) walk(path.join(root, name));
+  for (const name of ['src', 'dist']) walk(path.join(root, name));
   return count;
 }
 
