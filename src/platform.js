@@ -65,6 +65,18 @@ export async function openExternalUrl(url) {
   }
 }
 
+export async function setAlwaysOnTop(enabled) {
+  if (isTauri()) {
+    try {
+      return await safeInvoke('set_always_on_top', { alwaysOnTop: Boolean(enabled) });
+    } catch (e) {
+      console.warn('Failed to set always on top:', e);
+      return false;
+    }
+  }
+  return false;
+}
+
 export async function requestNotificationPermission() {
   if (isTauri()) {
     try {

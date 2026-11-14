@@ -93,6 +93,7 @@ fn save_current_window_state(_window: &Window) {
 pub struct AntiIdleSettings {
     pub enabled: bool,
     pub interval_secs: u64,
+    pub keys_suppressed: bool,
 }
 
 pub struct AppState {
@@ -144,6 +145,8 @@ async fn connect(
     let current = attempt.is_current(attempts.get(&tab_id));
     match result {
         Ok(conn) if current => {
+            let is_suppressed = state.anti_idle.lock().map(|s| s.keys_suppressed).unwrap_or(false);
+            conn.set_keys_suppressed(is_suppressed);
             state.connections.lock().map_err(|e| e.to_string())?.insert(tab_id, conn);
             Ok("connected".into())
         }
@@ -268,6 +271,36 @@ async fn set_anti_idle(
 }
 
 #[tauri::command]
+async fn set_anti_idle_suppressed(
+    state: State<'_, AppState>,
+    suppressed: bool,
+    tab_id: Option<String>,
+) -> Result<(), String> {
+    {
+        let mut config = state.anti_idle.lock().map_err(|e| e.to_string())?;
+        config.keys_suppressed = suppressed;
+    }
+    let map = state.connections.lock().map_err(|e| e.to_string())?;
+    if let Some(id) = tab_id {
+        if let Some(conn) = map.get(&id) {
+            conn.set_keys_suppressed(suppressed);
+            if !suppressed {
+                conn.record_activity();
+            }
+        }
+    } else {
+        for conn in map.values() {
+            conn.set_keys_suppressed(suppressed);
+            if !suppressed {
+                conn.record_activity();
+            }
+        }
+    }
+    println!("[Rust Anti-Idle] Keys suppression updated: suppressed={}", suppressed);
+    Ok(())
+}
+
+#[tauri::command]
 async fn disconnect(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -335,6 +368,16 @@ async fn set_remember_window_state(
         WindowState::clear(&app);
     }
     Ok(())
+}
+
+#[tauri::command]
+async fn set_always_on_top(app: AppHandle, always_on_top: bool) -> Result<bool, String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.set_always_on_top(always_on_top).map_err(|e| e.to_string())?;
+        Ok(always_on_top)
+    } else {
+        Err("找不到主視窗".to_string())
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -992,6 +1035,7 @@ pub fn run() {
     let anti_idle = Arc::new(Mutex::new(AntiIdleSettings {
         enabled: true,
         interval_secs: 45, // default 45 seconds heartbeat
+        keys_suppressed: false,
     }));
     let remember_window_state = Arc::new(Mutex::new(true));
 
@@ -1002,9 +1046,9 @@ pub fn run() {
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(std::time::Duration::from_secs(10));
-            let (enabled, interval) = {
+            let (enabled, interval, global_suppressed) = {
                 let s = anti_idle_bg.lock().unwrap();
-                (s.enabled, s.interval_secs)
+                (s.enabled, s.interval_secs, s.keys_suppressed)
             };
             if !enabled {
                 continue;
@@ -1014,7 +1058,7 @@ pub fn run() {
                 Err(_) => continue,
             };
             for (tab_id, conn) in map.iter() {
-                if conn.check_and_send_keepalive(interval) {
+                if conn.check_and_send_keepalive(interval, global_suppressed) {
                     println!("[Rust Anti-Idle] Heartbeat sent to Tab {} (24/7 background protected)", tab_id);
                 }
             }
@@ -1076,11 +1120,13 @@ pub fn run() {
             set_raw_terminal_capture,
             record_activity,
             set_anti_idle,
+            set_anti_idle_suppressed,
             disconnect,
             open_browser_url,
             save_window_state,
             get_saved_window_state,
             set_remember_window_state,
+            set_always_on_top,
             fetch_ptt_board_articles,
             send_telegram_message,
             send_discord_webhook,

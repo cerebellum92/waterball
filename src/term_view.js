@@ -67,6 +67,7 @@ export class TermView {
     this.mouseDownPos = null;
     this.mouseDownPixel = null;
     this.hoverUrl = null;
+    this.hoverWord = null;
     this.hoverAction = null;
     this.mouseBrowsingEnabled = true;
 
@@ -81,6 +82,7 @@ export class TermView {
       this.revealedBlacklistRows?.clear();
       this.hoverUrl = null;
       this.hoverAid = null;
+      this.hoverWord = null;
       this.hoverAction = null;
       this.onUrlLeave?.();
       this.onAidLeave?.();
@@ -133,6 +135,13 @@ export class TermView {
     }, 500);
   }
 
+  clearWordHover() {
+    if (this.hoverWord) {
+      this.hoverWord = null;
+      this.onWordLeave?.();
+    }
+  }
+
   initMouseEvents() {
     this.canvas.addEventListener('mousedown', (e) => {
       if (e.button === 0) { // Left click
@@ -162,9 +171,11 @@ export class TermView {
         this.onSelectionChange?.(this.selection);
         this.redraw();
       } else {
-        // Check URL hover when not selecting
+        // Check URL hover when not selecting (skip if an overlay modal/panel covers the terminal)
         const rect = this.canvas.getBoundingClientRect();
+        const pointerOnTerminal = !(typeof Node !== 'undefined' && e.target instanceof Node && !this.wrapper.contains(e.target));
         if (
+          pointerOnTerminal &&
           e.clientX >= rect.left &&
           e.clientX <= rect.right &&
           e.clientY >= rect.top &&
@@ -177,7 +188,7 @@ export class TermView {
             this.hoverUrl = null;
             this.hoverAction = null;
             this.onUrlLeave?.();
-            this.onWordLeave?.();
+            this.clearWordHover();
             return;
           }
           this.canvas.title = '';
@@ -196,7 +207,7 @@ export class TermView {
               this.hoverAid = null;
               this.onAidLeave?.();
             }
-            this.onWordLeave?.();
+            this.clearWordHover();
             this.onUrlHover?.(url.url, e.clientX, e.clientY);
           } else {
             const aid = this.getAccessibleAidAt(pos.col, pos.row);
@@ -214,7 +225,7 @@ export class TermView {
               if (!this.hoverAid || this.hoverAid.aid !== aid.aid || this.hoverAid.row !== aid.row) {
                 this.hoverAid = aid;
               }
-              this.onWordLeave?.();
+              this.clearWordHover();
               this.onAidHover?.(aid, e.clientX, e.clientY);
             } else {
               if (this.hoverAid) {
@@ -234,14 +245,19 @@ export class TermView {
               }
               const word = this.getWordAt(pos.col, pos.row);
               if (word) {
+                this.hoverWord = word;
                 this.onWordHover?.(word, e.clientX, e.clientY);
               } else {
-                this.onWordLeave?.();
+                this.clearWordHover();
               }
             }
           }
         } else {
-          this.onWordLeave?.();
+          this.clearWordHover();
+          if (this.hoverAid) {
+            this.hoverAid = null;
+            this.onAidLeave?.();
+          }
           if (this.hoverUrl) {
             this.canvas.style.cursor = 'default';
             this.hoverUrl = null;
@@ -258,7 +274,7 @@ export class TermView {
     });
 
     this.canvas.addEventListener('mouseleave', () => {
-      this.onWordLeave?.();
+      this.clearWordHover();
       if (this.hoverUrl) {
         this.hoverUrl = null;
         this.redraw();
@@ -893,12 +909,13 @@ export class TermView {
     this.measureCache.clear();
     // Keep a comfortable 4px safe margin on all 4 borders to completely eliminate edge clipping,
     // plus any padding defined on the container (e.g. mobile safe area insets).
-    const containerW = this.container.clientWidth || 800;
-    const containerH = this.container.clientHeight || 500;
+    const parentEl = this.wrapper?.parentElement || this.container;
+    const containerW = parentEl.clientWidth || 800;
+    const containerH = parentEl.clientHeight || 500;
     let padX = 0;
     let padY = 0;
     try {
-      const style = window.getComputedStyle(this.container);
+      const style = window.getComputedStyle(parentEl);
       padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
       padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
     } catch (_) {}

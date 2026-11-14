@@ -78,6 +78,9 @@ export class TabManager {
     this.imeInputEl = imeInputEl;
     this.tabs = [];
     this.activeTabId = null;
+    this.isSplit = false;
+    this.splitTabId = null;
+    this.focusedTabId = null;
 
     this.onActiveTabChange = null;
     this.onTabCloseRequest = null;
@@ -204,19 +207,245 @@ export class TabManager {
   }
 
   getActiveTab() {
+    if (this.isSplit && this.focusedTabId) {
+      const focused = this.getTabById(this.focusedTabId);
+      if (focused) return focused;
+    }
     return this.tabs.find((t) => t.id === this.activeTabId) || this.tabs[0] || null;
+  }
+
+  getPrimaryTab() {
+    return this.getTabById(this.activeTabId) || this.tabs[0] || null;
+  }
+
+  getSecondaryTab() {
+    if (!this.isSplit || !this.splitTabId) return null;
+    return this.getTabById(this.splitTabId) || null;
   }
 
   getTabById(id) {
     return this.tabs.find((t) => t.id === id);
   }
 
+  toggleSplitView(targetSecondaryTabId = null) {
+    if (this.isSplit) {
+      this.closeSplitView();
+    } else {
+      this.openSplitView(targetSecondaryTabId);
+    }
+  }
+
+  openSplitView(targetSecondaryTabId = null) {
+    if (this.tabs.length < 2) {
+      const defaultAddress = getDefaultAddress();
+      const defaultBmName = resolveBookmarkName(defaultAddress, settingsManager?.bookmarks) || '批踢踢實業坊';
+      const freshTab = this.createTab({
+        title: `${defaultBmName} (2)`,
+        address: defaultAddress,
+        encoding: 'big5',
+        bookmarkName: defaultBmName,
+      });
+      targetSecondaryTabId = freshTab.id;
+    }
+
+    const primaryTab = this.getActiveTab();
+    if (!primaryTab) return;
+
+    let secondaryTab = null;
+    if (targetSecondaryTabId && targetSecondaryTabId !== primaryTab.id) {
+      secondaryTab = this.getTabById(targetSecondaryTabId);
+    }
+    if (!secondaryTab) {
+      secondaryTab = this.tabs.find((t) => t.id !== primaryTab.id);
+    }
+    if (!secondaryTab) return;
+
+    this.isSplit = true;
+    this.activeTabId = primaryTab.id;
+    this.splitTabId = secondaryTab.id;
+    this.focusedTabId = primaryTab.id;
+
+    this.renderSplitContainer();
+    this.renderTabBar();
+    this.onActiveTabChange?.(primaryTab);
+  }
+
+  closeSplitView() {
+    if (!this.isSplit) return;
+    this.isSplit = false;
+    this.splitTabId = null;
+
+    if (this.focusedTabId) {
+      this.activeTabId = this.focusedTabId;
+    }
+    const activeTab = this.getActiveTab();
+    this.focusedTabId = activeTab ? activeTab.id : null;
+
+    if (activeTab && activeTab.view) {
+      this.terminalContainerEl.replaceChildren(activeTab.view.wrapper);
+      activeTab.view.setImeInput(this.imeInputEl);
+      activeTab.view.resize();
+      activeTab.view.redraw();
+      activeTab.view.focus?.();
+    }
+
+    this.renderTabBar();
+    this.onActiveTabChange?.(activeTab);
+  }
+
+  renderSplitContainer() {
+    const primaryTab = this.getTabById(this.activeTabId);
+    const secondaryTab = this.getTabById(this.splitTabId);
+    if (!primaryTab || !secondaryTab) {
+      this.closeSplitView();
+      return;
+    }
+
+    const splitContainer = document.createElement('div');
+    splitContainer.className = 'split-view-container';
+
+    // Left Pane
+    const leftPane = document.createElement('div');
+    leftPane.className = `split-pane split-left ${this.focusedTabId === primaryTab.id ? 'focused' : ''}`;
+    leftPane.dataset.tabId = primaryTab.id;
+    if (primaryTab.view) {
+      leftPane.appendChild(primaryTab.view.wrapper);
+    }
+    leftPane.addEventListener('mousedown', () => {
+      this.focusSplitPane(primaryTab.id);
+    });
+
+    // Divider with resize drag support
+    const divider = document.createElement('div');
+    divider.className = 'split-divider';
+
+    let isDragging = false;
+    divider.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      isDragging = true;
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+
+      const onMouseMove = (ev) => {
+        if (!isDragging) return;
+        const rect = splitContainer.getBoundingClientRect();
+        const offsetX = ev.clientX - rect.left;
+        const pct = Math.max(20, Math.min(80, (offsetX / rect.width) * 100));
+        leftPane.style.flex = `0 0 ${pct}%`;
+        leftPane.style.width = `${pct}%`;
+        rightPane.style.flex = `0 0 ${100 - pct}%`;
+        rightPane.style.width = `${100 - pct}%`;
+        primaryTab.view?.resize();
+        secondaryTab.view?.resize();
+      };
+
+      const onMouseUp = () => {
+        isDragging = false;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        window.removeEventListener('mousemove', onMouseMove);
+        window.removeEventListener('mouseup', onMouseUp);
+        primaryTab.view?.resize();
+        secondaryTab.view?.resize();
+      };
+
+      window.addEventListener('mousemove', onMouseMove);
+      window.addEventListener('mouseup', onMouseUp);
+    });
+
+    divider.addEventListener('dblclick', () => {
+      leftPane.style.flex = '1 1 50%';
+      leftPane.style.width = '50%';
+      rightPane.style.flex = '1 1 50%';
+      rightPane.style.width = '50%';
+      primaryTab.view?.resize();
+      secondaryTab.view?.resize();
+    });
+
+    // Right Pane
+    const rightPane = document.createElement('div');
+    rightPane.className = `split-pane split-right ${this.focusedTabId === secondaryTab.id ? 'focused' : ''}`;
+    rightPane.dataset.tabId = secondaryTab.id;
+    if (secondaryTab.view) {
+      rightPane.appendChild(secondaryTab.view.wrapper);
+    }
+    rightPane.addEventListener('mousedown', () => {
+      this.focusSplitPane(secondaryTab.id);
+    });
+
+    splitContainer.appendChild(leftPane);
+    splitContainer.appendChild(divider);
+    splitContainer.appendChild(rightPane);
+
+    this.terminalContainerEl.replaceChildren(splitContainer);
+
+    // Set IME input to the focused pane
+    const focusedTab = this.getTabById(this.focusedTabId) || primaryTab;
+    if (focusedTab.view) {
+      focusedTab.view.setImeInput(this.imeInputEl);
+      focusedTab.view.focus?.();
+    }
+
+    // Resize and redraw both panes
+    requestAnimationFrame(() => {
+      primaryTab.view?.resize();
+      primaryTab.view?.redraw();
+      secondaryTab.view?.resize();
+      secondaryTab.view?.redraw();
+    });
+  }
+
+  focusSplitPane(tabId) {
+    if (!this.isSplit) return;
+    const tab = this.getTabById(tabId);
+    if (!tab) return;
+
+    this.focusedTabId = tabId;
+    tab.unread = false;
+
+    const panes = this.terminalContainerEl.querySelectorAll('.split-pane');
+    panes.forEach((p) => {
+      p.classList.toggle('focused', p.dataset.tabId === tabId);
+    });
+
+    if (tab.view) {
+      tab.view.setImeInput(this.imeInputEl);
+      tab.view.focus?.();
+    }
+
+    this.renderTabBar();
+    this.onActiveTabChange?.(tab);
+  }
+
   switchTab(tabId) {
     const targetTab = this.getTabById(tabId);
     if (!targetTab) return;
 
-    this.activeTabId = tabId;
     targetTab.unread = false;
+
+    if (this.isSplit) {
+      if (tabId === this.activeTabId) {
+        this.focusSplitPane(this.activeTabId);
+        return;
+      }
+      if (tabId === this.splitTabId) {
+        this.focusSplitPane(this.splitTabId);
+        return;
+      }
+      // Replace whichever pane currently has focus
+      if (this.focusedTabId === this.splitTabId) {
+        this.splitTabId = tabId;
+      } else {
+        this.activeTabId = tabId;
+      }
+      this.focusedTabId = tabId;
+      this.renderSplitContainer();
+      this.renderTabBar();
+      this.onActiveTabChange?.(targetTab);
+      return;
+    }
+
+    this.activeTabId = tabId;
 
     // Attach active tab's view wrapper to container & re-hook imeInput
     if (targetTab.view) {
@@ -224,6 +453,7 @@ export class TabManager {
       targetTab.view.setImeInput(this.imeInputEl);
       targetTab.view.resize();
       targetTab.view.redraw();
+      targetTab.view.focus?.();
     }
 
     this.renderTabBar();
@@ -266,6 +496,10 @@ export class TabManager {
 
     if (this.tabs.length === 0) {
       // If all tabs closed, create a fresh new tab
+      if (this.isSplit) {
+        this.isSplit = false;
+        this.splitTabId = null;
+      }
       const defaultAddress = getDefaultAddress();
       const defaultBmName = resolveBookmarkName(defaultAddress, settingsManager?.bookmarks) || '批踢踢實業坊';
       const freshTab = this.createTab({
@@ -275,14 +509,40 @@ export class TabManager {
         bookmarkName: defaultBmName,
       });
       this.switchTab(freshTab.id);
-    } else {
-      // Switch to adjacent tab if active tab was closed
-      if (this.activeTabId === tabId) {
-        const nextIdx = Math.max(0, idx - 1);
-        this.switchTab(this.tabs[nextIdx].id);
-      } else {
-        this.renderTabBar();
+      return;
+    }
+
+    if (this.isSplit) {
+      if (this.tabs.length < 2) {
+        this.isSplit = false;
+        this.splitTabId = null;
+        this.activeTabId = this.tabs[0].id;
+        this.switchTab(this.tabs[0].id);
+        return;
       }
+      if (tabId === this.activeTabId || tabId === this.splitTabId) {
+        const replacement = this.tabs.find((t) => t.id !== this.activeTabId && t.id !== this.splitTabId) || this.tabs[0];
+        if (tabId === this.activeTabId) {
+          this.activeTabId = replacement.id;
+          this.focusedTabId = this.activeTabId;
+        } else {
+          this.splitTabId = replacement.id;
+          this.focusedTabId = this.splitTabId;
+        }
+        this.renderSplitContainer();
+        this.renderTabBar();
+        return;
+      }
+      this.renderTabBar();
+      return;
+    }
+
+    // Switch to adjacent tab if active tab was closed
+    if (this.activeTabId === tabId) {
+      const nextIdx = Math.max(0, idx - 1);
+      this.switchTab(this.tabs[nextIdx].id);
+    } else {
+      this.renderTabBar();
     }
   }
 
@@ -315,10 +575,14 @@ export class TabManager {
     const tab = this.getTabById(tabId);
     if (tab) {
       const decoded = tab.parser.feed(data, rawBig5);
-      if (this.activeTabId !== tabId) {
+      const isVisible = this.isSplit
+        ? (tabId === this.activeTabId || tabId === this.splitTabId)
+        : (this.activeTabId === tabId);
+      if (!isVisible) {
         tab.unread = true;
         this.renderTabBar();
       }
+      this.onTabData?.(tab);
       return decoded;
     }
     return '';
@@ -338,13 +602,39 @@ export class TabManager {
 
     this.tabs.forEach((tab, index) => {
       const tabEl = document.createElement('div');
-      tabEl.className = `bbs-tab ${tab.id === this.activeTabId ? 'active' : ''}`;
+      
+      let isTabActive = false;
+      let paneBadgeText = null;
+
+      if (this.isSplit) {
+        if (tab.id === this.activeTabId) {
+          isTabActive = this.focusedTabId === tab.id;
+          tabEl.classList.add('split-pane-tab', 'split-left');
+          paneBadgeText = '左';
+        } else if (tab.id === this.splitTabId) {
+          isTabActive = this.focusedTabId === tab.id;
+          tabEl.classList.add('split-pane-tab', 'split-right');
+          paneBadgeText = '右';
+        }
+      } else {
+        isTabActive = tab.id === this.activeTabId;
+      }
+
+      tabEl.className = `bbs-tab ${isTabActive ? 'active' : ''} ${tabEl.className}`.trim();
       tabEl.dataset.tabId = tab.id;
 
       // Status indicator dot
       const dot = document.createElement('span');
       dot.className = `bbs-tab-dot ${tab.status}`;
       tabEl.appendChild(dot);
+
+      // Pane badge if split mode
+      if (paneBadgeText) {
+        const badge = document.createElement('span');
+        badge.className = 'bbs-tab-pane-badge';
+        badge.textContent = paneBadgeText;
+        tabEl.appendChild(badge);
+      }
 
       // Title
       const titleSpan = document.createElement('span');
@@ -375,6 +665,20 @@ export class TabManager {
       tabEl.appendChild(closeBtn);
 
       tabEl.onclick = () => this.switchTab(tab.id);
+      tabEl.oncontextmenu = (e) => {
+        e.preventDefault();
+        if (this.isSplit) {
+          if (this.activeTabId === tab.id || this.splitTabId === tab.id) {
+            this.closeSplitView();
+          } else {
+            this.splitTabId = tab.id;
+            this.focusSplitPane(tab.id);
+            this.renderSplitContainer();
+          }
+        } else {
+          this.openSplitView(tab.id);
+        }
+      };
       tabList.appendChild(tabEl);
     });
 
@@ -392,6 +696,18 @@ export class TabManager {
       this.switchTab(newTab.id);
     };
     tabList.appendChild(newTabBtn);
+
+    // Split View toggle button [◫]
+    const splitBtn = document.createElement('button');
+    splitBtn.className = `bbs-tab-split-btn ${this.isSplit ? 'active' : ''}`;
+    splitBtn.title = getShortcutTooltip('toggle_split_view', resolveEnv({ isMac }));
+    splitBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M1 3.5A1.5 1.5 0 0 1 2.5 2h11A1.5 1.5 0 0 1 15 3.5v9a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 12.5v-9zM2.5 3a.5.5 0 0 0-.5.5v9a.5.5 0 0 0 .5.5H7V3H2.5zm5.5 0v10h5.5a.5.5 0 0 0 .5-.5v-9a.5.5 0 0 0-.5-.5H8z"/>
+    </svg>`;
+    splitBtn.onclick = () => {
+      this.toggleSplitView();
+    };
+    tabList.appendChild(splitBtn);
 
     this.tabBarEl.appendChild(tabList);
   }

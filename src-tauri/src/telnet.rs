@@ -119,6 +119,7 @@ pub struct BbsConnection {
     charset: Arc<RwLock<BbsCharset>>,
     ssh_session: Option<Arc<std::sync::Mutex<ssh2::Session>>>,
     last_activity: Arc<std::sync::Mutex<std::time::Instant>>,
+    keys_suppressed: Arc<AtomicBool>,
 }
 
 struct SshChannelWriter<T: Write>(Arc<std::sync::Mutex<T>>);
@@ -326,6 +327,7 @@ impl BbsConnection {
             charset,
             ssh_session: None,
             last_activity: Arc::new(std::sync::Mutex::new(std::time::Instant::now())),
+            keys_suppressed: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -399,6 +401,7 @@ impl BbsConnection {
             charset,
             ssh_session: None,
             last_activity,
+            keys_suppressed: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -530,6 +533,7 @@ impl BbsConnection {
             charset,
             ssh_session: Some(sess),
             last_activity,
+            keys_suppressed: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -1116,8 +1120,18 @@ impl BbsConnection {
         }
     }
 
+    /// Set suppression of terminal anti-idle keystrokes
+    pub fn set_keys_suppressed(&self, suppressed: bool) {
+        self.keys_suppressed.store(suppressed, Ordering::Relaxed);
+    }
+
+    /// Check if terminal anti-idle keystrokes are suppressed
+    pub fn is_keys_suppressed(&self) -> bool {
+        self.keys_suppressed.load(Ordering::Relaxed)
+    }
+
     /// Check idle duration and send heartbeat packet if needed (Runs in native Rust background thread)
-    pub fn check_and_send_keepalive(&self, interval_secs: u64) -> bool {
+    pub fn check_and_send_keepalive(&self, interval_secs: u64, global_suppressed: bool) -> bool {
         if !self.alive.load(Ordering::Relaxed) {
             return false;
         }
@@ -1127,16 +1141,21 @@ impl BbsConnection {
         };
 
         if is_idle {
+            // Reset the idle timer when keepalive runs, so keepalive does not spam every 10s loop iteration
+            self.record_activity();
+
             if let Some(session) = &self.ssh_session {
                 // 1. Maintain SSH transport layer & NAT router connection
                 let _ = session.lock().ok().and_then(|session| session.keepalive_send().ok());
 
                 // 2. Prevent PTT BBS application idle timeout (Anti-Idle):
-                // Send Down Arrow followed by Up Arrow (\x1bOB\x1bOA).
-                // - Feeds real input to PTT mbbsd to reset application idle timer
-                // - Will NOT trigger mailbox jump (unlike 0x00 NUL)
-                // - Down + Up cancel each other out, restoring original cursor position
-                self.send_raw(b"\x1bOB\x1bOA").is_ok()
+                // Send Down Arrow followed by Up Arrow (\x1bOB\x1bOA) only if keys are not suppressed.
+                let suppressed = global_suppressed || self.keys_suppressed.load(Ordering::Relaxed);
+                if !suppressed {
+                    self.send_raw(b"\x1bOB\x1bOA").is_ok()
+                } else {
+                    false
+                }
             } else {
                 // Telnet IAC NOP is consumed by the Telnet protocol handler.
                 self.send_raw(&[0xFF, 0xF1]).is_ok()
@@ -1176,17 +1195,23 @@ mod tests {
             alive: Arc::new(AtomicBool::new(true)), charset: Arc::new(RwLock::new(BbsCharset::Big5)),
             ssh_session: Some(Arc::new(std::sync::Mutex::new(session))),
             last_activity: Arc::new(std::sync::Mutex::new(std::time::Instant::now())),
+            keys_suppressed: Arc::new(AtomicBool::new(false)),
         };
         // For SSH: must write Down+Up arrow keys (\x1bOB\x1bOA) to terminal to reset BBS idle timer,
         // and must NEVER send \x00 (NUL) which triggers jumping to mailbox.
-        assert!(conn.check_and_send_keepalive(0));
+        assert!(conn.check_and_send_keepalive(0, false));
         assert_eq!(*wire.lock().unwrap(), b"\x1bOB\x1bOA".to_vec());
         assert!(!wire.lock().unwrap().contains(&0x00));
 
-        // For Telnet: must send IAC NOP (\xFF\xF1)
+        // When keys are suppressed: must NOT send terminal arrow keys (\x1bOB\x1bOA)
+        wire.lock().unwrap().clear();
+        assert!(!conn.check_and_send_keepalive(0, true));
+        assert!(wire.lock().unwrap().is_empty());
+
+        // For Telnet: must send IAC NOP (\xFF\xF1) even when keys are suppressed
         wire.lock().unwrap().clear();
         conn.ssh_session = None;
-        assert!(conn.check_and_send_keepalive(0));
+        assert!(conn.check_and_send_keepalive(0, true));
         assert_eq!(*wire.lock().unwrap(), vec![0xff, 0xf1]);
     }
 
@@ -1256,6 +1281,7 @@ mod tests {
             writer: Arc::new(std::sync::Mutex::new(Box::new(PartialFailure { wire: wire.clone(), calls: 0 }))),
             alive: Arc::new(AtomicBool::new(true)), charset: Arc::new(RwLock::new(BbsCharset::Big5)),
             ssh_session: None, last_activity: Arc::new(std::sync::Mutex::new(std::time::Instant::now())),
+            keys_suppressed: Arc::new(AtomicBool::new(false)),
         };
         assert!(conn.send_raw(&[0xa4, 0x40]).is_err());
         assert!(!conn.alive.load(Ordering::Relaxed));

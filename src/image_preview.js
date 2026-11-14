@@ -68,6 +68,76 @@ export function normalizeImageUrl(url) {
   return clean;
 }
 
+const YOUTUBE_ID_RE = /^[a-zA-Z0-9_-]{11}$/;
+
+function parseYoutubeTimestamp(raw) {
+  if (!raw) return 0;
+  const trimmed = String(raw).trim();
+  if (/^\d+$/.test(trimmed)) {
+    const secs = Number.parseInt(trimmed, 10);
+    return Number.isFinite(secs) && secs > 0 ? secs : 0;
+  }
+  const match = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s?)?$/i.exec(trimmed);
+  if (!match) return 0;
+  const hours = Number.parseInt(match[1] || '0', 10);
+  const minutes = Number.parseInt(match[2] || '0', 10);
+  const seconds = Number.parseInt(match[3] || '0', 10);
+  const total = hours * 3600 + minutes * 60 + seconds;
+  return Number.isFinite(total) && total > 0 ? total : 0;
+}
+
+/**
+ * Parse a YouTube URL into a validated video ID, start timestamp, embed URL, and thumbnails.
+ */
+export function parseYoutubeUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return null;
+  const clean = rawUrl.trim();
+  if (!/^https?:\/\//i.test(clean)) return null;
+
+  try {
+    const parsed = new URL(clean);
+    const host = parsed.hostname.toLowerCase();
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    let candidateId = '';
+
+    if (host === 'youtu.be' || host === 'www.youtu.be') {
+      candidateId = parts[0] || '';
+    } else if (
+      host === 'youtube.com' ||
+      host === 'www.youtube.com' ||
+      host === 'm.youtube.com' ||
+      host === 'music.youtube.com' ||
+      host === 'youtube-nocookie.com' ||
+      host === 'www.youtube-nocookie.com'
+    ) {
+      if (parsed.pathname === '/watch') {
+        candidateId = parsed.searchParams.get('v') || '';
+      } else if (['shorts', 'live', 'embed', 'v'].includes(parts[0])) {
+        candidateId = parts[1] || '';
+      }
+    }
+
+    if (!YOUTUBE_ID_RE.test(candidateId)) return null;
+
+    const startSeconds = parseYoutubeTimestamp(
+      parsed.searchParams.get('t') || parsed.searchParams.get('start') || ''
+    );
+    const startEmbedParam = startSeconds > 0 ? `&start=${startSeconds}` : '';
+    const startWatchParam = startSeconds > 0 ? `&t=${startSeconds}s` : '';
+
+    return {
+      videoId: candidateId,
+      startSeconds,
+      embedUrl: `https://www.youtube.com/embed/${candidateId}?autoplay=1&rel=0${startEmbedParam}`,
+      thumbnailUrl: `https://i.ytimg.com/vi/${candidateId}/hqdefault.jpg`,
+      fallbackThumbnailUrl: `https://i.ytimg.com/vi/${candidateId}/mqdefault.jpg`,
+      watchUrl: `https://www.youtube.com/watch?v=${candidateId}${startWatchParam}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export class ImagePreviewController {
   constructor() {
     this.overlay = null;
@@ -83,6 +153,7 @@ export class ImagePreviewController {
   }
 
   createDom() {
+    if (typeof document === 'undefined') return;
     const overlay = document.createElement('div');
     overlay.id = 'image-preview-overlay';
     overlay.className = 'hidden';

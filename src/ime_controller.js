@@ -35,6 +35,7 @@ export class ImeController {
       if (
         e.target.closest('#settings-modal') ||
         e.target.closest('#push-modal') ||
+        e.target.closest('#picket-modal') ||
         e.target.closest('#article-reader-modal') ||
         e.target.closest('#reader-lightbox') ||
         e.target.closest('#search-bar-widget') ||

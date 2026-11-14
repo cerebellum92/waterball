@@ -80,6 +80,35 @@ export const SHORTCUTS_REGISTRY = [
     },
   },
   {
+    id: 'live_chat',
+    category: 'common',
+    name: '實況推文聊天室',
+    description: '邊看比賽轉播邊即時追推文互動',
+    keyMac: 'Option+L',
+    keyWin: 'Alt+L',
+    tooltipMac: '實況推文聊天室 (Option+L)',
+    tooltipWin: '實況推文聊天室 (Alt+L)',
+    matches: (e, { isMac }) => {
+      return e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.code === 'KeyL';
+    },
+  },
+  {
+    id: 'picket_report',
+    category: 'common',
+    name: '檢舉格式產生器',
+    description: '抓取文章/推文產生看板檢舉格式',
+    keyMac: 'Cmd+Shift+R',
+    keyWin: 'Ctrl+Shift+R',
+    tooltipMac: '檢舉格式產生器 (Cmd+Shift+R)',
+    tooltipWin: '檢舉格式產生器 (Ctrl+Shift+R)',
+    matches: (e, env) => {
+      if (env?.isMac) {
+        return e.metaKey && e.shiftKey && !e.altKey && !e.ctrlKey && e.code === 'KeyR';
+      }
+      return e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.code === 'KeyR';
+    },
+  },
+  {
     id: 'toggle_toolbar',
     category: 'common',
     name: '收合／展開功能列',
@@ -229,6 +258,37 @@ export const SHORTCUTS_REGISTRY = [
     tooltipWin: '循環切換分頁 (Ctrl+Tab)',
     matches: (e) => {
       return e.ctrlKey && e.key === 'Tab';
+    },
+  },
+  {
+    id: 'toggle_split_view',
+    category: 'tabs',
+    name: '左右雙視窗並排',
+    description: '切換左右雙連線並排顯示',
+    keyMac: 'Cmd+\\',
+    keyWin: 'Alt+\\',
+    tooltipMac: '左右雙視窗並排 (Cmd+\\)',
+    tooltipWin: '左右雙視窗並排 (Alt+\\)',
+    matches: (e, env) => {
+      if (env?.isMac) {
+        return (e.metaKey && !e.altKey && !e.shiftKey && !e.ctrlKey && (e.code === 'Backslash' || e.key === '\\')) ||
+               (e.altKey && !e.metaKey && !e.shiftKey && !e.ctrlKey && (e.code === 'Backslash' || e.key === '\\'));
+      }
+      return (e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey && (e.code === 'Backslash' || e.key === '\\')) ||
+             (e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && (e.code === 'Backslash' || e.key === '\\'));
+    },
+  },
+  {
+    id: 'switch_split_focus',
+    category: 'tabs',
+    name: '切換並排視窗焦點',
+    description: '在左／右分割視窗切換輸入焦點',
+    keyMac: 'Alt+方向鍵',
+    keyWin: 'Alt+方向鍵',
+    tooltipMac: '切換視窗焦點 (Alt+方向鍵)',
+    tooltipWin: '切換視窗焦點 (Alt+方向鍵)',
+    matches: (e) => {
+      return e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey && (e.code === 'ArrowLeft' || e.code === 'ArrowRight');
     },
   },
 

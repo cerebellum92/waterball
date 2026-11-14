@@ -9,6 +9,8 @@ import { notificationManager } from './notifications.js';
 import { exportModal } from './exporter.js';
 import { BoardSwitcherWidget } from './board_switcher.js';
 import { AidJumpModal } from './aid_jump_modal.js';
+import { PicketReportModal } from './picket_report_modal.js';
+import { LiveChatModal } from './live_chat_modal.js';
 import { UpdateModal } from './update_modal.js';
 import { UpdateChecker } from './updater.js';
 import { PushHelper } from './push_helper.js';
@@ -67,6 +69,7 @@ const aidBtn = document.getElementById('aid-btn');
 const exportBtn = document.getElementById('export-btn');
 const paletteBtn = document.getElementById('palette-btn');
 const articleReaderBtn = document.getElementById('article-reader-btn');
+const liveChatBtn = document.getElementById('live-chat-btn');
 const mouseBrowsingBtn = document.getElementById('mouse-browsing-btn');
 const pushHelperBtn = document.getElementById('push-helper-btn');
 const addBookmarkBtn = document.getElementById('add-bookmark-btn');
@@ -158,17 +161,53 @@ const pushHelper = new PushHelper(null, () => tabManager.getActiveTab(), {
   releaseInput: (id, token) => connectionCtrl.releaseInputLease(id, token),
   sendToTab: (id, text, session, token) => connectionCtrl.sendDataToTabAndWait(id, text, session, token),
   getUserId: (tab = tabManager.getActiveTab()) => connectionCtrl.autoLoginManager?.sessions?.get(tab?.id)?.username || settingsManager?.bookmarks?.find(b => b.username)?.username || '',
+  onStateChange: () => connectionCtrl?.syncAntiIdleSuppression?.(),
 });
 const shortcutsModal = new ShortcutsModal();
+const picketReportModal = new PicketReportModal({
+  tabManager,
+  settingsManager,
+  connectionCtrl: () => connectionCtrl,
+  getUserId: (tab = tabManager.getActiveTab()) => connectionCtrl.autoLoginManager?.sessions?.get(tab?.id)?.username || settingsManager?.bookmarks?.find(b => b.username)?.username || '',
+  onShowToast: showGlobalToast,
+  onStateChange: () => connectionCtrl?.syncAntiIdleSuppression?.(),
+});
+const liveChatModal = new LiveChatModal({
+  tabManager,
+  settingsManager,
+  imagePreview,
+  getConnectionSession: id => connectionCtrl.getConnectionSession(id),
+  sendToTab: (id, text, session) => connectionCtrl.sendDataToTabAndWait(id, text, session),
+  pushHelper,
+  onShowToast: showGlobalToast,
+  onEditUserTag: (user) => {
+    userTagsUI.openModal(user);
+  },
+  onShowUserTooltip: (user, cx, cy) => {
+    userTagsUI.showTooltip(user, cx, cy);
+  },
+  onHideUserTooltip: () => {
+    userTagsUI.hideTooltip();
+  },
+  onOpenReader: (tab, article) => {
+    articleReader.open(tab, article);
+  },
+  onStateChange: () => connectionCtrl?.syncAntiIdleSuppression?.(),
+  getUserId: (tab = tabManager.getActiveTab()) => connectionCtrl.autoLoginManager?.sessions?.get(tab?.id)?.username || settingsManager?.bookmarks?.find(b => b.username)?.username || '',
+});
 
 function areAnyModalsOpen() {
+  if (typeof document !== 'undefined') {
+    if (document.querySelector('.modal-backdrop:not(.hidden)')) return true;
+    if (document.querySelector('dialog[open]')) return true;
+  }
   if (shortcutsModal && shortcutsModal.isOpen()) return true;
   if (document.getElementById('paste-recovery-dialog')?.open || document.getElementById('paste-confirm-dialog')?.open) return true;
   if (tabManager && tabManager.isTabSwitcherOpen && tabManager.isTabSwitcherOpen()) return true;
   if (settingsUI && settingsUI.isOpen()) return true;
   if (articleReader && articleReader.isOpen) return true;
   if (searchWidget && searchWidget.isOpen) return true;
-  if (pushHelper && pushHelper.isOpen) return true;
+  if (pushHelper && (pushHelper.isOpen || pushHelper.isPushing)) return true;
   if (paletteWidget && paletteWidget.isOpen) return true;
   if (exportModal && exportModal.isOpen) return true;
   if (boardSwitcherWidget && boardSwitcherWidget.isOpen) return true;
@@ -176,6 +215,8 @@ function areAnyModalsOpen() {
   if (userTagsUI && userTagsUI.isOpen()) return true;
   if (waterballUI && waterballUI.isOpen()) return true;
   if (articleMonitorUI && articleMonitorUI.isOpen()) return true;
+  if (picketReportModal && picketReportModal.isOpen) return true;
+  if (liveChatModal && liveChatModal.isOpen) return true;
   return false;
 }
 
@@ -197,10 +238,29 @@ const connectionCtrl = new ConnectionController({
   elements: { addressInput, encodingSelect, connectBtn, disconnectBtn, statusDot, statusText },
   onFocusTerminal: (force) => imeCtrl.focusTerminal(force),
   onShowToast: showGlobalToast,
+  getModalOpenStates: areAnyModalsOpen,
 });
+
+if (typeof MutationObserver !== 'undefined' && typeof document !== 'undefined' && document.body) {
+  const modalObserver = new MutationObserver(() => {
+    connectionCtrl.syncAntiIdleSuppression();
+  });
+  modalObserver.observe(document.body, {
+    attributes: true,
+    attributeFilter: ['class', 'open'],
+    subtree: true,
+  });
+}
 
 articleReader.getConnectionSession = id => connectionCtrl.getConnectionSession(id);
 articleReader.sendToTab = (id, text, session) => connectionCtrl.sendDataToTabAndWait(id, text, session);
+articleReader.onOpenLiveChat = (article) => {
+  const activeTab = tabManager.getActiveTab();
+  if (activeTab) {
+    articleReader.close();
+    liveChatModal.open(activeTab, article);
+  }
+};
 
 // 5. Bookmarks UI Controller
 const bookmarksUI = new BookmarksUI({
@@ -317,6 +377,7 @@ const contextMenuCtrl = new ContextMenuController({
   blacklistManager,
   userTagsManager,
   onQuickPush: () => pushHelper.open(),
+  onPicketReport: (ctx) => picketReportModal.open(ctx),
   onBlacklistChange: () => {
     settingsUI.renderBlacklistUI();
     tabManager.getActiveTab()?.view?.redraw();
@@ -360,6 +421,26 @@ articleMonitorUI.onShowToast = showGlobalToast;
 articleMonitorUI.onFocusTerminal = (force = true) => imeCtrl.focusTerminal(force);
 userTagsUI.onFocusTerminal = (force = true) => imeCtrl.focusTerminal(force);
 
+// Sync ArticleMonitorUI font scale with global app toolbarScale
+const syncMonitorWithGlobalScale = () => {
+  const scale = settingsManager.settings.toolbarScale || 'medium';
+  const targetIdx = scale === 'standard' ? 0 : (scale === 'medium' ? 1 : 2);
+  if (articleMonitorUI.currentFontScaleIndex !== targetIdx) {
+    articleMonitorUI.currentFontScaleIndex = targetIdx;
+    articleMonitorUI.applyFontScale();
+  }
+};
+window.addEventListener('toolbar-scale-changed', syncMonitorWithGlobalScale);
+const onMonitorFontBtnClick = () => {
+  const scaleId = ['standard', 'medium', 'large'][articleMonitorUI.currentFontScaleIndex] || 'medium';
+  if (settingsManager.settings.toolbarScale !== scaleId) {
+    settingsManager.saveSettings({ toolbarScale: scaleId });
+    settingsUI.applyToolbarScale(scaleId);
+  }
+};
+articleMonitorUI.fontDecBtn?.addEventListener('click', onMonitorFontBtnClick);
+articleMonitorUI.fontIncBtn?.addEventListener('click', onMonitorFontBtnClick);
+
 // Start background article monitoring scheduler (every 3 minutes)
 articleMonitorManager.startScheduler(3);
 
@@ -397,6 +478,7 @@ tabManager.onUrlClick = (url) => {
 };
 
 tabManager.onUrlHover = (url, cx, cy) => {
+  if (areAnyModalsOpen()) return;
   userTagsUI.hideTooltip();
   if (settingsManager.settings.imagePreviewEnabled !== false) {
     imagePreview.show(url, cx, cy);
@@ -414,6 +496,10 @@ tabManager.onAidClick = (aid) => {
 };
 
 tabManager.onWordHover = (word, cx, cy) => {
+  if (areAnyModalsOpen()) {
+    userTagsUI.hideTooltip();
+    return;
+  }
   if (word && userTagsManager.hasTag(word)) {
     userTagsUI.showTooltip(word, cx, cy);
   } else {
@@ -422,6 +508,7 @@ tabManager.onWordHover = (word, cx, cy) => {
 };
 
 tabManager.onWordLeave = () => {
+  if (liveChatModal?.isOpen) return;
   userTagsUI.hideTooltip();
 };
 
@@ -480,6 +567,10 @@ tabManager.onContextMenu = (info, tab) => {
   contextMenuCtrl.show(info, tab);
 };
 
+tabManager.onTabData = (tab) => {
+  picketReportModal.handleTabData?.(tab);
+};
+
 notificationManager.onTabBadgeTrigger = (tabId) => tabManager.triggerTabBadge(tabId);
 notificationManager.onFocusTab = (tabId) => tabManager.switchTab(tabId);
 
@@ -500,6 +591,7 @@ function applyPlatformShortcutTooltips() {
   if (shortcutsBtn) shortcutsBtn.title = getShortcutTooltip('shortcuts_help', env);
   if (boardBtn) boardBtn.title = getShortcutTooltip('board_switcher', env);
   if (articleReaderBtn) articleReaderBtn.title = getShortcutTooltip('article_reader', env);
+  if (liveChatBtn) liveChatBtn.title = getShortcutTooltip('live_chat', env);
   if (pushHelperBtn) pushHelperBtn.title = getShortcutTooltip('push_helper', env);
   if (paletteBtn) paletteBtn.title = getShortcutTooltip('palette', env);
   if (exportBtn) exportBtn.title = getShortcutTooltip('export_screen', env);
@@ -557,16 +649,24 @@ function persistWindowState(immediate = false) {
   }
 }
 
+function resizeActiveTerminals() {
+  if (tabManager.isSplit) {
+    tabManager.getPrimaryTab()?.view?.resize();
+    tabManager.getSecondaryTab()?.view?.resize();
+  } else {
+    const activeTab = tabManager.getActiveTab();
+    if (activeTab?.view) activeTab.view.resize();
+  }
+}
+
 const resizeObserver = new ResizeObserver(() => {
-  const activeTab = tabManager.getActiveTab();
-  if (activeTab?.view) activeTab.view.resize();
+  resizeActiveTerminals();
 });
 resizeObserver.observe(terminalContainer);
 
 window.addEventListener('resize', () => {
   updateToolbarMode();
-  const activeTab = tabManager.getActiveTab();
-  if (activeTab?.view) activeTab.view.resize();
+  resizeActiveTerminals();
   persistWindowState();
 });
 
@@ -602,7 +702,12 @@ articleReaderBtn?.addEventListener('click', () => {
   const activeTab = tabManager.getActiveTab();
   if (activeTab) articleReader.open(activeTab);
 });
+liveChatBtn?.addEventListener('click', () => {
+  const activeTab = tabManager.getActiveTab();
+  if (activeTab) liveChatModal.open(activeTab);
+});
 pushHelperBtn?.addEventListener('click', () => pushHelper.open());
+document.getElementById('picket-report-btn')?.addEventListener('click', () => picketReportModal.open());
 shortcutsBtn?.addEventListener('click', () => shortcutsModal.open());
 document.getElementById('settings-open-shortcuts-btn')?.addEventListener('click', () => {
   settingsUI.close();
@@ -940,9 +1045,12 @@ window.addEventListener('keydown', (e) => {
       if (searchWidget?.isOpen) { searchWidget.close(); e.preventDefault(); return; }
       if (boardSwitcherWidget?.isOpen) { boardSwitcherWidget.close(); e.preventDefault(); return; }
       if (aidJumpModal?.isOpen) { aidJumpModal.close(); e.preventDefault(); return; }
+      if (picketReportModal?.isOpen) { picketReportModal.close(); e.preventDefault(); return; }
       if (exportModal?.isOpen) { exportModal.close(); e.preventDefault(); return; }
       if (paletteWidget?.isOpen) { paletteWidget.close(); e.preventDefault(); return; }
+      if (userTagsUI?.isOpen()) { userTagsUI.closeModal(); e.preventDefault(); return; }
       if (articleReader?.isOpen) { articleReader.close(); e.preventDefault(); return; }
+      if (liveChatModal?.isOpen) { liveChatModal.close(); e.preventDefault(); return; }
       if (settingsUI?.isOpen()) { settingsUI.close(); e.preventDefault(); return; }
       if (pushHelper?.isOpen) {
         if (pushHelper.isPushing) pushHelper.abort(); else pushHelper.close();
@@ -950,7 +1058,6 @@ window.addEventListener('keydown', (e) => {
         return;
       }
       if (waterballUI?.isOpen()) { waterballUI.close(); e.preventDefault(); return; }
-      if (userTagsUI?.isOpen()) { userTagsUI.closeModal(); e.preventDefault(); return; }
       if (articleMonitorUI?.isOpen()) { articleMonitorUI.close(); e.preventDefault(); return; }
       if (tabManager?.isTabSwitcherOpen?.()) { tabManager.closeTabSwitcher(); e.preventDefault(); return; }
     }
@@ -977,6 +1084,11 @@ window.addEventListener('keydown', (e) => {
   if (aidJumpModal?.isOpen) {
     if (e.key === 'Escape') { aidJumpModal.close(); e.preventDefault(); }
     return; // Never forward keys from AID buttons/backdrop into the terminal.
+  }
+
+  if (picketReportModal?.isOpen && document.activeElement?.closest?.('#picket-modal')) {
+    if (e.key === 'Escape') { picketReportModal.close(); e.preventDefault(); }
+    return;
   }
 
   if (boardSwitcherWidget?.isOpen) {
@@ -1063,6 +1175,14 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
+  if (liveChatModal?.isOpen) {
+    if (e.key === 'Escape') {
+      liveChatModal.close();
+      e.preventDefault();
+    }
+    return;
+  }
+
   // Search Widget handling (searchWidget does NOT swallow other keys; Escape closes it)
   if (searchWidget?.isOpen) {
     if (e.key === 'Escape') {
@@ -1112,6 +1232,12 @@ window.addEventListener('keydown', (e) => {
   if (matchShortcut('aid_jump', e, env)) {
     e.preventDefault();
     aidJumpModal.open();
+    return;
+  }
+
+  if (matchShortcut('picket_report', e, env)) {
+    e.preventDefault();
+    picketReportModal.open();
     return;
   }
 
@@ -1165,6 +1291,19 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
+  if (matchShortcut('live_chat', e, env)) {
+    e.preventDefault();
+    const activeTab = tabManager.getActiveTab();
+    if (activeTab) {
+      if (liveChatModal.isOpen) {
+        liveChatModal.close();
+      } else {
+        liveChatModal.open(activeTab);
+      }
+    }
+    return;
+  }
+
   if (matchShortcut('new_tab', e, env)) {
     e.preventDefault();
     const newTab = tabManager.createTab({
@@ -1202,6 +1341,21 @@ window.addEventListener('keydown', (e) => {
       tabManager.switchToTabIndex(digit - 1);
       return;
     }
+  }
+
+  if (matchShortcut('toggle_split_view', e, env)) {
+    e.preventDefault();
+    tabManager.toggleSplitView();
+    return;
+  }
+
+  if (matchShortcut('switch_split_focus', e, env)) {
+    e.preventDefault();
+    if (tabManager.isSplit) {
+      const nextId = tabManager.focusedTabId === tabManager.activeTabId ? tabManager.splitTabId : tabManager.activeTabId;
+      if (nextId) tabManager.focusSplitPane(nextId);
+    }
+    return;
   }
 
   // 5. BBS Terminal Key Handling & Translation

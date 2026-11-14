@@ -9,6 +9,7 @@ export class ContextMenuController {
     blacklistManager,
     userTagsManager,
     onQuickPush,
+    onPicketReport,
     onBlacklistChange,
     onEditTag,
     onSendWaterball,
@@ -21,6 +22,7 @@ export class ContextMenuController {
     this.onBlacklistChange = onBlacklistChange || (() => {});
     this.onEditTag = onEditTag || (() => {});
     this.onSendWaterball = onSendWaterball || (() => {});
+    this.onPicketReport = onPicketReport || (() => {});
     this.onShowToast = onShowToast || (() => {});
 
     this.activeTarget = '';
@@ -40,6 +42,7 @@ export class ContextMenuController {
     const ctxBlacklistToggle = document.getElementById('ctx-blacklist-toggle');
     const ctxBlacklistKwToggle = document.getElementById('ctx-blacklist-kw-toggle');
     const ctxQuickPush = document.getElementById('ctx-quick-push');
+    const ctxPicketReport = document.getElementById('ctx-picket-report');
 
     ctxCopy?.addEventListener('click', () => {
       if (this.activeTarget) {
@@ -113,6 +116,13 @@ export class ContextMenuController {
       this.onQuickPush();
     });
 
+    ctxPicketReport?.addEventListener('click', () => {
+      const tab = this.activeTab;
+      const info = this.activeInfo;
+      this.hide();
+      this.onPicketReport({ tab, info });
+    });
+
     // Dismiss context menu on click outside, resize, or blur
     window.addEventListener('click', (e) => {
       if (this.contextMenuEl && !this.contextMenuEl.contains(e.target)) {
@@ -132,6 +142,7 @@ export class ContextMenuController {
   show(info, tab) {
     if (!this.contextMenuEl) return;
     this.activeTab = tab;
+    this.activeInfo = info;
     const targetText = info.selectedText || info.word || '';
     this.activeTarget = targetText;
 

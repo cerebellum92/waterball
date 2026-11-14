@@ -165,6 +165,10 @@ export class UserTagsManager {
     }
   }
 
+  onChange(fn) {
+    this.addListener(fn);
+  }
+
   removeListener(fn) {
     const idx = this.listeners.indexOf(fn);
     if (idx !== -1) {

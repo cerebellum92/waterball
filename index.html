@@ -47,11 +47,17 @@
         <button id="article-reader-btn" class="tb-btn" title="圖文好讀版 (Cmd+D / F2)">
           <span class="tb-icon">📖</span><span class="tb-label">好讀版</span>
         </button>
+        <button id="live-chat-btn" class="tb-btn" title="實況推文聊天室 (邊看比賽邊追推文)">
+          <span class="tb-icon">📺</span><span class="tb-label">實況</span>
+        </button>
         <button id="mouse-browsing-btn" class="tb-btn" title="切換滑鼠操作 BBS">
           <span class="tb-icon">🖱️</span><span class="tb-label">滑鼠操作</span>
         </button>
         <button id="push-helper-btn" class="tb-btn" title="長推文自動分段發送 (Cmd+Shift+X / Alt+X)">
           <span class="tb-icon">💬</span><span class="tb-label">推文</span>
+        </button>
+        <button id="picket-report-btn" class="tb-btn" title="檢舉格式產生器 (Cmd+Shift+R / Alt+R)">
+          <span class="tb-icon">🚨</span><span class="tb-label">檢舉</span>
         </button>
         <button id="waterball-btn" class="tb-btn hidden" style="display: none;" title="水球通訊錄與對話紀錄">
           <span class="tb-icon">💧</span><span class="tb-label">水球</span>
@@ -271,8 +277,9 @@
                 <option value="standard">標準緊湊 (Standard - 100%)</option>
                 <option value="medium" selected>適中清晰 (Medium - 115%)</option>
                 <option value="large">舒適大字 (Large - 130%)</option>
+                <option value="xlarge">特大清晰 (Extra Large - 145%)</option>
               </select>
-              <p class="hint">自訂工具列、分頁標籤、設定中心與彈窗介面的整體字體與按鈕縮放比例。</p>
+              <p class="hint">自訂工具列、分頁標籤、設定中心、檢舉小幫手與彈窗介面的整體字體與按鈕縮放比例。</p>
             </div>
             <div class="form-group">
               <label for="setting-font-family">終端機文字字體：</label>
@@ -490,7 +497,7 @@
             <div class="about-hero">
               <div class="about-logo">💧</div>
               <div class="about-title">Waterball (水球)</div>
-              <div class="about-ver" id="about-app-ver">版本 v0.1.10 &bull; 開源授權 GPL-3.0</div>
+              <div class="about-ver" id="about-app-ver">版本 v0.1.11 &bull; 開源授權 GPL-3.0</div>
               <div class="about-desc" id="about-app-desc">
                 新世代跨平台 BBS 終端連線客戶端 (macOS / Windows / Linux / Chromebook)
                 <br>
@@ -664,6 +671,160 @@
           <button id="aid-btn-copy" class="btn-secondary" style="font-size: 12px; padding: 6px 10px;">📋 複製</button>
           <button id="aid-btn-reader" class="btn-secondary" style="font-size: 12px; padding: 6px 10px;">🌐 網頁版</button>
           <button id="aid-btn-jump" class="btn-primary" style="font-size: 12px; padding: 6px 12px;">🚀 終端定位</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Picket Report Generator Floating Panel (看板檢舉格式產生器 - 側邊浮動不遮擋右側視窗) -->
+  <div id="picket-modal" class="picket-floating-panel hidden">
+    <div class="modal-dialog picket-panel-dialog">
+      <div class="modal-header picket-panel-header">
+        <h2>🚨 看板檢舉小幫手</h2>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <div class="monitor-font-controls" title="調整 App 全域介面與視窗字體大小（所有視窗同步套用）">
+            <button id="picket-font-dec" type="button" title="縮小全域介面字體">A-</button>
+            <span id="picket-font-val">適中</span>
+            <button id="picket-font-inc" type="button" title="放大全域介面字體">A+</button>
+          </div>
+          <button id="picket-btn-dock-side" type="button" class="picket-header-btn" title="切換停靠於左側或右側，避免遮擋目標終端機視窗">⇄ 移至右側</button>
+          <button id="picket-btn-minimize" type="button" class="picket-header-btn" title="收合或展開檢舉面板">▂ 縮小</button>
+          <button id="picket-modal-close" class="close-btn" title="關閉">&times;</button>
+        </div>
+      </div>
+      <div class="modal-body picket-modal-body">
+        <!-- Top Toolbar: Board selection and template management toggle -->
+        <div style="display: flex; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+          <div style="display: flex; align-items: center; gap: 8px; flex: 1;">
+            <label for="picket-board-select" class="picket-field-label" style="margin-bottom: 0; white-space: nowrap;">檢舉看板：</label>
+            <select id="picket-board-select" class="form-control picket-input" style="flex: 1;"></select>
+          </div>
+          <button id="picket-btn-toggle-template-editor" type="button" class="btn-secondary picket-action-btn">
+            ⚙️ 範本管理
+          </button>
+        </div>
+
+        <!-- Inline Template Editor Section (Hidden by default) -->
+        <div id="picket-template-editor-section" class="picket-template-editor-box hidden" style="margin-bottom: 14px; padding: 12px; background: rgba(255, 255, 255, 0.03); border: 1px dashed var(--border-color); border-radius: var(--radius);">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <span class="picket-field-label" style="color: var(--accent-color); margin-bottom: 0;">⚙️ 編輯當前看板檢舉範本</span>
+            <button id="picket-btn-reset-templates" type="button" class="btn-text-danger picket-sub-label">🔄 恢復預設</button>
+          </div>
+          <div style="margin-bottom: 8px;">
+            <label class="picket-sub-label" style="display: block; margin-bottom: 3px;">標題格式：</label>
+            <input type="text" id="picket-edit-title-format" class="form-control picket-input picket-mono" style="width: 100%;" />
+          </div>
+          <div style="margin-bottom: 8px;">
+            <label class="picket-sub-label" style="display: block; margin-bottom: 3px;">內文格式：</label>
+            <textarea id="picket-edit-body-format" class="form-control picket-textarea picket-mono" rows="5" style="width: 100%; resize: vertical;"></textarea>
+          </div>
+          <div style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 10px;">
+            <span class="picket-sub-label">插入變數：</span>
+            <button type="button" class="picket-tag-btn" data-tag="{reporter}">{檢舉人}</button>
+            <button type="button" class="picket-tag-btn" data-tag="{targetAuthor}">{被檢舉人}</button>
+            <button type="button" class="picket-tag-btn" data-tag="{aid}">{AID}</button>
+            <button type="button" class="picket-tag-btn" data-tag="{board}">{看板}</button>
+            <button type="button" class="picket-tag-btn" data-tag="{title}">{標題}</button>
+            <button type="button" class="picket-tag-btn" data-tag="{webUrl}">{網址}</button>
+            <button type="button" class="picket-tag-btn" data-tag="{violationContent}">{事證}</button>
+            <button type="button" class="picket-tag-btn" data-tag="{ruleClause}">{條款}</button>
+          </div>
+          <button id="picket-btn-save-template" type="button" class="btn-primary picket-action-btn" style="width: 100%;">儲存自訂範本</button>
+        </div>
+
+        <!-- Fast Form Fields -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+          <div>
+            <label class="picket-field-label">檢舉人 ID (您)：</label>
+            <input type="text" id="picket-reporter" class="form-control picket-input picket-mono" placeholder="您的 PTT ID" />
+          </div>
+          <div>
+            <label class="picket-field-label">被檢舉人 ID：</label>
+            <input type="text" id="picket-target-author" class="form-control picket-input picket-mono" placeholder="請輸入或反白推文帶入" />
+          </div>
+          <div>
+            <label class="picket-field-label">文章代碼 (AID)：</label>
+            <input type="text" id="picket-aid" class="form-control picket-input picket-mono" placeholder="例如 #1d5ve04Z" />
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1.4fr 1fr; gap: 10px; margin-bottom: 10px;">
+          <div>
+            <label class="picket-field-label">文章標題：</label>
+            <input type="text" id="picket-title" class="form-control picket-input" placeholder="文章標題" />
+          </div>
+          <div>
+            <label class="picket-field-label">文章網址：</label>
+            <input type="text" id="picket-weburl" class="form-control picket-input picket-mono" placeholder="https://www.ptt.cc/..." />
+          </div>
+        </div>
+
+        <!-- Violation Content -->
+        <div style="margin-bottom: 10px;">
+          <label class="picket-field-label">違規事證內容（推文或內文截錄）：</label>
+          <textarea id="picket-violation-content" class="form-control picket-textarea picket-mono" rows="3" placeholder="貼上違規內容，或先在終端機反白選取文字；多筆事證可手動貼入此處..." style="width: 100%; resize: vertical;"></textarea>
+        </div>
+
+        <!-- Violation Rule Clause -->
+        <div style="margin-bottom: 12px;">
+          <label class="picket-field-label">違反板規條款：</label>
+          <input type="text" id="picket-rule-input" class="form-control picket-input" placeholder="例如：板規四 謾罵、板規七 政治問卦" style="margin-bottom: 8px;" />
+          <div id="picket-rule-pills" style="display: flex; flex-wrap: wrap; gap: 6px;"></div>
+        </div>
+
+        <!-- Live Preview -->
+        <div style="margin-bottom: 10px;">
+          <label class="picket-field-label" style="color: var(--accent-color);">
+            📄 產生結果預覽：
+          </label>
+          <div style="margin-bottom: 8px;">
+            <div class="picket-sub-label" style="margin-bottom: 3px;">標題：</div>
+            <input type="text" id="picket-preview-title" class="form-control picket-input" readonly style="width: 100%; font-weight: 600; background: rgba(0,0,0,0.22);" />
+          </div>
+          <div>
+            <div class="picket-sub-label" style="margin-bottom: 3px;">內文：</div>
+            <textarea id="picket-preview-body" class="form-control picket-textarea picket-mono" readonly rows="5" style="width: 100%; background: rgba(0,0,0,0.22); resize: vertical;"></textarea>
+          </div>
+        </div>
+
+        <!-- Step-by-Step Right Pane Picket Guide -->
+        <div id="picket-workflow-guide" class="picket-guide-box">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px;">
+            <span style="font-weight: 600; color: var(--accent-color);">🧭 右側雙開檢舉流程引導（手動逐步貼上，安全零誤觸）</span>
+            <button id="picket-btn-open-split" type="button" class="btn-secondary picket-header-btn">
+              ◫ 開啟右側並排視窗
+            </button>
+          </div>
+          <ol style="margin: 0; padding-left: 20px; color: var(--text-secondary);">
+            <li>點選上方按鈕或分頁列最右側的 <strong>[◫]</strong>，開啟<strong>右側第 2 視窗</strong>並登入 PTT。</li>
+            <li>
+              在右側視窗<span id="picket-guide-dest-text">按 <kbd>s</kbd> 進入檢舉專板 <strong id="picket-guide-board-code" style="color: var(--text-primary); font-family: monospace;">GossipPicket</strong></span>
+              <button id="picket-btn-copy-board" type="button" class="picket-tag-btn" style="margin-left: 4px;">📋 複製板名</button>
+              ，再按 <kbd>Ctrl+P</kbd> 發表文章（或寄信給板主）。
+            </li>
+            <li>點選下方 <strong>「📋 1. 複製標題」</strong>（自動切換焦點至右側視窗）➔ 在右側「標題：」欄位貼上並按 <kbd>Enter</kbd> 進入內文編輯。</li>
+            <li>接著直接點選下方 <strong>「📋 2. 複製內文」</strong> ➔ 在右側內文區貼上，確認後按 <kbd>Ctrl+X</kbd> 送出！</li>
+          </ol>
+        </div>
+      </div>
+
+      <!-- Modal Footer Actions -->
+      <div class="modal-footer picket-modal-footer">
+        <div style="display: flex; gap: 6px;">
+          <button id="picket-btn-reextract" type="button" class="btn-secondary picket-action-btn" title="重新從目前終端機畫面擷取文章與推文">
+            🔄 重新擷取畫面
+          </button>
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button id="picket-btn-copy-title" type="button" class="btn-secondary picket-action-btn" style="border-color: var(--accent-color); color: var(--accent-color);">
+            📋 1. 複製標題
+          </button>
+          <button id="picket-btn-copy-body" type="button" class="btn-primary picket-action-btn">
+            📋 2. 複製內文
+          </button>
+          <button id="picket-btn-copy-all" type="button" class="btn-secondary picket-action-btn" title="同時複製標題與內文">
+            📋 複製全文
+          </button>
         </div>
       </div>
     </div>
@@ -1049,6 +1210,7 @@
     <div class="context-menu-item" id="ctx-blacklist-toggle">🚫 加入黑名單</div>
     <div class="context-menu-item" id="ctx-blacklist-kw-toggle">🔤 加入關鍵字黑名單</div>
     <div class="context-menu-item" id="ctx-quick-push">💬 快速開啟長推文小幫手 (Alt+X)</div>
+    <div class="context-menu-item" id="ctx-picket-report">🚨 產生看板檢舉格式 (Cmd+Shift+R)</div>
   </div>
 
   <!-- Dedicated Floating IME Composition Tooltip (懸浮組字預覽視窗) -->
@@ -1153,7 +1315,7 @@
         <div class="update-version-card">
           <div>
             <div class="update-ver-label">目前版本</div>
-            <div id="update-modal-current-ver" class="update-ver-tag current">v0.1.10</div>
+            <div id="update-modal-current-ver" class="update-ver-tag current">v0.1.11</div>
           </div>
           <div style="font-size: 18px; color: var(--text-muted, #8e8e93);">➔</div>
           <div>

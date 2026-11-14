@@ -585,8 +585,16 @@ export class SettingsUI {
   }
 
   applyToolbarScale(scale = 'medium') {
-    document.body.classList.remove('toolbar-scale-standard', 'toolbar-scale-medium', 'toolbar-scale-large');
+    document.body.classList.remove(
+      'toolbar-scale-standard',
+      'toolbar-scale-medium',
+      'toolbar-scale-large',
+      'toolbar-scale-xlarge'
+    );
     document.body.classList.add(`toolbar-scale-${scale}`);
+    if (this.elements?.settingToolbarScale && this.elements.settingToolbarScale.value !== scale) {
+      this.elements.settingToolbarScale.value = scale;
+    }
     window.dispatchEvent(new Event('toolbar-scale-changed'));
     setTimeout(() => {
       this.tabManager.tabs.forEach((t) => t.view?.resize());

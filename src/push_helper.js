@@ -29,6 +29,7 @@ export class PushHelper {
     this.maxRetries = 3;
     if (options.sleep) this.sleep = options.sleep;
     this.getActiveTab = getActiveTabFn;
+    this.onStateChange = options.onStateChange || (() => {});
     this.isOpen = false;
     this.isPushing = false;
     this._run = null;
@@ -225,6 +226,7 @@ export class PushHelper {
     this.isOpen = true;
     this.modalEl?.classList.remove('hidden');
     this.isPushing = false;
+    this.onStateChange();
 
     if (this.tplSaveBar) this.tplSaveBar.style.display = 'none';
     if (this.tplControls) this.tplControls.style.display = 'flex';
@@ -299,6 +301,7 @@ export class PushHelper {
     clearTimeout(this._statusTimer);
     for (const timer of this._uiTimers || []) clearTimeout(timer);
     this._uiTimers?.clear();
+    this.onStateChange();
   }
 
   later(callback, ms) {
@@ -518,8 +521,9 @@ export class PushHelper {
     try {
       const address = String(tab?.address || '');
       const host = new URL(/^[a-z]+:\/\//i.test(address) ? address : `ssh://${address}`).hostname.toLowerCase();
-      return /^(?:[^.]+\.)*(?:ptt|ptt2)\.cc$/.test(host) ? 'ptt' : 'unsupported';
-    } catch { return 'unsupported'; }
+      if (/maple/i.test(host)) return 'maple';
+      return /^(?:[^.]+\.)*(?:ptt|ptt2)\.cc$/.test(host) ? 'ptt' : 'ptt';
+    } catch { return 'ptt'; }
   }
 
   detectArticleAuthor(tab = this.getActiveTab?.()) {
@@ -557,7 +561,50 @@ export class PushHelper {
     return { state, text: bottomText, draft: '' };
   }
 
+  isPushInputPrompt(tab = this.getActiveTab?.()) {
+    if (!tab?.buf) return false;
+    const rows = tab.buf.rows;
+    const bottomLines = [rows - 2, rows - 1].filter(r => r >= 0).map(r => tab.buf.getRowText(tab.buf.lines[r] || []));
+    const lastLine = bottomLines[bottomLines.length - 1] || '';
+
+    // If bottom line is BBS reading status bar, article list, or reply prompt, definitely not in push input
+    if (/瀏覽\s+第\s*\d+|目前顯示\s*[:：]?\s*第\s*\d+|100%|\(←\/q\)離開|\(h\)說明|\(y\)回應\(X\)推文|文章選讀|看板《|採用原標題|文章發表綱領|回應至/.test(lastLine)) {
+      return false;
+    }
+
+    for (const rawLine of bottomLines) {
+      const line = rawLine.trim();
+      // An existing push line in an article ends with a timestamp like "11/12 12:34" - ignore it!
+      if (/\d{1,2}\/\d{1,2}\s+\d{1,2}:\d{2}\s*$/.test(line)) {
+        continue;
+      }
+      if (/瀏覽|目前顯示|100%|離開|說明|回應至|引用原文|原標題|文章發表綱領/.test(line)) {
+        continue;
+      }
+      // PTT input prompt: [推] user: or author mode: → user: or Maple: 加註意見：
+      if (/^\[[推噓→]\]\s*[a-zA-Z0-9_]{1,12}\s*[:：]/.test(line) ||
+          /^[推噓→]\s*[a-zA-Z0-9_]{1,12}\s*[:：]/.test(line) ||
+          /^(?:請輸入您的意見|加註意見)\s*[:：]/.test(line)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  isPushChoicePrompt(tab = this.getActiveTab?.()) {
+    const bottomText = this.getBottomPromptText(tab);
+    return /您覺得這篇文章|[(（]1\/2\/3[)）]\?|\[1\]推薦/.test(bottomText);
+  }
+
+  isArticleReplyOrEditPrompt(tab = this.getActiveTab?.()) {
+    const bottomText = this.getBottomPromptText(tab);
+    return /文章發表綱領|採用原標題|回應至\s*[(（]|請問要引用原文嗎|引用原文\s*[(（]|文章標題\s*[:：]|發表文章種類/.test(bottomText);
+  }
+
   detectPushState(tab = this.getActiveTab?.()) {
+    if (this.isArticleReplyOrEditPrompt(tab)) {
+      return 'reply-or-edit';
+    }
     const bottomText = this.getBottomPromptText(tab);
     if (/(?:[◆●※]\s*)?(?:請勿快速連續推文|距離上次發文或推文|距離上次推文|需間隔|請稍候|請勿在).*?(\d{1,6})\s*秒/.test(bottomText)) {
       return 'cooldown';
@@ -565,10 +612,10 @@ export class PushHelper {
     if (/(?:確定\s*\[[yY]\/[nN]\]|確定要儲存檔案嗎)/.test(bottomText)) {
       return 'confirm-save';
     }
-    if (/(?:[推噓→]|\[[推噓→]\])\s*[a-zA-Z0-9_]+\s*[:：]|(?:請輸入您的意見|加註意見)\s*[:：]/.test(bottomText)) {
+    if (this.isPushInputPrompt(tab)) {
       return 'input-content';
     }
-    if (/您覺得這篇文章|[(（]1\/2\/3[)）]\?/.test(bottomText)) {
+    if (this.isPushChoicePrompt(tab)) {
       return 'choose-type';
     }
     if (/瀏覽\s+第\s+\d+/.test(bottomText)) {
@@ -602,14 +649,18 @@ export class PushHelper {
   async sendSegmentSequence(seg, typeKey = '1', isFirstSegment = true, signal = null) {
     const tab = this.getActiveTab?.();
     if (!tab || !tab.isConnected) throw new Error('連線已中斷，無法推文');
-    const isPtt = this.detectTargetStation(tab) === 'ptt';
+    const isPtt = this.detectTargetStation(tab) !== 'maple';
     const keyDelay = isPtt ? 250 : 500;
     const pushKey = isPtt ? 'X' : '%';
 
+    // 0. Hard safety guard: if terminal is currently in an article editing / replying prompt, ABORT!
+    if (this.isArticleReplyOrEditPrompt(tab)) {
+      return { status: 'aborted', error: '終端機目前處於文章編輯或回應狀態，已安全停止推文' };
+    }
+
     // 1. Check if terminal is ALREADY at push prompt before sending any initial key
-    let bottomText = this.getBottomPromptText(tab);
-    let atInput = /(?:[推噓→]|\[[推噓→]\])\s*[a-zA-Z0-9_]+\s*[:：]|(?:請輸入您的意見|加註意見)\s*[:：]/.test(bottomText);
-    let atChoice = /您覺得這篇文章|[(（]1\/2\/3[)）]\?/.test(bottomText);
+    let atInput = this.isPushInputPrompt(tab);
+    let atChoice = this.isPushChoicePrompt(tab);
 
     if (!atInput && !atChoice) {
       // Not yet in push interface: trigger push mode with 'X' (or '%' on Maple)
@@ -617,9 +668,23 @@ export class PushHelper {
       await this.sleep(keyDelay, signal);
       if (this.abortController || signal?.aborted) return { status: 'aborted' };
 
-      bottomText = this.getBottomPromptText(tab);
-      atInput = /(?:[推噓→]|\[[推噓→]\])\s*[a-zA-Z0-9_]+\s*[:：]|(?:請輸入您的意見|加註意見)\s*[:：]/.test(bottomText);
-      atChoice = /您覺得這篇文章|[(（]1\/2\/3[)）]\?/.test(bottomText);
+      if (this.isArticleReplyOrEditPrompt(tab)) {
+        await this.sendKeystroke('q\x1b', tab);
+        return { status: 'aborted', error: '終端機進入非預期狀態，已安全取消' };
+      }
+
+      atInput = this.isPushInputPrompt(tab);
+      atChoice = this.isPushChoicePrompt(tab);
+    }
+
+    // Critical safety invariant: if neither push choice nor push input prompt is reached,
+    // ABORT immediately! Never send segment text or 'y\r' blindly into an unknown screen.
+    if (!atInput && !atChoice) {
+      if (this.isArticleReplyOrEditPrompt(tab)) {
+        await this.sendKeystroke('q\x1b', tab);
+      }
+      console.warn('[PushHelper] Failed to enter push mode; aborting sequence to protect BBS buffer');
+      return { status: 'aborted', error: '無法進入推文模式（請確認終端機處於文章閱讀狀態）' };
     }
 
     // 2. If at 1/2/3 choice prompt, send choice (PTT single key, Maple with \r)
@@ -630,6 +695,12 @@ export class PushHelper {
       await this.sendKeystroke(optionStr, tab);
       await this.sleep(keyDelay, signal);
       if (this.abortController || signal?.aborted) return { status: 'aborted' };
+
+      atInput = this.isPushInputPrompt(tab);
+    }
+
+    if (!atInput) {
+      return { status: 'aborted', error: '未能進入推文文字輸入狀態，已中止推文' };
     }
 
     // 3. Send segment text + Enter
@@ -637,21 +708,19 @@ export class PushHelper {
     await this.sleep(keyDelay, signal);
     if (this.abortController || signal?.aborted) return { status: 'aborted' };
 
-    // 4. Confirm saving (on PTT, send y\r)
-    if (isPtt) {
-      await this.sendKeystroke('y\r', tab);
-      await this.sleep(keyDelay, signal);
-      if (this.abortController || signal?.aborted) return { status: 'aborted' };
+    // 4. Confirm saving (send y\r to commit prompt)
+    if (this.isArticleReplyOrEditPrompt(tab)) {
+      await this.sendKeystroke('q\x1b', tab);
+      return { status: 'aborted', error: '終端機處於異常狀態（非推文存檔畫面），已安全取消' };
     }
+    await this.sendKeystroke('y\r', tab);
+    await this.sleep(keyDelay, signal);
+    if (this.abortController || signal?.aborted) return { status: 'aborted' };
 
     // 5. Check if PTT threw a cooldown warning
-    bottomText = this.getBottomPromptText(tab);
-    const cdMatch = bottomText.match(/(?:[◆●※]\s*)?(?:請勿快速連續推文|距離上次發文或推文|距離上次推文|需間隔|請稍候|請勿在).*?(\d{1,6})\s*秒/);
-    if (cdMatch) {
-      const waitSec = parseInt(cdMatch[1], 10);
-      if (waitSec > 0 && waitSec <= 120) {
-        return { status: 'cooldown', seconds: waitSec };
-      }
+    const cdSec = this.detectCooldownSeconds(tab);
+    if (cdSec) {
+      return { status: 'cooldown', seconds: cdSec };
     }
 
     return { status: 'confirmed' };
@@ -817,6 +886,7 @@ export class PushHelper {
 
   setRunningUi(running) {
     this.isPushing = running;
+    this.onStateChange();
     for (const element of [this.textInput, this.idInput, this.typeSelect, this.strategySelect, this.delaySelect, this.tplSelect, this.tplSaveBtn, this.tplDeleteBtn]) {
       if (element) element.disabled = running;
     }

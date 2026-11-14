@@ -70,6 +70,7 @@ export class ConnectionController {
     elements,
     onFocusTerminal,
     onShowToast,
+    getModalOpenStates,
   }) {
     this.tabManager = tabManager;
     this.settingsManager = settingsManager;
@@ -78,6 +79,8 @@ export class ConnectionController {
     this.elements = elements;
     this.onFocusTerminal = onFocusTerminal || (() => {});
     this.onShowToast = onShowToast || (() => {});
+    this.getModalOpenStates = getModalOpenStates || (() => false);
+    this._lastAntiIdleSuppressed = false;
 
     this.sendQueue = [];
     this.isSending = false;
@@ -557,17 +560,31 @@ export class ConnectionController {
     });
   }
 
+  syncAntiIdleSuppression() {
+    const isSuppressed = Boolean(
+      (this.getModalOpenStates && this.getModalOpenStates()) ||
+      (this.inputLeases && this.inputLeases.size > 0)
+    );
+    if (this._lastAntiIdleSuppressed === isSuppressed) return;
+    this._lastAntiIdleSuppressed = isSuppressed;
+    safeInvoke('set_anti_idle_suppressed', { suppressed: isSuppressed }).catch(() => {});
+  }
+
   acquireInputLease(tabId) {
     this.inputLeases ||= new Map();
     if (!this.tabManager.getTabById(tabId)?.isConnected || this.inputLeases.has(tabId) ||
         this.sendingTabs?.has(tabId) || this.sendQueue.some(item => item.tabId === tabId)) return null;
     const token = Symbol('terminal-input-owner');
     this.inputLeases.set(tabId, token);
+    this.syncAntiIdleSuppression();
     return token;
   }
 
   releaseInputLease(tabId, token) {
-    if (token && this.inputLeases?.get(tabId) === token) this.inputLeases.delete(tabId);
+    if (token && this.inputLeases?.get(tabId) === token) {
+      this.inputLeases.delete(tabId);
+      this.syncAntiIdleSuppression();
+    }
   }
 
   acceptsInputLease(tabId, token = null) {

@@ -101,6 +101,11 @@ export class ArticleParser {
         const user = pushMatch[2];
         let rest = pushMatch[3].trimEnd();
 
+        // Guard: terminal prompt lines (such as "確定[y/N]:") are not actual in-article pushes
+        if (/確定\s*\[[yY]\/[nN]\]|確定要儲存檔案嗎/.test(rest)) {
+          continue;
+        }
+
         // Extract trailing IP/Timestamp if present
         let pushTime = '';
         let pushIp = '';
@@ -291,6 +296,7 @@ export class ArticleReaderModal {
             <span id="reader-font-val">${this.fontSize}px</span>
             <button id="reader-font-inc" title="放大字體">A+</button>
           </div>
+          <button id="reader-live-chat-btn" class="btn-reader-action btn-reader-live-chat" title="切換為實況推文聊天室模式 (即時推文串流)">📺 實況聊天</button>
           <button id="reader-summary-btn" class="btn-reader-action btn-reader-summary" title="使用 AI 生成文章重點與推文懶人包">✨ AI 懶人包</button>
           <button id="reader-jump-push-btn" class="btn-reader-action" title="快速捲動至推文區">💬 跳至留言</button>
           <button id="reader-copy-btn" class="btn-reader-action" title="複製文章連結與內容">📋 複製內容</button>
@@ -380,6 +386,9 @@ export class ArticleReaderModal {
     document.getElementById('reader-font-dec')?.addEventListener('click', () => this.adjustFontSize(-2));
     document.getElementById('reader-font-inc')?.addEventListener('click', () => this.adjustFontSize(2));
     document.getElementById('reader-copy-btn')?.addEventListener('click', () => this.copyArticle());
+    document.getElementById('reader-live-chat-btn')?.addEventListener('click', () => {
+      this.onOpenLiveChat?.(this.currentArticle);
+    });
     document.getElementById('reader-summary-btn')?.addEventListener('click', () => this.toggleSummary());
     document.getElementById('summary-close-btn')?.addEventListener('click', () => this.hideSummary());
     document.getElementById('summary-refresh-btn')?.addEventListener('click', () => this.loadSummary(true));
