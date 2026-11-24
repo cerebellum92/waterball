@@ -237,8 +237,7 @@ jobs:
             version "${VERSION}"
             sha256 "${SHA256}"
 
-            url "https://github.com/${REPO}/releases/download/${TAG_PREFIX}#{version}/Waterball_${TAG_PREFIX}#{version}_macOS.dmg",
-                verified: "github.com/${REPO}/"
+            url "https://github.com/${REPO}/releases/download/${TAG_PREFIX}#{version}/Waterball_${TAG_PREFIX}#{version}_macOS.dmg"
             name "Waterball"
             desc "Cross-platform BBS terminal client with live chat and UAO support"
             homepage "https://github.com/${REPO}"
