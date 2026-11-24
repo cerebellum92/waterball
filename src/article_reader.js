@@ -1,4 +1,4 @@
-import { isImageUrl, normalizeImageUrl, getProxiedImageUrl } from './image_preview.js';
+import { imagePreview, isImageUrl, normalizeImageUrl, getProxiedImageUrl } from './image_preview.js';
 import { blacklistManager } from './blacklist.js';
 import { writeClipboardText } from './platform.js';
 import { userTagsManager, TAG_COLORS } from './user_tags.js';
@@ -246,6 +246,8 @@ export class ArticleReaderModal {
     this.fontSize = 16;
     this.isOpen = false;
     this.currentArticle = null;
+    this.imagePreview = imagePreview;
+    this.currentHoverPushImg = null;
     this.onEditUserTag = null;
     this.onShowToast = null;
     this.currentFilter = 'all';
@@ -404,13 +406,18 @@ export class ArticleReaderModal {
       document.getElementById('reader-scroll-container')?.scrollTo({ top: 0, behavior: 'smooth' });
     });
 
-    // Toggle scroll to top button
+    // Toggle scroll to top button and hide floating push hover preview while scrolling
     const scrollContainer = document.getElementById('reader-scroll-container');
     scrollContainer?.addEventListener('scroll', () => {
+      this.hidePushHoverPreviewImmediate();
       if (scrollTopBtn) {
         scrollTopBtn.classList.toggle('hidden', scrollContainer.scrollTop < 250);
       }
     });
+
+    // Delegated hover preview for push thumbnails (.push-inline-img); click still opens fullscreen lightbox
+    const pushListEl = modal.querySelector('#push-list');
+    this.bindPushHoverPreview(pushListEl);
 
     // Push filter tabs
     modal.querySelectorAll('.push-filter-btn').forEach((btn) => {
@@ -504,7 +511,68 @@ export class ArticleReaderModal {
     this.applyFontSize();
   }
 
+  getHoverPreview() {
+    return this.imagePreview || imagePreview;
+  }
+
+  hidePushHoverPreviewImmediate() {
+    this.currentHoverPushImg = null;
+    this.getHoverPreview()?.hideImmediate?.();
+  }
+
+  bindPushHoverPreview(pushListEl) {
+    if (!pushListEl || typeof pushListEl.addEventListener !== 'function') return;
+
+    const findPushImg = (target) => {
+      if (!target) return null;
+      if (target.classList?.contains?.('push-inline-img')) return target;
+      return target.closest?.('.push-inline-img') || null;
+    };
+
+    const getCoords = (e, el) => {
+      if (typeof e?.clientX === 'number' && typeof e?.clientY === 'number') {
+        return { x: e.clientX, y: e.clientY };
+      }
+      const rect = el?.getBoundingClientRect?.();
+      if (rect) {
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+      }
+      return { x: 200, y: 200 };
+    };
+
+    pushListEl.addEventListener('mouseover', (e) => {
+      if (!this.isOpen) return;
+      const img = findPushImg(e?.target);
+      if (!img || img.classList?.contains?.('push-img-broken')) return;
+      const previewUrl = img.dataset?.previewUrl || img.src;
+      if (!previewUrl) return;
+      if (this.currentHoverPushImg !== img) {
+        this.currentHoverPushImg = img;
+        const { x, y } = getCoords(e, img);
+        const anchorRect = img.getBoundingClientRect?.() || null;
+        this.getHoverPreview()?.show?.(previewUrl, x, y, { large: true, anchorRect });
+      }
+    });
+
+    pushListEl.addEventListener('mouseout', (e) => {
+      if (!this.currentHoverPushImg) return;
+      const img = findPushImg(e?.target);
+      if (img && img === this.currentHoverPushImg && !img.contains?.(e?.relatedTarget)) {
+        this.currentHoverPushImg = null;
+        this.getHoverPreview()?.hide?.();
+      }
+    });
+
+    pushListEl.addEventListener('mouseleave', () => {
+      if (this.currentHoverPushImg) {
+        this.currentHoverPushImg = null;
+        this.getHoverPreview()?.hide?.();
+      }
+    });
+  }
+
   openLightbox(url) {
+    this.hidePushHoverPreviewImmediate();
     const img = document.getElementById('lightbox-img');
     const caption = document.getElementById('lightbox-caption');
     if (img) {
@@ -716,6 +784,9 @@ export class ArticleReaderModal {
     this.currentFilter = 'all';
     this._renderedBodyKey = null;
     this._renderedPushCount = -1;
+    this._renderedPushKeys = [];
+    this._renderedPushListEl = null;
+    this._renderedPushEmpty = false;
     this.isCrawling = false;
 
     const searchInput = document.getElementById('push-search-input');
@@ -1159,10 +1230,236 @@ export class ArticleReaderModal {
     }));
   }
 
+  isElementInsidePushList(pushListEl, node) {
+    if (!pushListEl || !node) return false;
+    if (typeof pushListEl.contains === 'function') {
+      return pushListEl.contains(node);
+    }
+    const visit = (el) => {
+      if (!el?.children) return false;
+      for (const child of el.children) {
+        if (child === node || visit(child)) return true;
+      }
+      return false;
+    };
+    return visit(pushListEl);
+  }
+
+  removePushChildrenFrom(pushListEl, startIndex) {
+    if (typeof pushListEl.removeChild === 'function') {
+      while (pushListEl.children.length > startIndex) {
+        const last = pushListEl.children[pushListEl.children.length - 1];
+        if (!last) break;
+        pushListEl.removeChild(last);
+      }
+      return;
+    }
+    if (Array.isArray(pushListEl.children)) {
+      pushListEl.children.length = startIndex;
+    }
+  }
+
+  getPushGroupRenderKey(p, meta) {
+    const floorLabel = p.floorLabel || (Number.isInteger(p.floor) ? `${p.floor}F` : '1F');
+    const subs = (p.pushes || [p]).map((sub) => ({
+      content: sub.content || '',
+      forwardRepair: sub.repairedCont && meta.repairVisible(sub.repairNextLine) ? sub.repairedCont : null,
+      previousRepair: sub.previousRepair && meta.repairVisible(sub.repairPreviousLine) ? sub.previousRepair : null,
+      images: (sub.images || []).map((img) => img.url),
+      youtubes: (sub.youtubes || []).map((yt) => yt.videoId || yt.url),
+    }));
+    return JSON.stringify([
+      floorLabel,
+      p.tag || '',
+      p.user || '',
+      p.ip || '',
+      p.time || '',
+      meta.mode,
+      meta.blacklistInfo.isUserBlacklisted,
+      meta.blacklistInfo.matchedKeyword || '',
+      meta.blacklistInfo.isPushBlacklisted,
+      meta.revealed,
+      meta.hasUserRule,
+      meta.pushTag ? [meta.pushTag.tag || '', meta.pushTag.color || '', meta.pushTag.note || ''] : null,
+      meta.isAuthor,
+      meta.isUserHighlighted,
+      meta.isUserDimmed,
+      subs,
+    ]);
+  }
+
+  buildPushRowElement(p, meta) {
+    const {
+      mode,
+      blacklistInfo: { isUserBlacklisted, matchedKeyword, isPushBlacklisted },
+      revealed,
+      pushTag,
+      isAuthor,
+      hasUserRule,
+      isUserHighlighted,
+      isUserDimmed,
+      repairVisible,
+    } = meta;
+    const reason = isUserBlacklisted ? `帳號 ${p.user}` : `關鍵字「${matchedKeyword}」`;
+
+    const pushes = p.pushes || [p];
+    let pushContentHtml = '';
+    for (let idx = 0; idx < pushes.length; idx++) {
+      const sub = pushes[idx];
+      const forwardRepair = sub.repairedCont && repairVisible(sub.repairNextLine) ? sub.repairedCont : null;
+      const previousRepair = sub.previousRepair && repairVisible(sub.repairPreviousLine) ? sub.previousRepair : null;
+      const subHtml = this.formatLineHtml(sub.content, forwardRepair, previousRepair);
+      if (idx > 0) {
+        const prevSub = pushes[idx - 1];
+        const glue = this.pushJoiner(prevSub, sub);
+        pushContentHtml += glue;
+      }
+      pushContentHtml += subHtml;
+    }
+
+    const pushTagHtml = pushTag && pushTag.tag ? (() => {
+      const col = TAG_COLORS[pushTag.color] || TAG_COLORS.blue;
+      const noteTitle = pushTag.note ? ` title="備註: ${pushTag.note.replace(/"/g, '&quot;')}"` : '';
+      return ` <span class="user-tag-badge mini" data-user="${this.escapeHtml(p.user)}" style="color: ${col.text}; background: ${col.bg}; border-color: ${col.border}; cursor: pointer;"${noteTitle}>🏷️ ${this.escapeHtml(pushTag.tag)}</span>`;
+    })() : '';
+
+    const authorBadgeHtml = isAuthor ? ' <span class="push-author-badge" title="此推文由文章原作者發表 (點擊追蹤)">✍️ 原PO</span>' : '';
+    const quickBlacklistBtn = ` <button type="button" class="push-quick-blacklist-btn${hasUserRule ? ' active' : ''}" data-user="${this.escapeHtml(p.user)}" title="${hasUserRule ? '已在黑名單中 (點擊移出)' : '將此用戶加入黑名單'}">${hasUserRule ? '🚫 已黑' : '🚫'}</button>`;
+
+    const row = document.createElement('div');
+    row.className = `push-item push-type-${p.tag === '推' ? 'up' : p.tag === '噓' ? 'down' : 'neutral'}${isPushBlacklisted ? ' blacklisted-push' : ''}${isAuthor ? ' is-author-push' : ''}${isUserHighlighted ? ' is-user-highlighted' : ''}${isUserDimmed ? ' is-user-dimmed' : ''}`;
+
+    const floorLabel = p.floorLabel || (Number.isInteger(p.floor) ? `${p.floor}F` : '1F');
+
+    if (isPushBlacklisted && mode === 'mask') {
+      const revealPushes = p.pushes || [p];
+      row.innerHTML = `
+        <div class="push-masked-banner">
+          <span class="push-floor">${this.escapeHtml(floorLabel)}</span>
+          <span class="push-mask-label">🛡️ 依黑名單規則隱藏 (${this.escapeHtml(reason)})</span>
+          <button type="button" class="push-mask-reveal-btn">${revealed ? '收起' : '點擊查看'}</button>
+        </div>
+        <div class="push-masked-body${revealed ? '' : ' hidden'}">
+          <div class="push-row-main">
+            <span class="push-floor">${this.escapeHtml(floorLabel)}</span>
+            <span class="push-tag">${this.escapeHtml(p.tag)}</span>
+            <span class="push-user"><span class="push-user-name" title="點擊高亮追蹤此鄉民留言">${this.escapeHtml(p.user)}</span>${authorBadgeHtml}${pushTagHtml}${quickBlacklistBtn}</span>
+            <span class="push-content">${pushContentHtml}</span>
+            <span class="push-time">${this.escapeHtml(p.ip ? p.ip + ' ' : '')}${this.escapeHtml(p.time)}</span>
+          </div>
+        </div>
+      `;
+      row.querySelector('.push-mask-reveal-btn')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const body = row.querySelector('.push-masked-body');
+        if (body) {
+          const isHidden = body.classList.toggle('hidden');
+          this.revealedPushes ||= new Set();
+          for (const original of revealPushes) {
+            if (isHidden) this.revealedPushes.delete(original);
+            else this.revealedPushes.add(original);
+          }
+          e.target.textContent = isHidden ? '點擊查看' : '收起';
+        }
+      });
+    } else {
+      row.innerHTML = `
+        <div class="push-row-main">
+          <span class="push-floor">${this.escapeHtml(floorLabel)}</span>
+          <span class="push-tag">${this.escapeHtml(p.tag)}</span>
+          <span class="push-user"><span class="push-user-name" title="點擊高亮追蹤此鄉民留言">${this.escapeHtml(p.user)}</span>${authorBadgeHtml}${pushTagHtml}${quickBlacklistBtn}${isPushBlacklisted ? ` <span class="push-blacklist-badge" title="${this.escapeHtml(reason)}">🚫</span>` : ''}</span>
+          <span class="push-content">${pushContentHtml}</span>
+          <span class="push-time">${this.escapeHtml(p.ip ? p.ip + ' ' : '')}${this.escapeHtml(p.time)}</span>
+        </div>
+      `;
+    }
+
+    // User click tracking
+    const toggleUserHighlight = (e) => {
+      e.stopPropagation();
+      const u = p.user.trim().toLowerCase();
+      this.highlightedUser = (this.highlightedUser === u) ? null : u;
+      this.renderPushList();
+    };
+    row.querySelector('.push-user-name')?.addEventListener('click', toggleUserHighlight);
+    row.querySelector('.push-author-badge')?.addEventListener('click', toggleUserHighlight);
+
+    row.querySelector('.push-quick-blacklist-btn')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const u = e.currentTarget.dataset.user;
+      if (u) {
+        try {
+          const added = blacklistManager.toggle(u);
+          this.onShowToast?.(added ? `🚫 已將 ${u} 加入黑名單` : `✅ 已將 ${u} 移出黑名單`);
+        } catch (error) { this.onShowToast?.(`黑名單未變更：${error.message}`); }
+      }
+    });
+
+    row.querySelector('.user-tag-badge')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.onEditUserTag?.(p.user);
+    });
+
+    // Media belongs to the masked body and is created only after explicit reveal.
+    const mediaTarget = isPushBlacklisted && mode === 'mask'
+      ? row.querySelector('.push-masked-body') : row;
+    const renderMedia = () => {
+      if (!mediaTarget || mediaTarget.dataset.mediaLoaded === 'true') return;
+      mediaTarget.dataset.mediaLoaded = 'true';
+      const seenUrls = new Set();
+      for (const sub of pushes) {
+        const forwardRepair = sub.repairedCont && repairVisible(sub.repairNextLine) ? sub.repairedCont : null;
+        for (const imgObj of (sub.repairedCont && !forwardRepair ? [] : sub.images) || []) {
+          let imageUrl;
+          try {
+            const url = new URL(imgObj.url);
+            if (!['http:', 'https:'].includes(url.protocol)) continue;
+            imageUrl = url.href;
+          } catch { continue; }
+          if (seenUrls.has(imageUrl)) continue;
+          seenUrls.add(imageUrl);
+          const img = document.createElement('img');
+          img.className = 'push-inline-img';
+          img.referrerPolicy = 'no-referrer';
+          if (img.dataset) img.dataset.previewUrl = imageUrl;
+          img.src = imageUrl;
+          img.alt = String(imgObj.raw || '推文圖片');
+          img.loading = 'lazy';
+          img.title = '滑鼠移過放大預覽 · 點擊全螢幕檢視';
+          img.onerror = () => {
+            if (!img.dataset.proxyTried) {
+              img.dataset.proxyTried = 'true';
+              img.src = getProxiedImageUrl(imageUrl);
+            } else {
+              img.classList.add('push-img-broken');
+              img.title = '圖片載入失敗';
+            }
+          };
+          img.addEventListener('click', () => this.openLightbox(img.src || imageUrl));
+          mediaTarget.appendChild(img);
+        }
+        for (const yt of (sub.repairedCont && !forwardRepair ? [] : sub.youtubes) || []) {
+          const ytKey = yt.videoId || yt.url;
+          if (seenUrls.has(ytKey)) continue;
+          seenUrls.add(ytKey);
+          mediaTarget.appendChild(this.createYoutubeCard(yt));
+        }
+      }
+    };
+    if (isPushBlacklisted && mode === 'mask') {
+      if (revealed) renderMedia();
+      row.querySelector('.push-mask-reveal-btn')?.addEventListener('click', () => {
+        if (pushes.some(s => s.repairedCont || s.previousRepair)) { this.renderPushList(); return; }
+        if (!mediaTarget?.classList.contains('hidden')) renderMedia();
+      });
+    } else renderMedia();
+
+    return row;
+  }
+
   renderPushList() {
     const pushListEl = document.getElementById('push-list');
     if (!pushListEl || !this.currentArticle) return;
-    pushListEl.innerHTML = '';
 
     const authorUser = this.currentArticle.author ? this.currentArticle.author.split('(')[0].trim().toLowerCase() : '';
     let rawList = this.currentArticle.pushList || [];
@@ -1209,7 +1506,13 @@ export class ArticleReaderModal {
     }
 
     if (list.length === 0) {
-      pushListEl.innerHTML = '<div class="push-empty">沒有符合篩選條件的推文</div>';
+      this.hidePushHoverPreviewImmediate();
+      if (!(this._renderedPushEmpty && pushListEl === this._renderedPushListEl && pushListEl.children.length === 0)) {
+        pushListEl.innerHTML = '<div class="push-empty">沒有符合篩選條件的推文</div>';
+      }
+      this._renderedPushListEl = pushListEl;
+      this._renderedPushKeys = [];
+      this._renderedPushEmpty = true;
       return;
     }
 
@@ -1220,173 +1523,69 @@ export class ArticleReaderModal {
       }
     });
 
-    list.forEach((p) => {
-      const { isUserBlacklisted, matchedKeyword, isPushBlacklisted } = blacklistByGroup.get(p);
-      const reason = isUserBlacklisted ? `帳號 ${p.user}` : `關鍵字「${matchedKeyword}」`;
+    const repairVisible = partnerLine => {
+      const partner = visibleBySourceLine.get(partnerLine);
+      if (!partner) return false;
+      const blocked = blacklistByGroup.get(partner).isPushBlacklisted;
+      return !blocked || mode === 'dim' || (mode === 'mask' && this.isPushGroupRevealed(partner));
+    };
 
-      const repairVisible = partnerLine => {
-        const partner = visibleBySourceLine.get(partnerLine);
-        if (!partner) return false;
-        const blocked = blacklistByGroup.get(partner).isPushBlacklisted;
-        return !blocked || mode === 'dim' || (mode === 'mask' && this.isPushGroupRevealed(partner));
-      };
-
-      const pushes = p.pushes || [p];
-      let pushContentHtml = '';
-      for (let idx = 0; idx < pushes.length; idx++) {
-        const sub = pushes[idx];
-        const forwardRepair = sub.repairedCont && repairVisible(sub.repairNextLine) ? sub.repairedCont : null;
-        const previousRepair = sub.previousRepair && repairVisible(sub.repairPreviousLine) ? sub.previousRepair : null;
-        const subHtml = this.formatLineHtml(sub.content, forwardRepair, previousRepair);
-        if (idx > 0) {
-          const prevSub = pushes[idx - 1];
-          const glue = this.pushJoiner(prevSub, sub);
-          pushContentHtml += glue;
-        }
-        pushContentHtml += subHtml;
-      }
-
-      const pushTag = userTagsManager.getTag(p.user);
-      const pushTagHtml = pushTag && pushTag.tag ? (() => {
-        const col = TAG_COLORS[pushTag.color] || TAG_COLORS.blue;
-        const noteTitle = pushTag.note ? ` title="備註: ${pushTag.note.replace(/"/g, '&quot;')}"` : '';
-        return ` <span class="user-tag-badge mini" data-user="${this.escapeHtml(p.user)}" style="color: ${col.text}; background: ${col.bg}; border-color: ${col.border}; cursor: pointer;"${noteTitle}>🏷️ ${this.escapeHtml(pushTag.tag)}</span>`;
-      })() : '';
-
-      const isAuthor = authorUser && p.user.trim().toLowerCase() === authorUser;
-      const authorBadgeHtml = isAuthor ? ' <span class="push-author-badge" title="此推文由文章原作者發表 (點擊追蹤)">✍️ 原PO</span>' : '';
-      const hasUserRule = blacklistManager.hasUserRule(p.user);
-      const quickBlacklistBtn = ` <button type="button" class="push-quick-blacklist-btn${hasUserRule ? ' active' : ''}" data-user="${this.escapeHtml(p.user)}" title="${hasUserRule ? '已在黑名單中 (點擊移出)' : '將此用戶加入黑名單'}">${hasUserRule ? '🚫 已黑' : '🚫'}</button>`;
-
+    const metas = list.map((p) => {
+      const blacklistInfo = blacklistByGroup.get(p);
+      const revealed = blacklistInfo.isPushBlacklisted && mode === 'mask' ? this.isPushGroupRevealed(p) : false;
       const isUserHighlighted = Boolean(this.highlightedUser && p.user.trim().toLowerCase() === this.highlightedUser);
-      const isUserDimmed = Boolean(this.highlightedUser && !isUserHighlighted);
-
-      const row = document.createElement('div');
-      row.className = `push-item push-type-${p.tag === '推' ? 'up' : p.tag === '噓' ? 'down' : 'neutral'}${isPushBlacklisted ? ' blacklisted-push' : ''}${isAuthor ? ' is-author-push' : ''}${isUserHighlighted ? ' is-user-highlighted' : ''}${isUserDimmed ? ' is-user-dimmed' : ''}`;
-
-      const floorLabel = p.floorLabel || (Number.isInteger(p.floor) ? `${p.floor}F` : '1F');
-
-      if (isPushBlacklisted && mode === 'mask') {
-        const revealPushes = p.pushes || [p];
-        const revealed = this.isPushGroupRevealed(p);
-        row.innerHTML = `
-          <div class="push-masked-banner">
-            <span class="push-floor">${this.escapeHtml(floorLabel)}</span>
-            <span class="push-mask-label">🛡️ 依黑名單規則隱藏 (${this.escapeHtml(reason)})</span>
-            <button type="button" class="push-mask-reveal-btn">${revealed ? '收起' : '點擊查看'}</button>
-          </div>
-          <div class="push-masked-body${revealed ? '' : ' hidden'}">
-            <span class="push-floor">${this.escapeHtml(floorLabel)}</span>
-            <span class="push-tag">${this.escapeHtml(p.tag)}</span>
-            <span class="push-user"><span class="push-user-name" title="點擊高亮追蹤此鄉民留言">${this.escapeHtml(p.user)}</span>${authorBadgeHtml}${pushTagHtml}${quickBlacklistBtn}</span>
-            <span class="push-content">${pushContentHtml}</span>
-            <span class="push-time">${this.escapeHtml(p.ip ? p.ip + ' ' : '')}${this.escapeHtml(p.time)}</span>
-          </div>
-        `;
-        row.querySelector('.push-mask-reveal-btn')?.addEventListener('click', (e) => {
-          e.stopPropagation();
-          const body = row.querySelector('.push-masked-body');
-          if (body) {
-            const isHidden = body.classList.toggle('hidden');
-            this.revealedPushes ||= new Set();
-            for (const original of revealPushes) {
-              if (isHidden) this.revealedPushes.delete(original);
-              else this.revealedPushes.add(original);
-            }
-            e.target.textContent = isHidden ? '點擊查看' : '收起';
-          }
-        });
-      } else {
-        row.innerHTML = `
-          <span class="push-floor">${this.escapeHtml(floorLabel)}</span>
-          <span class="push-tag">${this.escapeHtml(p.tag)}</span>
-          <span class="push-user"><span class="push-user-name" title="點擊高亮追蹤此鄉民留言">${this.escapeHtml(p.user)}</span>${authorBadgeHtml}${pushTagHtml}${quickBlacklistBtn}${isPushBlacklisted ? ` <span class="push-blacklist-badge" title="${this.escapeHtml(reason)}">🚫</span>` : ''}</span>
-          <span class="push-content">${pushContentHtml}</span>
-          <span class="push-time">${this.escapeHtml(p.ip ? p.ip + ' ' : '')}${this.escapeHtml(p.time)}</span>
-        `;
-      }
-
-      // User click tracking
-      const toggleUserHighlight = (e) => {
-        e.stopPropagation();
-        const u = p.user.trim().toLowerCase();
-        this.highlightedUser = (this.highlightedUser === u) ? null : u;
-        this.renderPushList();
+      return {
+        mode,
+        blacklistInfo,
+        revealed,
+        pushTag: userTagsManager.getTag(p.user),
+        isAuthor: Boolean(authorUser && p.user.trim().toLowerCase() === authorUser),
+        hasUserRule: blacklistManager.hasUserRule(p.user),
+        isUserHighlighted,
+        isUserDimmed: Boolean(this.highlightedUser && !isUserHighlighted),
+        repairVisible,
       };
-      row.querySelector('.push-user-name')?.addEventListener('click', toggleUserHighlight);
-      row.querySelector('.push-author-badge')?.addEventListener('click', toggleUserHighlight);
-
-      row.querySelector('.push-quick-blacklist-btn')?.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const u = e.currentTarget.dataset.user;
-        if (u) {
-          try {
-            const added = blacklistManager.toggle(u);
-            this.onShowToast?.(added ? `🚫 已將 ${u} 加入黑名單` : `✅ 已將 ${u} 移出黑名單`);
-          } catch (error) { this.onShowToast?.(`黑名單未變更：${error.message}`); }
-        }
-      });
-
-      row.querySelector('.user-tag-badge')?.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this.onEditUserTag?.(p.user);
-      });
-
-      // Media belongs to the masked body and is created only after explicit reveal.
-      const mediaTarget = isPushBlacklisted && mode === 'mask'
-        ? row.querySelector('.push-masked-body') : row;
-      const renderMedia = () => {
-        if (!mediaTarget || mediaTarget.dataset.mediaLoaded === 'true') return;
-        mediaTarget.dataset.mediaLoaded = 'true';
-        const seenUrls = new Set();
-        for (const sub of pushes) {
-          const forwardRepair = sub.repairedCont && repairVisible(sub.repairNextLine) ? sub.repairedCont : null;
-          for (const imgObj of (sub.repairedCont && !forwardRepair ? [] : sub.images) || []) {
-            let imageUrl;
-            try {
-              const url = new URL(imgObj.url);
-              if (!['http:', 'https:'].includes(url.protocol)) continue;
-              imageUrl = url.href;
-            } catch { continue; }
-            if (seenUrls.has(imageUrl)) continue;
-            seenUrls.add(imageUrl);
-            const img = document.createElement('img');
-            img.className = 'push-inline-img';
-            img.referrerPolicy = 'no-referrer';
-            img.src = imageUrl;
-            img.alt = String(imgObj.raw || '推文圖片');
-            img.loading = 'lazy';
-            img.title = '點擊檢視放大原圖';
-            img.onerror = () => {
-              if (!img.dataset.proxyTried) {
-                img.dataset.proxyTried = 'true';
-                img.src = getProxiedImageUrl(imageUrl);
-              } else {
-                img.classList.add('push-img-broken');
-                img.title = '圖片載入失敗';
-              }
-            };
-            img.addEventListener('click', () => this.openLightbox(img.src || imageUrl));
-            mediaTarget.appendChild(img);
-          }
-          for (const yt of (sub.repairedCont && !forwardRepair ? [] : sub.youtubes) || []) {
-            const ytKey = yt.videoId || yt.url;
-            if (seenUrls.has(ytKey)) continue;
-            seenUrls.add(ytKey);
-            mediaTarget.appendChild(this.createYoutubeCard(yt));
-          }
-        }
-      };
-      if (isPushBlacklisted && mode === 'mask') {
-        if (this.isPushGroupRevealed(p)) renderMedia();
-        row.querySelector('.push-mask-reveal-btn')?.addEventListener('click', () => {
-          if (pushes.some(s => s.repairedCont || s.previousRepair)) { this.renderPushList(); return; }
-          if (!mediaTarget?.classList.contains('hidden')) renderMedia();
-        });
-      } else renderMedia();
-
-      pushListEl.appendChild(row);
     });
+    const nextKeys = list.map((p, idx) => this.getPushGroupRenderKey(p, metas[idx]));
+
+    const canReuse =
+      pushListEl === this._renderedPushListEl &&
+      !this._renderedPushEmpty &&
+      Array.isArray(this._renderedPushKeys) &&
+      this._renderedPushKeys.length > 0 &&
+      pushListEl.children.length === this._renderedPushKeys.length;
+
+    let commonPrefix = 0;
+    if (canReuse) {
+      const maxPrefix = Math.min(this._renderedPushKeys.length, nextKeys.length);
+      while (commonPrefix < maxPrefix && this._renderedPushKeys[commonPrefix] === nextKeys[commonPrefix]) {
+        commonPrefix++;
+      }
+      if (commonPrefix === this._renderedPushKeys.length && commonPrefix === nextKeys.length) {
+        return;
+      }
+    }
+
+    if (canReuse && commonPrefix > 0) {
+      if (commonPrefix < this._renderedPushKeys.length) {
+        this.removePushChildrenFrom(pushListEl, commonPrefix);
+      }
+      if (this.currentHoverPushImg && !this.isElementInsidePushList(pushListEl, this.currentHoverPushImg)) {
+        this.hidePushHoverPreviewImmediate();
+      }
+    } else {
+      commonPrefix = 0;
+      this.hidePushHoverPreviewImmediate();
+      pushListEl.innerHTML = '';
+    }
+
+    this._renderedPushListEl = pushListEl;
+    this._renderedPushKeys = nextKeys;
+    this._renderedPushEmpty = false;
+
+    for (let i = commonPrefix; i < list.length; i++) {
+      pushListEl.appendChild(this.buildPushRowElement(list[i], metas[i]));
+    }
   }
 
   escapeHtml(str) {
@@ -1608,6 +1807,7 @@ export class ArticleReaderModal {
   }
 
   close() {
+    this.hidePushHoverPreviewImmediate();
     this.modalEl.classList.add('hidden');
     this.closeLightbox();
     this.hideSummary();

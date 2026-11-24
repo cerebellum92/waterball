@@ -7,9 +7,45 @@ pub mod uao;
 mod linux_notification;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager, State, Window, WindowEvent};
 use telnet::{BbsCharset, BbsConnection, ConnectionStatusPayload};
+
+pub struct StartupState {
+    pub revealed: AtomicBool,
+    pub pending_maximize: AtomicBool,
+}
+
+impl StartupState {
+    fn new() -> Self {
+        Self {
+            revealed: AtomicBool::new(false),
+            pending_maximize: AtomicBool::new(false),
+        }
+    }
+}
+
+fn reveal_main_window(app: &AppHandle, startup: &StartupState) {
+    if startup.revealed.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    if let Some(main_window) = app.get_webview_window("main") {
+        if startup.pending_maximize.swap(false, Ordering::SeqCst) {
+            let _ = main_window.maximize();
+        }
+        let _ = main_window.show();
+        let _ = main_window.set_focus();
+    }
+    if let Some(splash_window) = app.get_webview_window("splashscreen") {
+        let _ = splash_window.close();
+    }
+}
+
+#[tauri::command]
+fn complete_startup(app: AppHandle, startup: State<'_, StartupState>) {
+    reveal_main_window(&app, &startup);
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WindowState {
@@ -44,12 +80,11 @@ impl WindowState {
         }
     }
 
-    fn apply_to(&self, _window: &tauri::WebviewWindow) {
+    fn apply_geometry_to(&self, _window: &tauri::WebviewWindow) {
         #[cfg(desktop)]
         {
             use tauri::{LogicalPosition, LogicalSize, Position, Size};
             if self.is_maximized {
-                let _ = _window.maximize();
                 return;
             }
             if self.width >= 400.0 && self.height >= 300.0 {
@@ -1078,11 +1113,19 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
         .manage(app_state)
+        .manage(StartupState::new())
         .on_window_event(move |window, event| {
-            if window.label() == "main" && matches!(event, WindowEvent::CloseRequested { .. }) {
-                if let Ok(remember) = remember_window_state.lock() {
-                    if *remember {
-                        save_current_window_state(window);
+            if matches!(event, WindowEvent::CloseRequested { .. }) {
+                if window.label() == "main" {
+                    if let Ok(remember) = remember_window_state.lock() {
+                        if *remember {
+                            save_current_window_state(window);
+                        }
+                    }
+                } else if window.label() == "splashscreen" {
+                    let startup = window.app_handle().state::<StartupState>();
+                    if !startup.revealed.load(Ordering::SeqCst) {
+                        window.app_handle().exit(0);
                     }
                 }
             }
@@ -1100,9 +1143,26 @@ pub fn run() {
 
             if let Some(window) = app.get_webview_window("main") {
                 if let Some(state) = WindowState::load(app.handle()) {
-                    state.apply_to(&window);
+                    state.apply_geometry_to(&window);
+                    if state.is_maximized {
+                        app.state::<StartupState>()
+                            .pending_maximize
+                            .store(true, Ordering::SeqCst);
+                    }
                 }
             }
+
+            // Failsafe: ensure main window never stays permanently hidden if frontend stalls.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(8));
+                let handle_for_main = handle.clone();
+                let _ = handle.run_on_main_thread(move || {
+                    let startup = handle_for_main.state::<StartupState>();
+                    reveal_main_window(&handle_for_main, &startup);
+                });
+            });
+
             #[cfg(target_os = "macos")]
             {
                 unsafe {
@@ -1136,6 +1196,7 @@ pub fn run() {
             send_system_notification,
             upload_image_native,
             delete_image_native,
+            complete_startup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1300,6 +1361,19 @@ mod tests {
             let err_msg = String::from_utf8_lossy(&err_buf).trim_matches(char::from(0)).to_string();
             assert!(err_msg.contains("不合法的 PTT 文章網址"), "unexpected err_msg: {}", err_msg);
         }
+    }
+
+    #[test]
+    fn test_startup_state_flags() {
+        use std::sync::atomic::Ordering;
+        let state = super::StartupState::new();
+        assert!(!state.revealed.load(Ordering::SeqCst));
+        assert!(!state.pending_maximize.load(Ordering::SeqCst));
+        state.pending_maximize.store(true, Ordering::SeqCst);
+        assert!(state.pending_maximize.swap(false, Ordering::SeqCst));
+        assert!(!state.pending_maximize.load(Ordering::SeqCst));
+        assert!(!state.revealed.swap(true, Ordering::SeqCst));
+        assert!(state.revealed.swap(true, Ordering::SeqCst));
     }
 }
 

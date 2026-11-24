@@ -390,6 +390,7 @@ export class SettingsUI {
       settingSmartDbcs,
       settingMouseBrowsing,
       settingWheelScroll,
+      settingMouseSideButton,
       settingAutoCopy,
       settingTheme,
       settingCursorStyle,
@@ -397,6 +398,7 @@ export class SettingsUI {
       settingImagePreview,
       settingRememberWindow,
       settingToolbarScale,
+      settingTerminalFontScale,
       settingFontFamily,
       settingCustomFont,
       customFontGroup,
@@ -417,13 +419,15 @@ export class SettingsUI {
     if (settingSmartDbcs) settingSmartDbcs.checked = s.smartDbcsBackspace;
     if (settingMouseBrowsing) settingMouseBrowsing.checked = s.mouseBrowsingEnabled !== false;
     if (settingWheelScroll) settingWheelScroll.checked = s.wheelScrollPage;
-    if (settingAutoCopy) settingAutoCopy.checked = s.autoCopySelection;
+    if (settingMouseSideButton) settingMouseSideButton.value = s.mouseSideButtonAction || 'page';
+    if (settingAutoCopy) settingAutoCopy.checked = s.autoCopySelection !== false;
     if (settingTheme) settingTheme.value = s.theme || 'pcman';
     if (settingCursorStyle) settingCursorStyle.value = s.cursorStyle || 'smart';
     if (settingBlinkRate) settingBlinkRate.value = String(s.cursorBlinkRate ?? 500);
     if (settingImagePreview) settingImagePreview.checked = s.imagePreviewEnabled !== false;
     if (settingRememberWindow) settingRememberWindow.checked = s.rememberWindowState !== false;
     if (settingToolbarScale) settingToolbarScale.value = s.toolbarScale || 'medium';
+    if (settingTerminalFontScale) settingTerminalFontScale.value = String(s.terminalFontScale ?? 0.92);
 
     if (settingFontFamily) {
       settingFontFamily.value = s.fontFamily || 'auto';
@@ -610,6 +614,7 @@ export class SettingsUI {
       settingSmartDbcs,
       settingMouseBrowsing,
       settingWheelScroll,
+      settingMouseSideButton,
       settingAutoCopy,
       settingTheme,
       settingCursorStyle,
@@ -617,6 +622,7 @@ export class SettingsUI {
       settingImagePreview,
       settingRememberWindow,
       settingToolbarScale,
+      settingTerminalFontScale,
       settingFontFamily,
       settingCustomFont,
       settingImageUpload,
@@ -631,6 +637,10 @@ export class SettingsUI {
     const isNotify = settingNotifyEnabled ? settingNotifyEnabled.checked : true;
     const isSound = settingNotifySound ? settingNotifySound.checked : true;
     const toolbarScale = settingToolbarScale ? settingToolbarScale.value : 'medium';
+    const rawTermFontScale = settingTerminalFontScale ? parseFloat(settingTerminalFontScale.value) : 0.92;
+    const terminalFontScale = [0.84, 0.92, 0.98].includes(rawTermFontScale) ? rawTermFontScale : 0.92;
+    const rawSideBtn = settingMouseSideButton ? settingMouseSideButton.value : 'page';
+    const mouseSideButtonAction = ['page', 'nav', 'none'].includes(rawSideBtn) ? rawSideBtn : 'page';
     const fontFamily = settingFontFamily ? settingFontFamily.value : 'auto';
     const customFont = settingCustomFont ? settingCustomFont.value.trim() : '';
     const cursorStyle = settingCursorStyle ? settingCursorStyle.value : 'smart';
@@ -643,11 +653,12 @@ export class SettingsUI {
 
     this.applyToolbarScale(toolbarScale);
 
-    // Apply font family and cursor style across all tabs
+    // Apply font family, font scale, cursor style, and mouse side button state across all tabs
     this.tabManager.tabs.forEach((t) => {
-      t.view?.setFontStyle(fontFamily, customFont);
+      t.view?.setFontStyle(fontFamily, customFont, terminalFontScale);
       t.view?.setCursorStyle(cursorStyle);
       t.view?.setMouseBrowsingEnabled(settingMouseBrowsing ? settingMouseBrowsing.checked : true);
+      t.view?.setSideButtonEnabled(mouseSideButtonAction !== 'none');
     });
 
     const antiIdleEnabled = settingAntiIdle ? settingAntiIdle.checked : true;
@@ -681,7 +692,8 @@ export class SettingsUI {
       smartDbcsBackspace: settingSmartDbcs ? settingSmartDbcs.checked : true,
       mouseBrowsingEnabled: settingMouseBrowsing ? settingMouseBrowsing.checked : true,
       wheelScrollPage: settingWheelScroll ? settingWheelScroll.checked : true,
-      autoCopySelection: settingAutoCopy ? settingAutoCopy.checked : false,
+      mouseSideButtonAction,
+      autoCopySelection: settingAutoCopy ? settingAutoCopy.checked : true,
       imageUploadEnabled: settingImageUpload ? settingImageUpload.checked : true,
       imageUploadProvider: settingImageHostProvider ? settingImageHostProvider.value : 'imgur',
       imageUploadImgurClientId: settingImageImgurClientId ? settingImageImgurClientId.value.trim() : '',
@@ -692,6 +704,7 @@ export class SettingsUI {
       imagePreviewEnabled: isImgPrev,
       rememberWindowState: settingRememberWindow ? settingRememberWindow.checked : true,
       toolbarScale,
+      terminalFontScale,
       fontFamily,
       customFont,
     });

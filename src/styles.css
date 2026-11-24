@@ -1302,6 +1302,20 @@ body.toolbar-scale-xlarge .modal-close { width: 42px; height: 42px; font-size: 3
   display: block;
 }
 
+#image-preview-overlay.preview-large {
+  max-width: min(560px, 78vw);
+  max-height: min(460px, 74vh);
+}
+
+#image-preview-overlay.preview-large .preview-img {
+  max-width: min(540px, 74vw);
+  max-height: min(400px, 66vh);
+}
+
+#image-preview-overlay.preview-large .preview-caption {
+  max-width: min(520px, 72vw);
+}
+
 .preview-spinner {
   width: 36px;
   height: 36px;
@@ -1916,12 +1930,29 @@ body.toolbar-scale-xlarge .modal-close { width: 42px; height: 42px; font-size: 3
 .push-item {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: 8px;
+  align-items: flex-start;
+  gap: 6px 8px;
   font-size: calc(var(--reader-font-size, 16px) * 0.9);
   line-height: 1.5;
-  padding: 4px 0;
+  padding: 6px 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.push-masked-body {
+  flex: 0 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px 8px;
+}
+
+.push-row-main {
+  flex: 0 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  min-inline-size: 0;
 }
 
 .push-tag {
@@ -1942,12 +1973,14 @@ body.toolbar-scale-xlarge .modal-close { width: 42px; height: 42px; font-size: 3
 }
 
 .push-content {
-  flex: 1;
+  flex: 1 1 160px;
+  min-inline-size: 0;
   color: #e6edf3;
   word-break: break-word;
 }
 
 .push-time {
+  flex-shrink: 0;
   font-size: 12px;
   color: #6e7681;
   font-family: monospace;
@@ -2273,12 +2306,20 @@ body.toolbar-scale-xlarge .modal-close { width: 42px; height: 42px; font-size: 3
 }
 
 .push-inline-img {
+  display: block;
   max-width: 220px;
   max-height: 160px;
   border-radius: 4px;
   cursor: zoom-in;
   object-fit: cover;
   border: 1px solid var(--border-color);
+}
+
+.push-item > .reader-yt-card,
+.push-masked-body > .reader-yt-card {
+  flex: 0 0 100%;
+  max-width: 420px;
+  margin: 2px 0;
 }
 
 .reader-img-broken,
@@ -5618,7 +5659,7 @@ body.is-mobile #terminal-container {
   box-sizing: border-box;
 }
 
-@media (pointer: coarse) {
+@media (pointer: coarse) and (hover: none) {
   #toolbar {
     padding-top: calc(6px + env(safe-area-inset-top, 0px));
     padding-bottom: 6px;

@@ -91,7 +91,9 @@ export class TabManager {
     this.onAidHover = null;
     this.onAidLeave = null;
     this.onWheel = null;
+    this.onSideButton = null;
     this.onSelectionChange = null;
+    this.onSelectionComplete = null;
     this.onArticleClick = null;
     this.onBoardClick = null;
     this.onBell = null;
@@ -151,9 +153,14 @@ export class TabManager {
   createTab(options = {}) {
     const tab = new Tab(options);
     tab.view = new TermView(this.terminalContainerEl, tab.buf, this.imeInputEl);
-    tab.view.setFontStyle(settingsManager.settings.fontFamily || 'auto', settingsManager.settings.customFont || '');
+    tab.view.setFontStyle(
+      settingsManager.settings.fontFamily || 'auto',
+      settingsManager.settings.customFont || '',
+      settingsManager.settings.terminalFontScale
+    );
     tab.view.setCursorStyle(settingsManager.settings.cursorStyle || 'underline');
     tab.view.setMouseBrowsingEnabled(settingsManager.settings.mouseBrowsingEnabled !== false);
+    tab.view.setSideButtonEnabled((settingsManager.settings.mouseSideButtonAction || 'page') !== 'none');
 
     // Wire view callbacks to tab manager handlers
     tab.view.onUrlClick = (url) => this.onUrlClick?.(url, tab);
@@ -165,7 +172,9 @@ export class TabManager {
     tab.view.onWordHover = (word, cx, cy) => this.onWordHover?.(word, cx, cy, tab);
     tab.view.onWordLeave = () => this.onWordLeave?.(tab);
     tab.view.onWheel = (direction) => this.onWheel?.(direction, tab);
+    tab.view.onSideButton = (side) => this.onSideButton?.(side, tab);
     tab.view.onSelectionChange = (sel) => this.onSelectionChange?.(sel, tab);
+    tab.view.onSelectionComplete = (sel) => this.onSelectionComplete?.(sel, tab);
     tab.view.onArticleClick = (row) => this.onArticleClick?.(row, tab);
     tab.view.onBoardClick = (row) => this.onBoardClick?.(row, tab);
     tab.view.onShortcutClick = (shortcut) => this.onShortcutClick?.(shortcut, tab);
@@ -188,17 +197,17 @@ export class TabManager {
       tab.parser.feed('\x1b[1;36m║\x1b[0m  \x1b[1;33mWaterball (水球)\x1b[0m — 跨平台 BBS 連線終端 (Windows / Linux)               \x1b[1;36m║\r\n\x1b[0m');
       tab.parser.feed('\x1b[1;36m║\x1b[0m                                                                          \x1b[1;36m║\r\n\x1b[0m');
       tab.parser.feed('\x1b[1;36m║\x1b[0m  \x1b[1;32m★ 快捷鍵指南 (隨時按 \x1b[1;33mF1\x1b[1;32m 查閱完整清單)：\x1b[0m                                \x1b[1;36m║\r\n\x1b[0m');
-      tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ Alt + K ]\x1b[0m  看板快速跳轉 (中英文板名即時直達)                       \x1b[1;36m║\r\n\x1b[0m');
-      tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ F2 ]\x1b[0m       圖文好讀版 (無損長文採集、大圖展開)                     \x1b[1;36m║\r\n\x1b[0m');
-      tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ Alt + B ]\x1b[0m  收合／展開功能列 (極大化終端可視範圍)                   \x1b[1;36m║\r\n\x1b[0m');
-      tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ Alt + P ]\x1b[0m  ANSI 調色盤 (16色雙色發文、符號顏文字)                  \x1b[1;36m║\r\n\x1b[0m');
+      tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ Alt + K ]\x1b[0m  看板快速跳轉 (中英文板名即時直達)                        \x1b[1;36m║\r\n\x1b[0m');
+      tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ F2 ]\x1b[0m       圖文好讀版 (無損長文採集、大圖展開)                      \x1b[1;36m║\r\n\x1b[0m');
+      tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ Alt + B ]\x1b[0m  收合／展開功能列 (極大化終端可視範圍)                    \x1b[1;36m║\r\n\x1b[0m');
+      tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ Alt + P ]\x1b[0m  ANSI 調色盤 (16色雙色發文、符號顏文字)                   \x1b[1;36m║\r\n\x1b[0m');
       tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ Alt + X ]\x1b[0m  智慧長推文 (自動分段排版、防冷卻定時發送)                \x1b[1;36m║\r\n\x1b[0m');
       tab.parser.feed('\x1b[1;36m║\x1b[0m    \x1b[1;37m[ F1 ]\x1b[0m       鍵盤快捷鍵一覽表 (完整熱鍵速查手冊)                      \x1b[1;36m║\r\n\x1b[0m');
     }
     tab.parser.feed('\x1b[1;36m║\x1b[0m                                                                          \x1b[1;36m║\r\n\x1b[0m');
     tab.parser.feed('\x1b[1;36m║\x1b[0m  \x1b[1;32m★ 連線方式：\x1b[0m                                                           \x1b[1;36m║\r\n\x1b[0m');
-    tab.parser.feed('\x1b[1;36m║\x1b[0m    請點選上方「⭐ 常用書籤」或直接輸入位址並按 Enter 連線                \x1b[1;36m║\r\n\x1b[0m');
-      tab.parser.feed('\x1b[1;36m║\x1b[0m    例如: \x1b[1;33mbbs@ptt.cc:22\x1b[0m (SSH) 或 \x1b[1;33mnckugibbs.duckdns.org\x1b[0m (Telnet)           \x1b[1;36m║\r\n\x1b[0m');
+    tab.parser.feed('\x1b[1;36m║\x1b[0m    請點選上方「★ 常用站台書籤」或於位址欄輸入站台並按「連線」           \x1b[1;36m║\r\n\x1b[0m');
+    tab.parser.feed('\x1b[1;36m║\x1b[0m    支援 \x1b[1;33mSSH\x1b[0m (bbs@ptt.cc:22)、\x1b[1;33mTelnet\x1b[0m 或 \x1b[1;33mWebSocket\x1b[0m 連線                    \x1b[1;36m║\r\n\x1b[0m');
     tab.parser.feed('\x1b[1;36m╚═════════════════════════════════════╝\r\n\x1b[0m');
 
     this.tabs.push(tab);

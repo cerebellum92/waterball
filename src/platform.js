@@ -14,10 +14,16 @@ export const isTauri = () => Boolean(typeof window !== 'undefined' && (window.__
 
 export const isTouchDevice = () => {
   if (typeof window === 'undefined') return false;
+  const ua = typeof navigator !== 'undefined' ? (navigator.userAgent || '') : '';
+  if (/iPad|iPhone|iPod|Android/i.test(ua)) return true;
+  // Windows laptops/desktops with touchscreens or pen drivers also have a mouse/touchpad;
+  // keep them on the desktop toolbar layout instead of hiding mouse browsing.
+  if (typeof window.matchMedia === 'function' && window.matchMedia('(any-pointer: fine)').matches) {
+    return false;
+  }
   return (
     'ontouchstart' in window ||
-    navigator.maxTouchPoints > 0 ||
-    /iPad|iPhone|iPod|Android/i.test(navigator.userAgent)
+    (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
   );
 };
 

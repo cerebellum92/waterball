@@ -14,9 +14,20 @@
 請前往 **[Releases 最新發布頁面](../../releases)** 下載適合您作業系統的安裝檔案：
 
 ### 🍏 macOS (Apple Silicon / Intel)
+
+#### 方式一：透過 Homebrew 安裝與更新（推薦）
+```bash
+# 安裝
+brew install --cask cerebellum92/waterball/waterball
+
+# 之後有新版時一鍵更新
+brew upgrade --cask waterball
+```
+
+#### 方式二：手動下載 `.dmg`
 1. 從 [Releases](../../releases) 下載最新的 macOS `.dmg` 檔案並點兩下開啟掛載。
 2. 將 `Waterball.app` 拖曳至「應用程式 (Applications)」資料夾。
-3. **首次啟動與 Gatekeeper 安全授權說明**：
+3. **首次啟動與 Gatekeeper 安全授權說明**（兩種安裝方式皆適用）：
    > 💡 **小提示**：Waterball 是非營利社群開源軟體，未向 Apple 每年支付商業開發者憑證年費。首次開啟時若出現「無法確認開發者」的安全提示，可透過以下方式輕鬆解鎖（只需設定一次，之後即可直接秒開）：
    - **方法 A**：前往 Mac **「系統設定」➔「隱私權與安全性」**，向下滑動至安全性區塊，點擊 **「仍要打開 (Open Anyway)」**。
    - **方法 B（終端機指令）**：直接在終端機輸入：

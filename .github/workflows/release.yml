@@ -147,32 +147,36 @@ jobs:
           tag_name: ${{ steps.get_tag.outputs.tag }}
           name: Waterball ${{ steps.get_tag.outputs.tag }}
           body: |
-            💧 **Waterball (水球) v0.1.11 — 新世代跨平台 BBS 連線軟體**
+            💧 **Waterball (水球) v0.1.12 — 新世代跨平台 BBS 連線軟體**
 
             ---
 
-            ### ✨ v0.1.11 版本更新：
+            ### ✨ v0.1.12 版本更新：
 
-            #### 📺 實況推文聊天室（Live Chat Mode）
-            - **邊看比賽邊追推文**：按下 `Option+L`（macOS）或 `Alt+L`（Windows / Linux），一鍵把 PTT Live 文／轉播串變成即時聊天室，支援自動輪詢抓取最新推文與「推／噓／→／只看此人」快速篩選。
-            - **看球互動體驗再升級**：支援滾動位置鎖定（往上翻歷史推文不被新推文拉走）、圖片連結懸浮預覽、YouTube 縮圖卡片點擊開啟浮動迷你播放器、黑名單與鄉民標籤／備註小卡連動，以及桌面端視窗置頂（📌）。
+            #### 🖥️ 終端畫面顯示與滑鼠操作改善
+            - **ANSI 圖形繪製與字體顯示改善**：改用向量方式精準繪製 BBS 方框線條與實心／象限方塊等 ANSI 藝術字元，消除接縫錯位，並新增終端畫面字體顯示比例調整。
+            - **滑鼠操作與選取複製調整**：支援滑鼠側鍵快速操作（可設定上一頁／下一頁或翻頁），改善手動／右鍵複製與畫面切換後的殘留選取反白清除機制，並提供更實用的預設自動複製體驗。
 
-            #### ⚖️ 左右雙開視窗與看板檢舉格式小幫手（Split View & Picket Helper）
-            - **雙視窗並排瀏覽（`Alt+\`）**：支援同時並排顯示兩個 PTT 連線畫面，一邊看文章、一邊查板規或寫檢舉信更順手。
-            - **快速產生標準檢舉格式**：一鍵擷取當前文章代碼（AID）、網址與違規推文／內文截錄，套用多看板檢舉模板後即可快速複製標題與內文，配合右側雙開視窗逐步貼上更安心。
+            #### 📖 好讀版推文細節強化
+            - **推文預覽獨立換行顯示**：推文內含圖片或 YouTube 連結時，預覽縮圖與影片卡片調整為顯示在該則推文下方，避免與推文文字及 IP 顯示擠在同一行。
+            - **懸浮預覽與點擊全螢幕分工**：推文縮圖改為滑鼠移入即可顯示大型浮動預覽窗，點擊後再開啟全螢幕檢視。
 
-            #### 🔧 其他操作細節與穩定性強化
-            - 強化跳板式編輯／回覆防呆與背景防閒置機制，並優化多項快捷鍵與介面互動體驗。
+            #### 📺 實況推文（Live Chat）穩定性強化
+            - 強化實況文進版判定、翻頁同步與自動捲動穩定度，追文過程更可靠順暢。
+
+            #### 🚀 啟動畫面與白畫面改善
+            - 桌面版啟動時改為先呈現深色 Waterball 啟動畫面過場，待主視窗初始化完成後再顯示（適用 macOS、Windows、Linux），避免開啟瞬間出現短暫白畫面。
 
             ---
 
             ### 📦 各作業系統下載與安裝說明：
 
-            #### 🍏 macOS (`.dmg`)
-            1. 下載 `Waterball_${{ steps.get_tag.outputs.tag }}_macOS.dmg`，掛載後將 `Waterball.app` 拖移至「應用程式」。
-            2. **首次開啟小提示**：本專案為社群開源軟體，未購買 Apple 商業憑證。首次開啟若出現安全性提示：
-               - 在 App 上 **按住 `Control` 鍵（或右鍵）點選「打開」**，再點一次「打開」即可。
-               - 或前往 Mac **「系統設定 ➔ 隱私權與安全性」** 點選 **「仍要打開」** 即可。
+            #### 🍏 macOS (Homebrew / `.dmg`)
+            - **Homebrew 安裝／升級**：`brew install --cask cerebellum92/waterball/waterball`（升級：`brew upgrade --cask waterball`）
+            - **手動安裝**：下載 `Waterball_${{ steps.get_tag.outputs.tag }}_macOS.dmg`，掛載後將 `Waterball.app` 拖移至「應用程式」。
+            - **首次開啟小提示**：本專案為社群開源軟體，未購買 Apple 商業憑證。首次開啟若出現安全性提示：
+              - 在 App 上 **按住 `Control` 鍵（或右鍵）點選「打開」**，再點一次「打開」即可。
+              - 或前往 Mac **「系統設定 ➔ 隱私權與安全性」** 點選 **「仍要打開」**（或執行 `xattr -cr /Applications/Waterball.app`）即可。
 
             #### 🐧 Linux (`.deb` / `.AppImage`)
             - **Ubuntu / Debian**：下載 `.deb` 檔案，執行 `sudo dpkg -i <檔案名稱>.deb` 安裝。
@@ -197,3 +201,76 @@ jobs:
             Waterball_windows_x64_portable.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Homebrew Tap Cask
+        if: matrix.platform == 'macos-latest' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "HOMEBREW_TAP_TOKEN secret is not set; skipping Homebrew Tap update."
+            exit 0
+          fi
+
+          TAG_OR_VER="${{ steps.get_tag.outputs.tag }}"
+          VERSION="${TAG_OR_VER#v}"
+          TAG_PREFIX=""
+          if [[ "$TAG_OR_VER" == v* ]]; then
+            TAG_PREFIX="v"
+          fi
+          DMG_PATH="src-tauri/target/release/bundle/dmg/Waterball_${TAG_OR_VER}_macOS.dmg"
+          if [ ! -f "$DMG_PATH" ]; then
+            echo "Missing DMG at $DMG_PATH"
+            exit 1
+          fi
+
+          SHA256=$(shasum -a 256 "$DMG_PATH" | awk '{print $1}')
+          REPO="${{ github.repository }}"
+          TAP_REPO="${{ github.repository_owner }}/homebrew-waterball"
+
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${TAP_REPO}.git" homebrew-tap
+          mkdir -p homebrew-tap/Casks
+
+          cat > homebrew-tap/Casks/waterball.rb <<EOF
+          cask "waterball" do
+            version "${VERSION}"
+            sha256 "${SHA256}"
+
+            url "https://github.com/${REPO}/releases/download/${TAG_PREFIX}#{version}/Waterball_${TAG_PREFIX}#{version}_macOS.dmg",
+                verified: "github.com/${REPO}/"
+            name "Waterball"
+            desc "Cross-platform BBS terminal client with live chat and UAO support"
+            homepage "https://github.com/${REPO}"
+
+            livecheck do
+              url :url
+              strategy :github_latest
+            end
+
+            app "Waterball.app"
+
+            caveats <<~EOS
+              Waterball is ad-hoc signed. If macOS Gatekeeper blocks first launch or upgrade, run:
+                xattr -cr /Applications/Waterball.app
+              Or open System Settings -> Privacy & Security -> Open Anyway.
+            EOS
+
+            zap trash: [
+              "~/Library/Application Support/com.waterball.bbs",
+              "~/Library/Caches/com.waterball.bbs",
+              "~/Library/Preferences/com.waterball.bbs.plist",
+            ]
+          end
+          EOF
+
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -n "$(git status --porcelain Casks/waterball.rb)" ]; then
+            git add Casks/waterball.rb
+            git commit -m "chore(cask): update waterball to ${TAG_OR_VER}"
+            git push origin HEAD || git push -u origin HEAD:main
+          else
+            echo "Casks/waterball.rb is already up to date."
+          fi

@@ -877,7 +877,7 @@ export class TermBuf {
       }
     }
 
-    const urlRegex = /https?:\/\/[^\s\x00-\x1f<>"'()]+|telnet:\/\/[^\s\x00-\x1f<>"'()]+|ftp:\/\/[^\s\x00-\x1f<>"'()]+|(?:www\.|reurl\.cc\/|tinyurl\.com\/|bit\.ly\/|ptt\.cc\/)[^\s\x00-\x1f<>"'()]+/gi;
+    const urlRegex = /https?:\/\/[^\s\x00-\x1f<>"'()]+|telnet:\/\/[^\s\x00-\x1f<>"'()]+|ftp:\/\/[^\s\x00-\x1f<>"'()]+|(?<![0-9a-zA-Z_.-])(?:www\.|reurl\.cc\/|tinyurl\.com\/|bit\.ly\/|ptt\.cc\/)[^\s\x00-\x1f<>"'()]+/gi;
     let match;
     const urls = [];
     while ((match = urlRegex.exec(lineStr)) !== null) {

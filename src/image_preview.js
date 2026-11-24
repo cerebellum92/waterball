@@ -145,6 +145,8 @@ export class ImagePreviewController {
     this.spinner = null;
     this.caption = null;
     this.currentUrl = null;
+    this.isLarge = false;
+    this.anchorRect = null;
     this.showTimer = null;
     this.hideTimer = null;
     this.enabled = true;
@@ -186,15 +188,21 @@ export class ImagePreviewController {
     });
   }
 
-  show(rawUrl, clientX, clientY) {
+  show(rawUrl, clientX, clientY, options = {}) {
     if (!this.enabled) return;
     if (!isImageUrl(rawUrl)) {
       this.hide();
       return;
     }
 
+    const isLarge = Boolean(options?.large);
+    const anchorRect = options?.anchorRect || null;
     const targetUrl = normalizeImageUrl(rawUrl);
     if (this.currentUrl === targetUrl && !this.overlay.classList.contains('hidden')) {
+      this.isLarge = isLarge;
+      this.anchorRect = anchorRect;
+      if (isLarge) this.overlay.classList.add('preview-large');
+      else this.overlay.classList.remove('preview-large');
       this.updatePosition(clientX, clientY);
       return;
     }
@@ -205,26 +213,26 @@ export class ImagePreviewController {
     // 180ms hover debounce before showing
     this.showTimer = setTimeout(() => {
       this.currentUrl = targetUrl;
-      this.spinner.style.display = 'block';
-      this.img.style.display = 'none';
+      this.isLarge = isLarge;
+      this.anchorRect = anchorRect;
+      if (isLarge) this.overlay.classList.add('preview-large');
+      else this.overlay.classList.remove('preview-large');
       this.caption.textContent = rawUrl;
-
-      this.overlay.classList.remove('hidden');
-      this.updatePosition(clientX, clientY);
 
       // Preload image with anti-hotlinking referrerPolicy and proxy fallback
       const tempImg = new Image();
       tempImg.referrerPolicy = 'no-referrer';
       let triedProxy = false;
-      tempImg.onload = () => {
-        if (this.currentUrl === targetUrl) {
-          this.img.referrerPolicy = 'no-referrer';
-          this.img.src = tempImg.src;
-          this.img.style.display = 'block';
-          this.spinner.style.display = 'none';
-          this.updatePosition(clientX, clientY);
-        }
+      const revealLoadedImage = () => {
+        if (this.currentUrl !== targetUrl) return;
+        this.img.referrerPolicy = 'no-referrer';
+        this.img.src = tempImg.src;
+        this.img.style.display = 'block';
+        this.spinner.style.display = 'none';
+        this.overlay.classList.remove('hidden');
+        this.updatePosition(clientX, clientY);
       };
+      tempImg.onload = revealLoadedImage;
       tempImg.onerror = () => {
         if (!triedProxy) {
           triedProxy = true;
@@ -234,17 +242,58 @@ export class ImagePreviewController {
         }
       };
       tempImg.src = targetUrl;
+
+      if (tempImg.complete && tempImg.naturalWidth > 0) {
+        revealLoadedImage();
+      } else {
+        this.spinner.style.display = 'block';
+        this.img.style.display = 'none';
+        this.overlay.classList.remove('hidden');
+        this.updatePosition(clientX, clientY);
+      }
     }, 180);
   }
 
   updatePosition(clientX, clientY) {
     if (!this.overlay || this.overlay.classList.contains('hidden')) return;
 
-    const overlayW = 380;
-    const overlayH = 320;
+    const winW = window.innerWidth || 1024;
+    const winH = window.innerHeight || 768;
+    const maxW = this.isLarge ? Math.min(560, Math.round(winW * 0.78)) : 380;
+    const maxH = this.isLarge ? Math.min(460, Math.round(winH * 0.74)) : 320;
+    const measuredW = this.overlay.offsetWidth > 0 ? this.overlay.offsetWidth : maxW;
+    const measuredH = this.overlay.offsetHeight > 0 ? this.overlay.offsetHeight : maxH;
+    const overlayW = Math.min(maxW, measuredW);
+    const overlayH = Math.min(maxH, measuredH);
     const margin = 16;
-    const winW = window.innerWidth;
-    const winH = window.innerHeight;
+
+    if (this.anchorRect) {
+      const rect = this.anchorRect;
+      const gap = 12;
+      let left;
+      let top;
+
+      if (winW - rect.right >= overlayW + gap + margin) {
+        left = rect.right + gap;
+        top = Math.min(Math.max(margin, rect.top - 12), Math.max(margin, winH - overlayH - margin));
+      } else if (rect.left >= overlayW + gap + margin) {
+        left = rect.left - overlayW - gap;
+        top = Math.min(Math.max(margin, rect.top - 12), Math.max(margin, winH - overlayH - margin));
+      } else {
+        left = Math.min(Math.max(margin, rect.left), Math.max(margin, winW - overlayW - margin));
+        const spaceBelow = winH - rect.bottom - margin;
+        const spaceAbove = rect.top - margin;
+        if (spaceBelow >= overlayH + gap || spaceBelow >= spaceAbove) {
+          top = Math.min(rect.bottom + gap, Math.max(margin, winH - overlayH - margin));
+        } else {
+          top = Math.max(margin, rect.top - overlayH - gap);
+        }
+      }
+
+      this.overlay.style.left = `${Math.round(left)}px`;
+      this.overlay.style.top = `${Math.round(top)}px`;
+      return;
+    }
 
     let left = clientX + margin;
     let top = clientY + margin;
@@ -276,7 +325,10 @@ export class ImagePreviewController {
     clearTimeout(this.showTimer);
     clearTimeout(this.hideTimer);
     this.currentUrl = null;
+    this.isLarge = false;
+    this.anchorRect = null;
     if (this.overlay) {
+      this.overlay.classList.remove('preview-large');
       this.overlay.classList.add('hidden');
       this.img.src = '';
     }

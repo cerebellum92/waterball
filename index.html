@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="dark" />
   <meta name="referrer" content="no-referrer" />
   <title>Waterball (水球) — 新世代跨平台 BBS 連線軟體</title>
+  <style>html, body { background-color: #0d1117; color: #e6edf3; margin: 0; }</style>
   <link rel="stylesheet" href="/src/styles.css" />
 </head>
 <body>
@@ -226,11 +227,20 @@
               <p class="hint">在文章或看版列表滾動滾輪即可輕鬆上下翻頁。</p>
             </div>
             <div class="form-group">
+              <label for="setting-mouse-side-button">滑鼠側鍵快捷功能 (後退 / 前進鍵)：</label>
+              <select id="setting-mouse-side-button">
+                <option value="page" selected>上下翻頁 (後退鍵 PageUp / 前進鍵 PageDown，同 PCMan)</option>
+                <option value="nav">進出畫面 (後退鍵 ← 離開 / 前進鍵 → 進入)</option>
+                <option value="none">停用（交由瀏覽器預設行為）</option>
+              </select>
+              <p class="hint">攔截滑鼠側鍵（上一頁 / 下一頁鍵）改送出 BBS 翻頁或進出控制鍵，避免瀏覽器意外返回上一頁。</p>
+            </div>
+            <div class="form-group">
               <label class="checkbox-label">
                 <input type="checkbox" id="setting-auto-copy" />
-                <span>滑鼠框選文字後自動複製至剪貼簿</span>
+                <span>滑鼠框選文字後自動複製至剪貼簿並取消選取</span>
               </label>
-              <p class="hint">滑鼠選取完成後自動複製純文字，無需手動按鍵盤複製（Cmd+C / Ctrl+C）。</p>
+              <p class="hint">滑鼠拖曳選取放開後自動複製純文字並解除選取框，無需手動按鍵盤複製（Cmd+C / Ctrl+C）。</p>
             </div>
             <div class="form-group">
               <label class="checkbox-label">
@@ -272,14 +282,23 @@
           <!-- Tab 4: Display & Theme -->
           <div id="tab-display" class="tab-pane">
             <div class="form-group">
-              <label for="setting-toolbar-scale">全域介面、設定與字體大小：</label>
+              <label for="setting-toolbar-scale">工具列與彈窗介面縮放：</label>
               <select id="setting-toolbar-scale">
-                <option value="standard">標準緊湊 (Standard - 100%)</option>
+                <option value="standard">緊湊介面 (Standard - 100%)</option>
                 <option value="medium" selected>適中清晰 (Medium - 115%)</option>
                 <option value="large">舒適大字 (Large - 130%)</option>
                 <option value="xlarge">特大清晰 (Extra Large - 145%)</option>
               </select>
-              <p class="hint">自訂工具列、分頁標籤、設定中心、檢舉小幫手與彈窗介面的整體字體與按鈕縮放比例。</p>
+              <p class="hint">自訂上方工具列、分頁標籤、設定中心與彈窗介面的按鈕／文字縮放比例（不影響 BBS 終端機字距）。</p>
+            </div>
+            <div class="form-group">
+              <label for="setting-terminal-font-scale">終端機字元飽滿度 / 字距緊湊度：</label>
+              <select id="setting-terminal-font-scale">
+                <option value="0.98">極致緊湊 (98% - 貼近傳統 PCMan 密度，幾乎無字縫)</option>
+                <option value="0.92" selected>飽滿緊實 (92% - 推薦，大幅減少 Windows 字距空白)</option>
+                <option value="0.84">寬鬆留白 (84% - 較大字元間距)</option>
+              </select>
+              <p class="hint">控制 BBS 畫面中文字與英數在儲存格內的填滿倍率；調高可明顯減少微軟正黑體等字體的橫向空隙。</p>
             </div>
             <div class="form-group">
               <label for="setting-font-family">終端機文字字體：</label>
@@ -497,7 +516,7 @@
             <div class="about-hero">
               <div class="about-logo">💧</div>
               <div class="about-title">Waterball (水球)</div>
-              <div class="about-ver" id="about-app-ver">版本 v0.1.11 &bull; 開源授權 GPL-3.0</div>
+              <div class="about-ver" id="about-app-ver">版本 v0.1.12 &bull; 開源授權 GPL-3.0</div>
               <div class="about-desc" id="about-app-desc">
                 新世代跨平台 BBS 終端連線客戶端 (macOS / Windows / Linux / Chromebook)
                 <br>
@@ -1315,7 +1334,7 @@
         <div class="update-version-card">
           <div>
             <div class="update-ver-label">目前版本</div>
-            <div id="update-modal-current-ver" class="update-ver-tag current">v0.1.11</div>
+            <div id="update-modal-current-ver" class="update-ver-tag current">v0.1.12</div>
           </div>
           <div style="font-size: 18px; color: var(--text-muted, #8e8e93);">➔</div>
           <div>

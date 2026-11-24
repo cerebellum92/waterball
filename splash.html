@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark" />
+  <title>Waterball</title>
+  <style>
+    @property --arc-start {
+      syntax: "<angle>";
+      inherits: false;
+      initial-value: 0deg;
+    }
+
+    @property --arc-end {
+      syntax: "<angle>";
+      inherits: false;
+      initial-value: 0deg;
+    }
+
+    @property --progress-dash-animation {
+      syntax: "*";
+      inherits: false;
+      initial-value: , progress-dash 3s ease-in-out infinite;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #0d1117;
+      color: #e6edf3;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft JhengHei", "PingFang TC", system-ui, sans-serif;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    .splash-shell {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      padding: 24px;
+      background: radial-gradient(circle at 50% 38%, #162235 0%, #0d1117 72%);
+      border: 1px solid #222a36;
+    }
+
+    .waterball-stage {
+      position: relative;
+      width: 96px;
+      height: 96px;
+      display: grid;
+      place-items: center;
+    }
+
+    .ripple {
+      position: absolute;
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      border: 2px solid rgba(88, 166, 255, 0.35);
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    @media (prefers-reduced-motion: no-preference) {
+      .ripple {
+        animation: water-ripple 2.4s cubic-bezier(0.2, 0.65, 0.3, 1) infinite;
+      }
+
+      .ripple-delay {
+        animation-delay: 1.2s;
+      }
+
+      .waterball-drop {
+        animation: waterball-float 1.8s ease-in-out infinite;
+      }
+
+      .waterball-shadow {
+        animation: shadow-pulse 1.8s ease-in-out infinite;
+      }
+    }
+
+    .waterball-shadow {
+      position: absolute;
+      bottom: 6px;
+      width: 44px;
+      height: 8px;
+      border-radius: 50%;
+      background: rgba(88, 166, 255, 0.22);
+      filter: blur(3px);
+    }
+
+    .waterball-drop {
+      position: relative;
+      width: 68px;
+      height: 68px;
+      display: grid;
+      place-items: center;
+      will-change: transform;
+    }
+
+    .brand-title {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: #f0f6fc;
+    }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #8b949e;
+      font-size: 13px;
+    }
+
+    progress.loading-spinner:indeterminate::-webkit-progress-bar {
+      display: none;
+      background: none;
+    }
+    progress.loading-spinner:indeterminate::-webkit-progress-value {
+      display: none;
+      background: none;
+    }
+    progress.loading-spinner:indeterminate::-moz-progress-bar {
+      display: none;
+      background: none;
+    }
+    progress.loading-spinner:indeterminate::slider-fill {
+      display: none;
+      background: none;
+    }
+
+    progress.loading-spinner:indeterminate {
+      --_from: calc(90deg + var(--arc-start, 0deg));
+      --_to: calc(90deg + var(--arc-end, 158deg));
+      --size: 18px;
+      --thickness: 2.5px;
+      --spinner-color: #58a6ff;
+      --track-color: rgba(139, 148, 158, 0.22);
+      --spinner-duration: 1.4s;
+      --_used-spinner-duration: var(--spinner-duration);
+
+      position: relative;
+      width: var(--size);
+      height: var(--size);
+      border-radius: 50%;
+      appearance: none;
+      border: 0;
+      background: conic-gradient(
+          from var(--_from),
+          var(--spinner-color) calc(var(--_to) - var(--_from)),
+          transparent 0
+        )
+        var(--track-color);
+
+      animation:
+        progress-spin var(--_used-spinner-duration) linear infinite
+        var(--progress-dash-animation, );
+    }
+
+    @supports (background-clip: border-area) {
+      progress.loading-spinner:indeterminate {
+        background-clip: border-area;
+        border: var(--thickness) solid transparent;
+        background-origin: border-box;
+      }
+    }
+
+    @supports not (background-clip: border-area) {
+      progress.loading-spinner:indeterminate {
+        --clip-boundary: calc(100% - var(--thickness));
+        -webkit-mask-image: radial-gradient(
+          farthest-side,
+          transparent var(--clip-boundary),
+          black calc(var(--clip-boundary) + 0.5px)
+        );
+        mask-image: radial-gradient(
+          farthest-side,
+          transparent var(--clip-boundary),
+          black calc(var(--clip-boundary) + 0.5px)
+        );
+      }
+    }
+
+    @media (forced-colors: active) {
+      progress.loading-spinner:indeterminate {
+        forced-color-adjust: none;
+        --spinner-color: CanvasText;
+        --track-color: Canvas;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      progress.loading-spinner:indeterminate {
+        --_used-spinner-duration: 6s;
+        --progress-dash-animation: ;
+        --arc-end: 158deg;
+      }
+    }
+
+    @keyframes progress-spin {
+      to {
+        rotate: 1turn;
+      }
+    }
+
+    @keyframes progress-dash {
+      from {
+        --arc-start: 0deg;
+        --arc-end: 3deg;
+      }
+      50% {
+        --arc-start: 100deg;
+        --arc-end: 358deg;
+      }
+      to {
+        --arc-start: 360deg;
+        --arc-end: 363deg;
+      }
+    }
+
+    @keyframes waterball-float {
+      0%, 100% {
+        transform: translateY(0) scale(1, 1);
+      }
+      45% {
+        transform: translateY(-7px) scale(0.98, 1.03);
+      }
+      85% {
+        transform: translateY(2px) scale(1.04, 0.96);
+      }
+    }
+
+    @keyframes shadow-pulse {
+      0%, 100% {
+        transform: scaleX(1);
+        opacity: 0.7;
+      }
+      45% {
+        transform: scaleX(0.76);
+        opacity: 0.35;
+      }
+      85% {
+        transform: scaleX(1.12);
+        opacity: 0.9;
+      }
+    }
+
+    @keyframes water-ripple {
+      0% {
+        transform: scale(0.75);
+        opacity: 0.65;
+      }
+      100% {
+        transform: scale(1.42);
+        opacity: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="splash-shell">
+    <div class="waterball-stage" aria-hidden="true">
+      <div class="ripple"></div>
+      <div class="ripple ripple-delay"></div>
+      <div class="waterball-shadow"></div>
+      <div class="waterball-drop">
+        <svg viewBox="0 0 64 64" width="64" height="64" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <radialGradient id="wb-grad" cx="35%" cy="28%" r="72%">
+              <stop offset="0%" stop-color="#93d5ff" />
+              <stop offset="52%" stop-color="#3b82f6" />
+              <stop offset="100%" stop-color="#1d4ed8" />
+            </radialGradient>
+            <linearGradient id="wb-shine" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#ffffff" stop-opacity="0.72" />
+              <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
+            </linearGradient>
+          </defs>
+          <path d="M32 6C32 6 12 27.5 12 40.5C12 51.27 20.95 59 32 59C43.05 59 52 51.27 52 40.5C52 27.5 32 6 32 6Z" fill="url(#wb-grad)" stroke="#79c0ff" stroke-opacity="0.55" stroke-width="1.5" />
+          <ellipse cx="24.5" cy="34.5" rx="5.5" ry="9" transform="rotate(-24 24.5 34.5)" fill="url(#wb-shine)" />
+          <circle cx="38.5" cy="45.5" r="2.2" fill="#e0f2fe" fill-opacity="0.65" />
+        </svg>
+      </div>
+    </div>
+    <div class="brand-title">Waterball</div>
+    <div class="status-row">
+      <progress aria-label="正在載入 Waterball" class="loading-spinner"></progress>
+      <span>正在啟動終端介面...</span>
+    </div>
+  </main>
+</body>
+</html>

@@ -14,6 +14,8 @@ export class LiveChatModal {
     this.settingsManager = options.settingsManager;
     this.imagePreview = options.imagePreview || imagePreview;
     this.getConnectionSession = options.getConnectionSession;
+    this.acquireInput = options.acquireInput || null;
+    this.releaseInput = options.releaseInput || null;
     this.sendToTab = options.sendToTab;
     this.pushHelper = options.pushHelper;
     this.onShowToast = options.onShowToast || (() => {});
@@ -517,14 +519,12 @@ export class LiveChatModal {
       void (async () => {
         if (this.detectBbsState(tab.buf) === 'article_list' && tab.isConnected && this.sendToTab && this.getConnectionSession) {
           try {
-            const session = await this.getConnectionSession(tab.id);
-            if (!session || !this.isOpen || openGen !== this.sessionGeneration) return;
-            await this.sendToTab(tab.id, '\r', session);
-            await this.waitForScreenCondition(tab, (_l, s) => s === 'reading', {
-              timeoutMs: 2500,
-              settleMs: 45,
-              generation: openGen,
-            });
+            await this.withInputLease(tab, async (lease) => {
+              if (!this.isOpen || openGen !== this.sessionGeneration) return false;
+              const session = await this.getConnectionSession(tab.id);
+              if (!session || !this.isOpen || openGen !== this.sessionGeneration) return false;
+              return this.ensureInTargetArticle(tab, session, openGen, lease);
+            }, { waitMs: 500 });
           } catch (_) {}
         }
         if (this.isOpen && openGen === this.sessionGeneration) {
@@ -608,16 +608,21 @@ export class LiveChatModal {
     this.onStateChange();
 
     // Ensure terminal is left at the end of the target article if verified inside it
-    if (canRewindToEof) {
-      this.getConnectionSession(closingTab.id).then((session) => {
-        if (session) void this.sendToTab(closingTab.id, '$', session);
+    if (canRewindToEof && !this.isPolling && !this.isSending && !this.isCrawlingHistory) {
+      void this.withInputLease(closingTab, async (lease) => {
+        const session = await this.getConnectionSession(closingTab.id);
+        if (session) await this._send(closingTab, '$', session, lease);
       }).catch(() => {});
     }
 
     this.tab?.term?.focus?.();
   }
 
-  setArticle(article) {
+  setArticle(article, { replace = false } = {}) {
+    if (replace) {
+      this.pushes = [];
+      this.seenSignatures.clear();
+    }
     const validTitle = this.normalizeTitleForMatch(article.title) ? article.title : '';
     const validBoard = (article.board && article.board !== 'BBS') ? article.board : '';
     this.currentArticle = {
@@ -827,7 +832,7 @@ export class LiveChatModal {
       return 'waiting_enter';
     }
 
-    if (lines.some((l) => /^(?:【[^】]+】\s*)?(?:請輸入|搜尋)文章代碼(?:\s*[（(]AID[）)])?\s*[:：]\s*#?\s*$/.test(l.trim()))) {
+    if (lines.some((l) => /^(?:【[^】]+】\s*)?(?:請輸入|搜尋)文章代碼(?:\s*[（(]AID[）)])?\s*[:：]\s*(?:#[0-9a-zA-Z_-]*)?\s*$/.test(l.trim()))) {
       return 'aid_input';
     }
 
@@ -835,16 +840,24 @@ export class LiveChatModal {
       return 'goto_prompt';
     }
 
+    // Ignore board article-list hotkey hint "[z]精華區" / "(z)精華區" while still excluding real Announce/Digest submodes
+    const submodeSource = `${top}\n${bottom}`.replace(/[\[（(][zZ][\]）)]\s*精華區/g, '');
+    if (/【\s*精華公佈欄\s*】|\[精華區\]|相關文章|搜尋系列/.test(submodeSource)
+      || /^\s*(?:瀏覽)?精華區\b/m.test(bottom)
+      || /^(?:搜尋|請輸入)(?:標題|作者|推文|關鍵字)/m.test(bottom)) {
+      return 'unknown';
+    }
+
     // 1. Article List must be checked BEFORE reading to prevent list footer "(h)說明" or titles with push-like words from matching reading.
     let articleRowCount = 0;
     for (let r = 1; r < lines.length - 1; r++) {
-      if (/^\s*(?:[>●○◎☆★]\s*)?(?:\d+|[★*])\s+(?:[+爆MmSs~!Xx\d]+\s*)?\d{1,2}\/\d{1,2}\s+[a-zA-Z0-9_-]+/.test(lines[r])) {
+      if (this.parseArticleListRow(lines[r])) {
         articleRowCount++;
       }
     }
 
     const hasReadingFooter = /瀏覽\s+第\s*\d+|目前顯示\s*[:：]?\s*第\s*\d+|\(←\/q\)離開|\[←\/q\]離開|主題閱讀|閱讀文章|下面還有喔/.test(bottom);
-    const isList = /文章選讀/.test(bottom)
+    const isList = /文章選讀|文章列表/.test(bottom)
       || /看板[《【]/.test(top)
       || lines.slice(0, 4).some((l) => /編號\s+日\s*期\s+作\s*者/.test(l))
       || (articleRowCount >= 2 && !hasReadingFooter);
@@ -883,25 +896,28 @@ export class LiveChatModal {
     return null;
   }
 
-  parseArticleListCursor(lines, buf) {
-    const parseRow = (rowStr) => {
-      const m = rowStr.match(/^\s*(?:[>●]\s*)?(?:\d+|[★*])\s+(?:[+爆MmSs~!Xx\d]+\s*)?\d{1,2}\/\d{1,2}\s+([a-zA-Z0-9_-]+)\s+(.*)$/);
-      if (!m) return null;
-      const author = m[1].trim();
-      const rawRest = m[2].trim();
-      const title = rawRest.replace(/^(?:[□◆◇★轉])\s*/, '').trim();
-      return { author, title, rawRest };
-    };
+  parseArticleListRow(rowStr) {
+    if (!rowStr || typeof rowStr !== 'string') return null;
+    const m = rowStr.match(
+      /^\s*(?:[>●○◎☆★]\s*)?(?:\d+|[★*])(?:\s+|[+爆MmSs~!Xx=*])[+爆MmSs~!Xx=*\d\s]{0,16}?\d{1,2}\/\d{1,2}\s+([a-zA-Z0-9_-]+)\s+(.*)$/
+    );
+    if (!m) return null;
+    const author = m[1].trim();
+    const rawRest = m[2].trim();
+    const title = rawRest.replace(/^(?:[□◆◇★轉])\s*/, '').trim();
+    return { author, title, rawRest };
+  }
 
-    for (let r = 1; r < lines.length - 1; r++) {
+  parseArticleListCursor(lines, buf) {
+    for (let r = 1; r < lines.length; r++) {
       if (/^\s*[>●]/.test(lines[r])) {
-        const parsed = parseRow(lines[r]);
+        const parsed = this.parseArticleListRow(lines[r]);
         if (parsed) return { ...parsed, row: r };
       }
     }
 
-    if (buf && Number.isInteger(buf.cur_y) && buf.cur_y >= 1 && buf.cur_y < lines.length - 1) {
-      const parsed = parseRow(lines[buf.cur_y]);
+    if (buf && Number.isInteger(buf.cur_y) && buf.cur_y >= 1 && buf.cur_y < lines.length) {
+      const parsed = this.parseArticleListRow(lines[buf.cur_y]);
       if (parsed) return { ...parsed, row: buf.cur_y };
     }
 
@@ -950,6 +966,7 @@ export class LiveChatModal {
   extractAidMetadata(lines) {
     let aid = null;
     let board = null;
+    let title = null;
     for (const line of lines) {
       const urlMatch = line.match(/(?:※\s*)?文章網址\s*[:：]\s*(https?:\/\/(?:www\.)?ptt\.cc\/bbs\/([a-zA-Z0-9_-]{1,32})\/(M\.\d{1,10}\.A(?:\.[0-9A-Fa-f]{3})?)\.html)/i);
       if (urlMatch) {
@@ -960,26 +977,62 @@ export class LiveChatModal {
           break;
         }
       }
-      const aidMatch = line.match(/(?:文章代碼(?:\(AID\))?|AID)\s*[:：]\s*#?([0-9a-zA-Z_-]{8})(?:\s*[（(]([a-zA-Z0-9_-]{1,32})[）)])?/i);
+      const aidMatch = line.match(/(?:文章代碼(?:\(AID\))?|AID)\s*[:：]\s*#?([0-9a-zA-Z_-]{8})(?:\s*[（(]([a-zA-Z0-9_-]{1,32})[）)])?(?:\s*\[[^\]]+\]\s*(.+))?/i);
       if (aidMatch) {
         const parsed = parseAidInput(`#${aidMatch[1]}`, aidMatch[2] || null);
         if (parsed.isValid) {
           aid = parsed.aid;
           if (parsed.board) board = parsed.board;
+          if (aidMatch[3]) {
+            const cleanTitle = aidMatch[3].replace(/[│┃].*$/, '').trim();
+            if (cleanTitle) title = cleanTitle;
+          }
         }
       }
     }
-    return { aid, board };
+    return { aid, board, title };
   }
 
-  matchesTargetArticle(candidate = {}) {
-    if (!candidate) return true;
+  getTargetAidClean() {
+    const aid = this.targetAid || this.currentArticle?.aid;
+    if (!aid || typeof aid !== 'string') return null;
+    const clean = aid.replace(/^#/, '').trim();
+    return clean.length === 8 ? clean : null;
+  }
+
+  hasLockedArticleIdentity() {
+    const targetAid = this.targetAid || this.currentArticle?.aid;
+    const targetAuthor = this.targetAuthor || this.currentArticle?.author;
+    const hasAuthor = Boolean(targetAuthor && targetAuthor.trim() && targetAuthor.trim() !== 'BBS 使用者');
+    const hasTitle = Boolean(this.normalizeTitleForMatch(this.targetTitle || this.currentArticle?.title));
+    return Boolean(targetAid || hasAuthor || hasTitle);
+  }
+
+  hasCandidateIdentity(candidate = {}) {
+    if (!candidate) return false;
+    const hasAid = Boolean(candidate.aid && String(candidate.aid).replace(/^#/, '').trim());
+    const hasAuthor = Boolean(candidate.author && String(candidate.author).trim() && String(candidate.author).trim() !== 'BBS 使用者');
+    const hasTitle = Boolean(this.normalizeTitleForMatch(candidate.title));
+    return hasAid || hasAuthor || hasTitle;
+  }
+
+  matchesTargetArticle(candidate = {}, { requireEvidence = false, requireBoard = false } = {}) {
+    if (!candidate) return !requireEvidence || !this.hasLockedArticleIdentity();
     const targetAid = this.targetAid || this.currentArticle?.aid;
     const targetBoard = this.targetBoard || (this.currentArticle?.board !== 'BBS' ? this.currentArticle?.board : null);
     const targetAuthor = this.targetAuthor || this.currentArticle?.author;
     const targetTitle = this.normalizeTitleForMatch(this.targetTitle || this.currentArticle?.title)
       ? (this.targetTitle || this.currentArticle?.title)
       : '';
+
+    if (requireEvidence && this.hasLockedArticleIdentity() && !this.hasCandidateIdentity(candidate)) {
+      return false;
+    }
+
+    if (requireBoard && targetBoard) {
+      if (!candidate.board || candidate.board === 'BBS') return false;
+      if (targetBoard.toLowerCase() !== String(candidate.board).trim().toLowerCase()) return false;
+    }
 
     if (targetAid && candidate.aid) {
       const cleanTarget = targetAid.replace(/^#/, '').trim();
@@ -1076,98 +1129,199 @@ export class LiveChatModal {
     return range;
   }
 
+  async withInputLease(tab, fn, { waitMs = 0 } = {}) {
+    if (!tab || !tab.id) return false;
+    let lease = null;
+    if (typeof this.acquireInput === 'function') {
+      const deadline = Date.now() + waitMs;
+      while (true) {
+        lease = this.acquireInput(tab.id);
+        if (lease || Date.now() >= deadline) break;
+        await new Promise((r) => setTimeout(r, 40));
+      }
+      if (!lease) {
+        return false;
+      }
+    }
+    try {
+      return await fn(lease);
+    } finally {
+      if (lease && typeof this.releaseInput === 'function') {
+        try {
+          this.releaseInput(tab.id, lease);
+        } catch (_) {}
+      }
+    }
+  }
+
+  _send(tab, data, session, lease = null) {
+    return lease != null
+      ? this.sendToTab(tab.id, data, session, lease)
+      : this.sendToTab(tab.id, data, session);
+  }
+
   async hydrateArticleAndHistory(tab, generation = this.sessionGeneration) {
     if (!this.isOpen || generation !== this.sessionGeneration || !tab || !tab.isConnected || !this.sendToTab || !this.getConnectionSession) return;
     this.isCrawlingHistory = true;
     this.updateLoadingStatus(true, '載入中...');
 
     try {
-      const session = await this.getConnectionSession(tab.id);
-      if (!session || !this.isOpen || generation !== this.sessionGeneration) return;
-      const send = (data) => this.sendToTab(tab.id, data, session);
-
-      // 0. If opened from article list, lock cursor metadata immediately & enter with strict wait
-      let initialState = this.detectBbsState(tab.buf);
-      if (initialState === 'article_list') {
-        const listLines = this.getScreenLines(tab.buf);
-        const listBoard = this.getBoardFromScreen(listLines, tab.buf);
-        const cursor = this.parseArticleListCursor(listLines, tab.buf);
-        this.lockArticleIdentity({
-          board: listBoard,
-          author: cursor?.author,
-          title: cursor?.title,
-        });
-
-        await send('\r');
-        const entered = await this.waitForScreenCondition(
-          tab,
-          (_l, s) => s === 'reading' || s === 'resume_prompt' || s === 'live_prompt',
-          { timeoutMs: 2500, settleMs: 45, generation }
-        );
-        if (!entered || !this.isOpen || generation !== this.sessionGeneration) return;
-
-        let curEnterState = this.detectBbsState(tab.buf);
-        while (curEnterState === 'resume_prompt' || curEnterState === 'live_prompt') {
-          await send('n\r');
-          const resolved = await this.waitForScreenCondition(
-            tab,
-            (_l, s) => s === 'reading' || s === 'resume_prompt' || s === 'live_prompt',
-            { timeoutMs: 2000, settleMs: 45, generation }
-          );
-          if (!resolved || !this.isOpen || generation !== this.sessionGeneration) return;
-          curEnterState = this.detectBbsState(tab.buf);
-        }
-        initialState = this.detectBbsState(tab.buf);
-      } else if (initialState === 'resume_prompt' || initialState === 'live_prompt') {
-        await send('n\r');
-        const resumed = await this.waitForBbsState(tab, 'reading', 2000, generation);
-        if (!resumed || !this.isOpen || generation !== this.sessionGeneration) return;
-        initialState = this.detectBbsState(tab.buf);
-      } else if (initialState === 'goto_prompt') {
-        await send('\r');
-        const recovered = await this.waitForBbsState(tab, 'reading', 1200, generation);
-        if (!recovered || !this.isOpen || generation !== this.sessionGeneration) return;
-        initialState = this.detectBbsState(tab.buf);
-      }
-
-      if (initialState !== 'reading') {
-        if (this.titleEl && !this.targetTitle) {
-          this.titleEl.textContent = '請先進入文章畫面';
-        }
-        return;
-      }
-
-      // 1. Check if current screen already has the article header; otherwise rewind to Page 1 cleanly
-      let screen = this.getScreenLines(tab.buf);
-      if (!this.hasArticleHeader(screen)) {
-        if (this.titleEl && !this.targetTitle) this.titleEl.textContent = '📖 正在取得文章資訊...';
-        await send('\x1b[1~');
-        const atTop = await this.waitForScreenCondition(
-          tab,
-          (lines, s) => s === 'reading' && (this.hasArticleHeader(lines) || this.extractPageProgress(lines).curPage === 1),
-          { timeoutMs: 2500, settleMs: 55, generation }
-        );
+      await this.withInputLease(tab, async (lease) => {
         if (!this.isOpen || generation !== this.sessionGeneration) return;
-        if (!atTop && this.detectBbsState(tab.buf) !== 'reading') return;
-        screen = this.getScreenLines(tab.buf);
-      }
+        const session = await this.getConnectionSession(tab.id);
+        if (!session || !this.isOpen || generation !== this.sessionGeneration) {
+          return;
+        }
+        const send = (data) => this._send(tab, data, session, lease);
 
-      // Parse & lock header metadata from Page 1
-      const headerParsed = ArticleParser.parseLines(screen);
-      const screenBoard = this.getBoardFromScreen(screen, tab.buf);
-      if (!headerParsed.board && screenBoard) headerParsed.board = screenBoard;
-      const aidMeta = this.extractAidMetadata(screen);
-      if (aidMeta.aid && !headerParsed.aid) headerParsed.aid = aidMeta.aid;
-      if (aidMeta.board && !headerParsed.board) headerParsed.board = aidMeta.board;
+        try {
+          // 0. If opened from article list, lock cursor + authoritative AID first before entering
+          let initialState = this.detectBbsState(tab.buf);
+          if (initialState === 'article_list') {
+            const listLines = this.getScreenLines(tab.buf);
+            const listBoard = this.getBoardFromScreen(listLines, tab.buf);
+            const cursor = this.parseArticleListCursor(listLines, tab.buf);
+            this.lockArticleIdentity({
+              board: listBoard,
+              author: cursor?.author,
+              title: cursor?.title,
+            });
 
-      const headerMatch = this.matchesTargetArticle(headerParsed);
-      if (!headerMatch) {
-        return;
-      }
-      this.lockArticleIdentity(headerParsed);
-      if (this.titleEl && !this.targetTitle) {
-        this.titleEl.textContent = '實況文章';
-      }
+            await this.captureAidFromArticleList(tab, session, generation, lease);
+            if (!this.isOpen || generation !== this.sessionGeneration) return;
+
+            const enteredOk = await this.enterTargetArticleFromList(tab, session, generation, {
+              abortIfBusy: false,
+              jumpToEof: false,
+              lease,
+            });
+            if (!enteredOk || !this.isOpen || generation !== this.sessionGeneration) {
+              return;
+            }
+            initialState = this.detectBbsState(tab.buf);
+          } else if (initialState === 'resume_prompt' || initialState === 'live_prompt') {
+            const waitResumed = this.waitForBbsState(tab, 'reading', 2000, generation, { requireUpdate: true });
+            await send('n\r');
+            const resumed = await waitResumed;
+            if (!resumed || !this.isOpen || generation !== this.sessionGeneration) {
+              return;
+            }
+            initialState = this.detectBbsState(tab.buf);
+          } else if (initialState === 'goto_prompt' || initialState === 'aid_input') {
+            const targetAfter = initialState === 'aid_input' ? 'article_list' : 'reading';
+            const waitRecovered = this.waitForBbsState(tab, targetAfter, 1200, generation, { requireUpdate: true });
+            await send('\r');
+            const recovered = await waitRecovered;
+            if (!recovered || !this.isOpen || generation !== this.sessionGeneration) {
+              return;
+            }
+            initialState = this.detectBbsState(tab.buf);
+          }
+
+          if (initialState !== 'reading') {
+            if (this.titleEl && !this.targetTitle) {
+              this.titleEl.textContent = '請先進入文章畫面';
+            }
+            return;
+          }
+
+          // 1. Capture any pushes already visible at EOF before rewinding to Page 1 for instant display
+          let screen = this.getScreenLines(tab.buf);
+          const initialScreenAid = this.extractAidMetadata(screen);
+          if (initialScreenAid.aid || initialScreenAid.board) {
+            this.lockArticleIdentity(initialScreenAid);
+          }
+          const initialEofPreview = this.isReadingAtEof(screen) ? this.parseScreenLinesSafely(screen) : null;
+          if (!this.hasArticleHeader(screen)) {
+            if (this.titleEl && !this.targetTitle) this.titleEl.textContent = '📖 正在取得文章資訊...';
+            const waitTop = this.waitForScreenCondition(
+              tab,
+              (lines, s) => s === 'reading' && (this.hasArticleHeader(lines) || this.extractPageProgress(lines).curPage === 1),
+              { timeoutMs: 2500, settleMs: 55, requireUpdate: true, generation }
+            );
+            await send('\x1b[1~');
+            const atTop = await waitTop;
+            if (!this.isOpen || generation !== this.sessionGeneration) return;
+            if (!atTop && this.detectBbsState(tab.buf) !== 'reading') {
+              console.warn('[LiveChat] Failed to rewind to Page 1 cleanly');
+              return;
+            }
+            screen = this.getScreenLines(tab.buf);
+          }
+
+          // Parse & lock header metadata from Page 1
+          const headerParsed = ArticleParser.parseLines(screen);
+          const screenBoard = this.getBoardFromScreen(screen, tab.buf);
+          if (!headerParsed.board && screenBoard) headerParsed.board = screenBoard;
+          const aidMeta = this.extractAidMetadata(screen);
+          if (aidMeta.aid && !headerParsed.aid) headerParsed.aid = aidMeta.aid;
+          if (aidMeta.board && !headerParsed.board) headerParsed.board = aidMeta.board;
+
+          const headerMatch = this.matchesTargetArticle(headerParsed, {
+            requireBoard: Boolean(this.targetBoard && this.targetBoard !== 'BBS'),
+          });
+          if (!headerMatch) {
+            console.warn('[LiveChat] Page 1 header mismatch aborted hydration', headerParsed);
+            return;
+          }
+          this.lockArticleIdentity(headerParsed);
+
+          // Show latest pushes immediately (<1s) if the user opened Live Chat while already at EOF
+          if (initialEofPreview && Array.isArray(initialEofPreview.pushList) && initialEofPreview.pushList.length > 0 && this.pushes.length === 0) {
+            this.setArticle({
+              ...initialEofPreview,
+              title: this.targetTitle || initialEofPreview.title,
+              board: this.targetBoard || initialEofPreview.board,
+              author: this.targetAuthor || initialEofPreview.author,
+              aid: this.targetAid || initialEofPreview.aid,
+            });
+          }
+
+          // Actively lock AID first if Page 1 did not expose a Web URL / AID (e.g. long multi-page thread)
+          if (!this.getTargetAidClean() && this.hasLockedArticleIdentity()) {
+            const waitList = this.waitForBbsState(tab, 'article_list', 2000, generation, { requireUpdate: true });
+            await send('q');
+            let reachedList = await waitList;
+            if (!this.isOpen || generation !== this.sessionGeneration) return;
+            if (!reachedList && this.detectBbsState(tab.buf) === 'article_list') {
+              reachedList = true;
+            }
+            if (reachedList) {
+              await this.captureAidFromArticleList(tab, session, generation, lease);
+              if (!this.isOpen || generation !== this.sessionGeneration) return;
+              if (this.detectBbsState(tab.buf) === 'waiting_enter') {
+                const waitBack = this.waitForBbsState(tab, 'article_list', 1200, generation, { requireUpdate: true });
+                await send(' ');
+                await waitBack;
+                if (!this.isOpen || generation !== this.sessionGeneration) return;
+              }
+              const reEntered = await this.enterTargetArticleFromList(tab, session, generation, {
+                abortIfBusy: false,
+                jumpToEof: false,
+                lease,
+              });
+              if (!reEntered || !this.isOpen || generation !== this.sessionGeneration) {
+                console.warn('[LiveChat] Failed to re-enter target article after AID lock', {
+                  aid: this.targetAid,
+                  board: this.targetBoard,
+                  state: this.detectBbsState(tab.buf),
+                });
+                return;
+              }
+              screen = this.getScreenLines(tab.buf);
+            } else if (this.detectBbsState(tab.buf) !== 'reading') {
+              console.warn('[LiveChat] Unexpected BBS state while locking AID:', this.detectBbsState(tab.buf));
+              return;
+            }
+          }
+
+          if (this.detectBbsState(tab.buf) !== 'reading') {
+            return;
+          }
+
+          if (this.titleEl && !this.targetTitle) {
+            this.titleEl.textContent = '實況文章';
+          }
 
       // 2. Determine total pages from Page 1 footer.
       // NOTE: On huge PTT articles, pmore omits "/total" on Page 1 ("瀏覽 第 1 頁 (  0%)"),
@@ -1193,8 +1347,7 @@ export class LiveChatModal {
           const curRange = this.extractPageLineRange(curScreen);
           const curHash = curScreen.slice(0, Math.max(0, curScreen.length - 1)).join('\n');
 
-          await send(' ');
-          const advanced = await this.waitForScreenCondition(
+          const waitAdvanced = this.waitForScreenCondition(
             tab,
             (lines, s) => {
               if (s !== 'reading') return true; // Exit wait immediately if state unexpectedly left reading
@@ -1206,8 +1359,10 @@ export class LiveChatModal {
               if (nextProg.isLastPage && !curProg.isLastPage) return true;
               return nextHash !== curHash;
             },
-            { timeoutMs: 2000, settleMs: 50, generation }
+            { timeoutMs: 2000, settleMs: 50, requireUpdate: true, generation }
           );
+          await send(' ');
+          const advanced = await waitAdvanced;
           if (!advanced || !this.isOpen || generation !== this.sessionGeneration) break;
           if (this.detectBbsState(tab.buf) !== 'reading') break;
 
@@ -1233,32 +1388,57 @@ export class LiveChatModal {
         }
         this.oldestCapturedPageNum = 1;
         this.hasMoreHistory = false;
-        this.setArticle(fullParsed);
+        this.setArticle(fullParsed, { replace: true });
       } else {
         // Large or unknown-page-count thread:
         // Jump directly to EOF with '$' and strictly wait for 100% EOF, then step back with KEY_PGUP ('\x1b[5~').
-        // IMPORTANT: never send 'b' inside pmore (on PTT 'b' = prev article in list!).
+        // IMPORTANT: never send '$' unless strictly confirmed in 'reading' (on article_list, '$' jumps to bottom!).
+        if (this.detectBbsState(tab.buf) !== 'reading') return;
         const eofLinesMap = new Map();
         const fallbackLines = [];
 
+        const waitEof = this.waitForReadingEof(tab, 3000, generation, { requireUpdate: true });
         await send('$');
-        const eofOk = await this.waitForReadingEof(tab, 2500, generation);
-        if (!eofOk || !this.isOpen || generation !== this.sessionGeneration) return;
-        if (this.detectBbsState(tab.buf) !== 'reading') return;
+        const eofOk = await waitEof;
+        if (!eofOk || !this.isOpen || generation !== this.sessionGeneration) {
+          return;
+        }
+        if (this.detectBbsState(tab.buf) !== 'reading') {
+          return;
+        }
 
         let curScreen = this.getScreenLines(tab.buf);
-        const eofParsed = ArticleParser.parseLines(curScreen);
+        const eofParsed = this.parseScreenLinesSafely(curScreen);
         const eofAid = this.extractAidMetadata(curScreen);
-        if (!this.matchesTargetArticle({
+        const eofCand = {
           ...eofParsed,
           board: eofParsed.board || this.getBoardFromScreen(curScreen, tab.buf) || eofAid.board,
           aid: eofParsed.aid || eofAid.aid,
-        })) {
+        };
+        if (!this.matchesTargetArticle(eofCand)) {
           return;
         }
         let curRange = this.recordScreenLines(curScreen, eofLinesMap, fallbackLines);
         const eofProg = this.extractPageProgress(curScreen);
         let minPageSeen = eofProg.curPage || null;
+
+        // Immediately display the latest EOF pushes (<1s) before progressively streaming earlier pages
+        const initialEof = { ...eofParsed };
+        if (this.targetTitle) initialEof.title = this.targetTitle;
+        if (this.targetBoard) initialEof.board = this.targetBoard;
+        if (this.targetAuthor && !initialEof.author) initialEof.author = this.targetAuthor;
+        if (eofLinesMap.size > 0) {
+          this.oldestCapturedLineNum = Math.min(...eofLinesMap.keys());
+        }
+        this.oldestCapturedPageNum = minPageSeen;
+        this.hasMoreHistory = Boolean(
+          this.oldestCapturedLineNum &&
+          this.oldestCapturedLineNum > 1 &&
+          (!minPageSeen || minPageSeen > 1)
+        );
+        this.setArticle(initialEof);
+        this.updateLoadingStatus(true, '實況中 · 載入舊推文');
+
         const maxBackSteps = (eofProg.totalPages != null && eofProg.totalPages <= 15)
           ? Math.max(0, eofProg.totalPages - 1)
           : 8;
@@ -1273,8 +1453,7 @@ export class LiveChatModal {
           const prevPage = curProg.curPage ?? null;
           const prevHash = curScreen.slice(0, Math.max(0, curScreen.length - 1)).join('\n');
 
-          await send('\x1b[5~');
-          const movedBack = await this.waitForScreenCondition(
+          const waitMovedBack = this.waitForScreenCondition(
             tab,
             (lines, s) => {
               if (s !== 'reading') return true;
@@ -1285,13 +1464,15 @@ export class LiveChatModal {
               if (prevPage != null && np.curPage && np.curPage < prevPage) return true;
               return nh !== prevHash && prevStart == null;
             },
-            { timeoutMs: 2000, settleMs: 50, generation }
+            { timeoutMs: 2000, settleMs: 50, requireUpdate: true, generation }
           );
+          await send('\x1b[5~');
+          const movedBack = await waitMovedBack;
           if (!movedBack || !this.isOpen || generation !== this.sessionGeneration) break;
           if (this.detectBbsState(tab.buf) !== 'reading') break;
 
           const nextScreen = this.getScreenLines(tab.buf);
-          const nextParsed = ArticleParser.parseLines(nextScreen);
+          const nextParsed = this.parseScreenLinesSafely(nextScreen);
           const nextAid = this.extractAidMetadata(nextScreen);
           if (!this.matchesTargetArticle({
             ...nextParsed,
@@ -1307,6 +1488,18 @@ export class LiveChatModal {
           if (nextProg.curPage && (!minPageSeen || nextProg.curPage < minPageSeen)) {
             minPageSeen = nextProg.curPage;
           }
+          if (eofLinesMap.size > 0) {
+            this.oldestCapturedLineNum = Math.min(...eofLinesMap.keys());
+          }
+          this.oldestCapturedPageNum = minPageSeen;
+          this.hasMoreHistory = Boolean(
+            this.oldestCapturedLineNum &&
+            this.oldestCapturedLineNum > 1 &&
+            (!minPageSeen || minPageSeen > 1)
+          );
+          if (Array.isArray(nextParsed.pushList) && nextParsed.pushList.length > 0) {
+            this.prependHistoricalPushes(nextParsed.pushList);
+          }
         }
 
         if (!this.isOpen || generation !== this.sessionGeneration) return;
@@ -1321,7 +1514,9 @@ export class LiveChatModal {
         const recentLines = eofLinesMap.size > 0
           ? Array.from(eofLinesMap.keys()).sort((a, b) => a - b).map((k) => eofLinesMap.get(k))
           : this.getScreenLines(tab.buf);
-        const parsed = ArticleParser.parseLines(recentLines);
+        const oldestLineNum = eofLinesMap.size > 0 ? Math.min(...eofLinesMap.keys()) : null;
+        const startsMidArticle = Boolean((oldestLineNum && oldestLineNum > 1) || (minPageSeen && minPageSeen > 1));
+        const parsed = ArticleParser.parseLines(startsMidArticle ? ['', ...recentLines] : recentLines);
         if (!this.matchesTargetArticle(parsed)) return;
         if (this.targetTitle) parsed.title = this.targetTitle;
         if (this.targetBoard) parsed.board = this.targetBoard;
@@ -1335,23 +1530,31 @@ export class LiveChatModal {
           this.oldestCapturedLineNum > 1 &&
           (!minPageSeen || minPageSeen > 1)
         );
-        this.setArticle(parsed);
+        if (Array.isArray(parsed.pushList) && parsed.pushList.length > 0) {
+          this.prependHistoricalPushes(parsed.pushList);
+        }
       }
+        } finally {
+          if (this.isOpen && tab.isConnected && !this.isSending && this.detectBbsState(tab.buf) === 'reading' && !this.isReadingAtEof(this.getScreenLines(tab.buf))) {
+            try {
+              const waitEof = this.waitForReadingEof(tab, 1500, generation, { requireUpdate: true });
+              await send('$');
+              await waitEof;
+            } catch (_) {}
+          }
+        }
+      }, { waitMs: 800 });
     } catch (err) {
       console.warn('[LiveChat] hydrate history error:', err);
     } finally {
       if (generation === this.sessionGeneration) {
         this.isCrawlingHistory = false;
-        this.updateLoadingStatus(false);
-        if (this.isOpen && tab.isConnected && this.detectBbsState(tab.buf) === 'reading' && !this.isReadingAtEof(this.getScreenLines(tab.buf))) {
-          try {
-            const session = await this.getConnectionSession(tab.id);
-            if (session && this.isOpen && generation === this.sessionGeneration) {
-              await this.sendToTab(tab.id, '$', session);
-              await this.waitForReadingEof(tab, 1500, generation);
-            }
-          } catch (_) {}
+        if (this.isOpen && !this.currentArticle && this.pushes.length === 0) {
+          if (this.titleEl) {
+            this.titleEl.textContent = this.targetTitle || '⚠️ 無法取得實況推文';
+          }
         }
+        this.updateLoadingStatus(false);
         if (this.isOpen && this.pollIntervalMs > 0 && generation === this.sessionGeneration) {
           this.startPolling(tab);
         }
@@ -1429,7 +1632,7 @@ export class LiveChatModal {
     return ArticleParser.parseLines(definitelyMidArticle ? ['', ...lines] : lines);
   }
 
-  async crawlBackwardBatch(tab, session, generation, maxPages = 8) {
+  async crawlBackwardBatch(tab, session, generation, maxPages = 8, lease = null) {
     if (!this.isOpen || generation !== this.sessionGeneration || !tab?.buf || !session || !this.sendToTab) return false;
     if (!this.hasMoreHistory || !this.oldestCapturedLineNum || this.oldestCapturedLineNum <= 1) {
       this.hasMoreHistory = false;
@@ -1468,15 +1671,17 @@ export class LiveChatModal {
 
       let inGoto = entryState === 'goto_prompt';
       if (!inGoto) {
-        await this.sendToTab(tab.id, ':', session);
-        inGoto = await this.waitForBbsState(tab, 'goto_prompt', 2000, generation);
+        const waitGoto = this.waitForBbsState(tab, 'goto_prompt', 2000, generation, { requireUpdate: true });
+        await this._send(tab, ':', session, lease);
+        inGoto = await waitGoto;
         if (!this.isOpen || generation !== this.sessionGeneration) return false;
       }
 
       if (!inGoto) {
         if (this.detectBbsState(tab.buf) === 'goto_prompt') {
-          await this.sendToTab(tab.id, '\r', session);
-          await this.waitForBbsState(tab, 'reading', 1200, generation);
+          const waitCleared = this.waitForBbsState(tab, 'reading', 1200, generation, { requireUpdate: true });
+          await this._send(tab, '\r', session, lease);
+          await waitCleared;
         } else {
           this.gotoFailCount = (this.gotoFailCount || 0) + 1;
           if (this.gotoFailCount >= 5) {
@@ -1486,8 +1691,7 @@ export class LiveChatModal {
         return false;
       }
 
-      await this.sendToTab(tab.id, `${targetLine}\r`, session);
-      const jumped = await this.waitForScreenCondition(
+      const waitJumped = this.waitForScreenCondition(
         tab,
         (lines, s) => {
           if (s !== 'reading') return false;
@@ -1498,14 +1702,17 @@ export class LiveChatModal {
             np.curPage === 1
           );
         },
-        { timeoutMs: 2500, settleMs: 45, generation }
+        { timeoutMs: 2500, settleMs: 45, requireUpdate: true, generation }
       );
+      await this._send(tab, `${targetLine}\r`, session, lease);
+      const jumped = await waitJumped;
       if (!this.isOpen || generation !== this.sessionGeneration) return false;
 
       if (!jumped) {
         if (this.detectBbsState(tab.buf) === 'goto_prompt') {
-          await this.sendToTab(tab.id, '\r', session);
-          await this.waitForBbsState(tab, 'reading', 1200, generation);
+          const waitCleared = this.waitForBbsState(tab, 'reading', 1200, generation, { requireUpdate: true });
+          await this._send(tab, '\r', session, lease);
+          await waitCleared;
         }
         this.gotoFailCount = (this.gotoFailCount || 0) + 1;
         if (this.gotoFailCount >= 5) {
@@ -1516,8 +1723,9 @@ export class LiveChatModal {
       this.gotoFailCount = 0;
       if (!verifyCurrentTarget()) return false;
     } else if (entryState === 'goto_prompt') {
-      await this.sendToTab(tab.id, '\r', session);
-      const cleared = await this.waitForBbsState(tab, 'reading', 1200, generation);
+      const waitCleared = this.waitForBbsState(tab, 'reading', 1200, generation, { requireUpdate: true });
+      await this._send(tab, '\r', session, lease);
+      const cleared = await waitCleared;
       if (!cleared || !this.isOpen || generation !== this.sessionGeneration || !verifyCurrentTarget()) return false;
     }
 
@@ -1543,8 +1751,7 @@ export class LiveChatModal {
       const prevPage = curProg.curPage ?? null;
       const prevHash = curScreen.slice(0, Math.max(0, curScreen.length - 1)).join('\n');
 
-      await this.sendToTab(tab.id, '\x1b[5~', session);
-      const moved = await this.waitForScreenCondition(
+      const waitMoved = this.waitForScreenCondition(
         tab,
         (lines, s) => {
           if (s !== 'reading') return true;
@@ -1555,8 +1762,10 @@ export class LiveChatModal {
           if (prevPage != null && np.curPage && np.curPage < prevPage) return true;
           return nh !== prevHash && prevStart == null;
         },
-        { timeoutMs: 1800, settleMs: 50, generation }
+        { timeoutMs: 1800, settleMs: 50, requireUpdate: true, generation }
       );
+      await this._send(tab, '\x1b[5~', session, lease);
+      const moved = await waitMoved;
       if (!moved || !this.isOpen || generation !== this.sessionGeneration) break;
       if (!verifyCurrentTarget()) break;
 
@@ -1572,8 +1781,9 @@ export class LiveChatModal {
     }
 
     if (this.isOpen && generation === this.sessionGeneration && verifyCurrentTarget() && !this.isReadingAtEof(this.getScreenLines(tab.buf))) {
-      await this.sendToTab(tab.id, '$', session);
-      await this.waitForReadingEof(tab, 2000, generation);
+      const waitEof = this.waitForReadingEof(tab, 2000, generation, { requireUpdate: true });
+      await this._send(tab, '$', session, lease);
+      await waitEof;
     }
 
     if (!this.isOpen || generation !== this.sessionGeneration) return false;
@@ -1611,10 +1821,12 @@ export class LiveChatModal {
 
     try {
       if (!this.sendToTab || !this.getConnectionSession) return;
-      const session = await this.getConnectionSession(tab.id);
-      if (!session || !this.isOpen || gen !== this.sessionGeneration) return;
-
-      await this.crawlBackwardBatch(tab, session, gen, 6);
+      await this.withInputLease(tab, async (lease) => {
+        if (!this.isOpen || gen !== this.sessionGeneration) return;
+        const session = await this.getConnectionSession(tab.id);
+        if (!session || !this.isOpen || gen !== this.sessionGeneration) return;
+        await this.crawlBackwardBatch(tab, session, gen, 6, lease);
+      });
     } catch (err) {
       console.warn('[LiveChat] loadEarlierPushes error:', err);
     } finally {
@@ -1695,19 +1907,20 @@ export class LiveChatModal {
     });
   }
 
-  waitForBbsState(tab, targetState, maxWaitMs = 1500, generation = this.sessionGeneration) {
+  waitForBbsState(tab, targetState, maxWaitMs = 1500, generation = this.sessionGeneration, extraOpts = {}) {
     return this.waitForScreenCondition(tab, (_lines, state) => state === targetState, {
       timeoutMs: maxWaitMs,
       settleMs: 45,
       generation,
+      ...extraOpts,
     });
   }
 
-  waitForArticleList(tab, maxWaitMs = 1500, generation = this.sessionGeneration) {
-    return this.waitForBbsState(tab, 'article_list', maxWaitMs, generation);
+  waitForArticleList(tab, maxWaitMs = 1500, generation = this.sessionGeneration, extraOpts = {}) {
+    return this.waitForBbsState(tab, 'article_list', maxWaitMs, generation, extraOpts);
   }
 
-  waitForReadingEof(tab, maxWaitMs = 2500, generation = this.sessionGeneration) {
+  waitForReadingEof(tab, maxWaitMs = 2500, generation = this.sessionGeneration, extraOpts = {}) {
     return this.waitForScreenCondition(
       tab,
       (lines, state) => state === 'reading' && this.isReadingAtEof(lines),
@@ -1715,46 +1928,208 @@ export class LiveChatModal {
         timeoutMs: maxWaitMs,
         settleMs: 55,
         generation,
+        ...extraOpts,
       }
     );
   }
 
-  async jumpToTargetAidInList(tab, session, generation = this.sessionGeneration) {
-    if (!this.isOpen || generation !== this.sessionGeneration || !tab?.buf || !session || !this.sendToTab) return false;
-    const aid = this.targetAid || this.currentArticle?.aid;
-    const cleanAid = aid ? aid.replace(/^#/, '').trim() : null;
-    if (!cleanAid || cleanAid.length !== 8) return false;
-    if (this.detectBbsState(tab.buf) !== 'article_list') return false;
+  async captureAidFromArticleList(tab, session, generation = this.sessionGeneration, lease = null) {
+    const existing = this.getTargetAidClean();
+    if (existing) return existing;
+    if (!this.isOpen || generation !== this.sessionGeneration || !tab?.buf || !session || !this.sendToTab) return null;
+    if (this.detectBbsState(tab.buf) !== 'article_list') return null;
 
-    const currentBoard = this.getBoardFromScreen(this.getScreenLines(tab.buf), tab.buf);
-    if (this.targetBoard && currentBoard && currentBoard.toLowerCase() !== this.targetBoard.toLowerCase()) {
+    const listLines = this.getScreenLines(tab.buf);
+    const listBoard = this.getBoardFromScreen(listLines, tab.buf);
+    const cursor = this.parseArticleListCursor(listLines, tab.buf);
+    if (this.hasLockedArticleIdentity()) {
+      const cursorMatches = Boolean(cursor) && this.matchesTargetArticle({
+        board: listBoard,
+        author: cursor.author,
+        title: cursor.title,
+      }, { requireEvidence: true, requireBoard: true });
+      if (!cursorMatches) {
+        return null;
+      }
+    } else if (cursor) {
+      this.lockArticleIdentity({
+        board: listBoard,
+        author: cursor.author,
+        title: cursor.title,
+      });
+    }
+
+    const waitAidBox = this.waitForScreenCondition(
+      tab,
+      (lines) => Boolean(this.extractAidMetadata(lines).aid),
+      { timeoutMs: 1500, settleMs: 35, requireUpdate: true, generation }
+    );
+    await this._send(tab, 'Q', session, lease);
+    const gotAidBox = await waitAidBox;
+    if (!this.isOpen || generation !== this.sessionGeneration) return null;
+
+    const qLines = this.getScreenLines(tab.buf);
+    const qMeta = this.extractAidMetadata(qLines);
+    const popupVisible = Boolean(qMeta.aid) || this.detectBbsState(tab.buf) === 'waiting_enter';
+    const qMatches = this.matchesTargetArticle(qMeta, { requireBoard: true });
+    if ((gotAidBox || qMeta.aid) && qMeta.aid && qMatches) {
+      this.lockArticleIdentity(qMeta);
+    }
+
+    // Only send Space to dismiss when the 'Q' popup is actually visible (never Space on raw article_list)
+    if (popupVisible) {
+      const waitDismiss = this.waitForScreenCondition(
+        tab,
+        (lines, s) => s === 'article_list' && !this.extractAidMetadata(lines).aid,
+        { timeoutMs: 1200, settleMs: 35, requireUpdate: true, generation }
+      );
+      await this._send(tab, ' ', session, lease);
+      await waitDismiss;
+    }
+
+    return this.getTargetAidClean();
+  }
+
+  async jumpToTargetAidInList(tab, session, generation = this.sessionGeneration, lease = null) {
+    if (!this.isOpen || generation !== this.sessionGeneration || !tab?.buf || !session || !this.sendToTab) return false;
+    const cleanAid = this.getTargetAidClean();
+    if (!cleanAid) {
+      return false;
+    }
+    if (this.detectBbsState(tab.buf) !== 'article_list') {
       return false;
     }
 
-    await this.sendToTab(tab.id, '#', session);
-    const inAidPrompt = await this.waitForBbsState(tab, 'aid_input', 1500, generation);
-    if (!inAidPrompt || !this.isOpen || generation !== this.sessionGeneration) return false;
+    const currentBoard = this.getBoardFromScreen(this.getScreenLines(tab.buf), tab.buf);
+    if (this.targetBoard && this.targetBoard !== 'BBS') {
+      if (!currentBoard || currentBoard.toLowerCase() !== this.targetBoard.toLowerCase()) {
+        return false;
+      }
+    }
 
-    await this.sendToTab(tab.id, `${cleanAid}\r`, session);
-    const backToList = await this.waitForBbsState(tab, 'article_list', 2000, generation);
-    if (!backToList || !this.isOpen || generation !== this.sessionGeneration) return false;
+    const waitAidPrompt = this.waitForBbsState(tab, 'aid_input', 1500, generation, { requireUpdate: true });
+    await this._send(tab, '#', session, lease);
+    const inAidPrompt = await waitAidPrompt;
+    if (!inAidPrompt || !this.isOpen || generation !== this.sessionGeneration) {
+      return false;
+    }
 
-    const lines = this.getScreenLines(tab.buf);
-    const boardAfter = this.getBoardFromScreen(lines, tab.buf);
-    const cursor = this.parseArticleListCursor(lines, tab.buf);
-    return this.matchesTargetArticle({
-      board: boardAfter,
-      author: cursor?.author,
-      title: cursor?.title,
-    });
+    const waitBackToList = this.waitForScreenCondition(
+      tab,
+      (lines, s) => {
+        if (s !== 'article_list') return false;
+        const boardAfter = this.getBoardFromScreen(lines, tab.buf);
+        const cursor = this.parseArticleListCursor(lines, tab.buf);
+        if (!cursor) return false;
+        return this.matchesTargetArticle({
+          board: boardAfter,
+          author: cursor.author,
+          title: cursor.title,
+        }, { requireEvidence: true, requireBoard: true });
+      },
+      { timeoutMs: 2500, settleMs: 45, requireUpdate: true, generation }
+    );
+    await this._send(tab, `${cleanAid}\r`, session, lease);
+    const backToList = await waitBackToList;
+    return Boolean(backToList && this.isOpen && generation === this.sessionGeneration);
   }
 
-  async ensureInTargetArticle(tab, session, generation = this.sessionGeneration) {
+  async enterTargetArticleFromList(
+    tab,
+    session,
+    generation = this.sessionGeneration,
+    { abortIfBusy = false, eofTimeoutMs = 2500, requireEof = true, jumpToEof = true, lease = null } = {}
+  ) {
+    const isAborted = () => !this.isOpen
+      || generation !== this.sessionGeneration
+      || (abortIfBusy && (this.isSending || this.isCrawlingHistory));
+
+    if (!this.getTargetAidClean()) {
+      await this.captureAidFromArticleList(tab, session, generation, lease);
+      if (isAborted()) return false;
+    }
+
+    const cleanAid = this.getTargetAidClean();
+    if (cleanAid) {
+      // Whenever AID is locked, ALWAYS locate and verify via '#<AID>' before entering.
+      const jumped = await this.jumpToTargetAidInList(tab, session, generation, lease);
+      if (!jumped || isAborted()) return false;
+    } else {
+      const listLines = this.getScreenLines(tab.buf);
+      const listBoard = this.getBoardFromScreen(listLines, tab.buf);
+      const cursor = this.parseArticleListCursor(listLines, tab.buf);
+      const cursorOk = cursor
+        ? this.matchesTargetArticle({
+            board: listBoard,
+            author: cursor.author,
+            title: cursor.title,
+          }, { requireEvidence: true, requireBoard: true })
+        : (!this.hasLockedArticleIdentity() && this.matchesTargetArticle({ board: listBoard }, { requireBoard: true }));
+      if (!cursorOk) {
+        return false;
+      }
+    }
+
+    const waitEntered = this.waitForScreenCondition(
+      tab,
+      (_l, s) => s === 'reading' || s === 'resume_prompt' || s === 'live_prompt',
+      { timeoutMs: 2500, settleMs: 45, requireUpdate: true, generation }
+    );
+    await this._send(tab, '\r', session, lease);
+    const entered = await waitEntered;
+    if (!entered || isAborted()) {
+      return false;
+    }
+
+    let curEnterState = this.detectBbsState(tab.buf);
+    while (curEnterState === 'resume_prompt' || curEnterState === 'live_prompt') {
+      const waitResumed = this.waitForScreenCondition(
+        tab,
+        (_l, s) => s === 'reading' || s === 'resume_prompt' || s === 'live_prompt',
+        { timeoutMs: 2000, settleMs: 45, requireUpdate: true, generation }
+      );
+      await this._send(tab, 'n\r', session, lease);
+      const resumed = await waitResumed;
+      if (!resumed || isAborted()) return false;
+      curEnterState = this.detectBbsState(tab.buf);
+    }
+
+    if (this.detectBbsState(tab.buf) !== 'reading') {
+      return false;
+    }
+
+    // Always verify Page 1 header/AID before accepting the opened screen (board verified on article_list and checked whenever header includes it)
+    const entryLines = this.getScreenLines(tab.buf);
+    const entryMeta = ArticleParser.parseLines(entryLines);
+    const entryAid = this.extractAidMetadata(entryLines);
+    const entryOk = this.matchesTargetArticle({
+      ...entryMeta,
+      board: entryMeta.board || this.getBoardFromScreen(entryLines, tab.buf) || entryAid.board,
+      aid: entryMeta.aid || entryAid.aid,
+    }, { requireEvidence: true });
+    if (!entryOk) {
+      return false;
+    }
+
+    if (jumpToEof && !this.isReadingAtEof(entryLines)) {
+      const waitEof = this.waitForReadingEof(tab, eofTimeoutMs, generation, { requireUpdate: true });
+      await this._send(tab, '$', session, lease);
+      const atEof = await waitEof;
+      if (isAborted()) return false;
+      if (requireEof && !atEof) return false;
+    }
+
+    return !isAborted() && this.detectBbsState(tab.buf) === 'reading';
+  }
+
+  async ensureInTargetArticle(tab, session, generation = this.sessionGeneration, lease = null) {
     if (!tab || !tab.buf) return false;
     let state = this.detectBbsState(tab.buf);
-    if (state === 'goto_prompt' && session && this.sendToTab) {
-      await this.sendToTab(tab.id, '\r', session);
-      await this.waitForBbsState(tab, 'reading', 1200, generation);
+    if ((state === 'goto_prompt' || state === 'aid_input') && session && this.sendToTab) {
+      const targetAfter = state === 'aid_input' ? 'article_list' : 'reading';
+      const waitCleared = this.waitForBbsState(tab, targetAfter, 1200, generation, { requireUpdate: true });
+      await this._send(tab, '\r', session, lease);
+      await waitCleared;
       state = this.detectBbsState(tab.buf);
     }
     if (state === 'reading') {
@@ -1771,53 +2146,12 @@ export class LiveChatModal {
     if (!session || !this.sendToTab) return false;
 
     if (state === 'article_list') {
-      const lines = this.getScreenLines(tab.buf);
-      const board = this.getBoardFromScreen(lines, tab.buf);
-      const cursor = this.parseArticleListCursor(lines, tab.buf);
-      const hasKnownAid = Boolean(this.targetAid || this.currentArticle?.aid);
-      let cursorMatches = cursor
-        ? this.matchesTargetArticle({
-            board,
-            author: cursor.author,
-            title: cursor.title,
-          })
-        : (!hasKnownAid && this.matchesTargetArticle({ board }));
-
-      if (!cursorMatches) {
-        cursorMatches = await this.jumpToTargetAidInList(tab, session, generation);
-        if (!cursorMatches) return false;
-      }
-
-      await this.sendToTab(tab.id, '\r', session);
-      const entered = await this.waitForScreenCondition(
-        tab,
-        (_l, s) => s === 'reading' || s === 'resume_prompt' || s === 'live_prompt',
-        { timeoutMs: 2500, settleMs: 45, generation }
-      );
-      if (!entered || !this.isOpen || generation !== this.sessionGeneration) return false;
-
-      let curEnterState = this.detectBbsState(tab.buf);
-      while (curEnterState === 'resume_prompt' || curEnterState === 'live_prompt') {
-        await this.sendToTab(tab.id, 'n\r', session);
-        const resumed = await this.waitForScreenCondition(
-          tab,
-          (_l, s) => s === 'reading' || s === 'resume_prompt' || s === 'live_prompt',
-          { timeoutMs: 2000, settleMs: 45, generation }
-        );
-        if (!resumed || !this.isOpen || generation !== this.sessionGeneration) return false;
-        curEnterState = this.detectBbsState(tab.buf);
-      }
-
-      if (this.detectBbsState(tab.buf) !== 'reading') return false;
-      const entryLines = this.getScreenLines(tab.buf);
-      const entryParsed = ArticleParser.parseLines(entryLines);
-      if (!this.matchesTargetArticle(entryParsed)) return false;
-
-      if (!this.isReadingAtEof(entryLines)) {
-        await this.sendToTab(tab.id, '$', session);
-        await this.waitForReadingEof(tab, 2000, generation);
-      }
-      return this.detectBbsState(tab.buf) === 'reading';
+      return this.enterTargetArticleFromList(tab, session, generation, {
+        abortIfBusy: false,
+        eofTimeoutMs: 2000,
+        requireEof: false,
+        lease,
+      });
     }
     return false;
   }
@@ -1829,237 +2163,186 @@ export class LiveChatModal {
     this.isPolling = true;
 
     try {
-      if (!this.sendToTab || !this.getConnectionSession) return;
-      const session = await this.getConnectionSession(tab.id);
-      if (!session || !this.isOpen || gen !== this.sessionGeneration) return;
+      await this.withInputLease(tab, async (lease) => {
+        if (!this.isOpen || gen !== this.sessionGeneration || this.isSending || this.isCrawlingHistory) return;
+        if (!this.sendToTab || !this.getConnectionSession) return;
+        const session = await this.getConnectionSession(tab.id);
+        if (!session || !this.isOpen || gen !== this.sessionGeneration || this.isSending || this.isCrawlingHistory) return;
 
-      let state = this.detectBbsState(tab.buf);
+        let state = this.detectBbsState(tab.buf);
 
-      // Step 0: Recover if a previous ':' goto-line prompt arrived late or stayed open
-      if (state === 'goto_prompt') {
-        await this.sendToTab(tab.id, '\r', session);
-        const cleared = await this.waitForBbsState(tab, 'reading', 1200, gen);
-        if (!cleared || !this.isOpen || gen !== this.sessionGeneration || this.isSending || this.isCrawlingHistory) {
+        // Step 0: Recover if a previous ':' goto-line or '#' AID prompt arrived late or stayed open
+        if (state === 'goto_prompt' || state === 'aid_input') {
+          const targetAfter = state === 'aid_input' ? 'article_list' : 'reading';
+          const waitCleared = this.waitForBbsState(tab, targetAfter, 1200, gen, { requireUpdate: true });
+          await this._send(tab, '\r', session, lease);
+          const cleared = await waitCleared;
+          if (!cleared || !this.isOpen || gen !== this.sessionGeneration || this.isSending || this.isCrawlingHistory) {
+            return;
+          }
+          state = this.detectBbsState(tab.buf);
+        }
+
+        // Step 1: If inside reading, verify we are in our locked article before exiting with 'q'
+        if (state === 'reading') {
+          const preLines = this.getScreenLines(tab.buf);
+          const preMeta = this.parseScreenLinesSafely(preLines);
+          const preAid = this.extractAidMetadata(preLines);
+          const preOk = this.matchesTargetArticle({
+            ...preMeta,
+            board: preMeta.board || this.getBoardFromScreen(preLines, tab.buf) || preAid.board,
+            aid: preMeta.aid || preAid.aid,
+          });
+          if (!preOk) {
+            return;
+          }
+
+          const waitList = this.waitForBbsState(tab, 'article_list', 1500, gen, { requireUpdate: true });
+          await this._send(tab, 'q', session, lease);
+          const inList = await waitList;
+          if (!inList || !this.isOpen || gen !== this.sessionGeneration || this.isSending || this.isCrawlingHistory) {
+            return;
+          }
+          state = this.detectBbsState(tab.buf);
+        }
+
+        // Only proceed to re-enter if STRICTLY confirmed on article_list
+        if (state !== 'article_list') {
           return;
         }
-        state = this.detectBbsState(tab.buf);
-      }
 
-      // Step 1: If inside reading, verify we are in our locked article before exiting with 'q'
-      if (state === 'reading') {
-        const preLines = this.getScreenLines(tab.buf);
-        const preMeta = this.parseScreenLinesSafely(preLines);
-        const preAid = this.extractAidMetadata(preLines);
-        const preOk = this.matchesTargetArticle({
-          ...preMeta,
-          board: preMeta.board || this.getBoardFromScreen(preLines, tab.buf) || preAid.board,
-          aid: preMeta.aid || preAid.aid,
+        // Step 2-4: Verify board/cursor (or locate via #AID), re-enter on Page 1, and jump to EOF
+        const enteredAtEof = await this.enterTargetArticleFromList(tab, session, gen, {
+          abortIfBusy: true,
+          eofTimeoutMs: 2500,
+          requireEof: true,
+          lease,
         });
-        if (!preOk) {
+        if (!enteredAtEof) {
           return;
         }
 
-        await this.sendToTab(tab.id, 'q', session);
-        const inList = await this.waitForBbsState(tab, 'article_list', 1500, gen);
-        if (!inList || !this.isOpen || gen !== this.sessionGeneration || this.isSending || this.isCrawlingHistory) {
+        const screenLines = this.getScreenLines(tab.buf);
+        const parsed = this.parseScreenLinesSafely(screenLines);
+        const eofAid = this.extractAidMetadata(screenLines);
+        const candidateMeta = {
+          ...parsed,
+          board: parsed.board || this.getBoardFromScreen(screenLines, tab.buf) || eofAid.board,
+          aid: parsed.aid || eofAid.aid || (parsed.articleId ? filenameToAid(parsed.articleId) : null),
+        };
+
+        // Step 5: Final cross-article check before scraping any pushes
+        if (!this.matchesTargetArticle(candidateMeta)) {
           return;
         }
-        state = this.detectBbsState(tab.buf);
-      }
+        this.lockArticleIdentity(candidateMeta);
 
-      // Only proceed to re-enter if STRICTLY confirmed on article_list
-      if (state !== 'article_list') {
-        return;
-      }
-
-      // Step 2: Verify board & cursor row belong to the target article before pressing '\r'!
-      const listLines = this.getScreenLines(tab.buf);
-      const listBoard = this.getBoardFromScreen(listLines, tab.buf);
-      const cursor = this.parseArticleListCursor(listLines, tab.buf);
-
-      let cursorOk = this.matchesTargetArticle({
-        board: listBoard,
-        author: cursor?.author,
-        title: cursor?.title,
-      });
-
-      if (!cursorOk) {
-        cursorOk = await this.jumpToTargetAidInList(tab, session, gen);
-        if (!cursorOk || !this.isOpen || gen !== this.sessionGeneration || this.isSending || this.isCrawlingHistory) {
-          return;
-        }
-      }
-
-      // Step 3: Re-enter the verified article and STRICTLY wait for 'reading'
-      await this.sendToTab(tab.id, '\r', session);
-      const entered = await this.waitForScreenCondition(
-        tab,
-        (_l, s) => s === 'reading' || s === 'resume_prompt' || s === 'live_prompt',
-        { timeoutMs: 2500, settleMs: 45, generation: gen }
-      );
-      if (!entered || !this.isOpen || gen !== this.sessionGeneration || this.isSending || this.isCrawlingHistory) {
-        return;
-      }
-
-      let curEnterState = this.detectBbsState(tab.buf);
-      while (curEnterState === 'resume_prompt' || curEnterState === 'live_prompt') {
-        const answer = curEnterState === 'live_prompt' ? 'n\r' : 'y\r';
-        await this.sendToTab(tab.id, answer, session);
-        const resumed = await this.waitForScreenCondition(
-          tab,
-          (_l, s) => s === 'reading' || s === 'resume_prompt' || s === 'live_prompt',
-          { timeoutMs: 2000, settleMs: 45, generation: gen }
-        );
-        if (!resumed || !this.isOpen || gen !== this.sessionGeneration || this.isSending || this.isCrawlingHistory) {
-          return;
-        }
-        curEnterState = this.detectBbsState(tab.buf);
-      }
-
-      if (this.detectBbsState(tab.buf) !== 'reading') return;
-
-      // Verify Page 1 header immediately upon entering
-      const entryLines = this.getScreenLines(tab.buf);
-      const entryMeta = ArticleParser.parseLines(entryLines);
-      const entryAid = this.extractAidMetadata(entryLines);
-      const entryOk = this.matchesTargetArticle({
-        ...entryMeta,
-        board: entryMeta.board || this.getBoardFromScreen(entryLines, tab.buf) || entryAid.board,
-        aid: entryMeta.aid || entryAid.aid,
-      });
-      if (!entryOk) {
-        return;
-      }
-
-      // Step 4: Jump to EOF ONLY if strictly inside reading and not already at EOF
-      if (!this.isReadingAtEof(entryLines)) {
-        await this.sendToTab(tab.id, '$', session);
-        const atEof = await this.waitForReadingEof(tab, 2500, gen);
-        if (!atEof || !this.isOpen || gen !== this.sessionGeneration || this.isSending || this.isCrawlingHistory) {
-          return;
-        }
-      }
-
-      if (this.detectBbsState(tab.buf) !== 'reading') return;
-
-      const screenLines = this.getScreenLines(tab.buf);
-      const parsed = this.parseScreenLinesSafely(screenLines);
-      const eofAid = this.extractAidMetadata(screenLines);
-      const candidateMeta = {
-        ...parsed,
-        board: parsed.board || this.getBoardFromScreen(screenLines, tab.buf) || eofAid.board,
-        aid: parsed.aid || eofAid.aid || (parsed.articleId ? filenameToAid(parsed.articleId) : null),
-      };
-
-      // Step 5: Final cross-article check before scraping any pushes
-      if (!this.matchesTargetArticle(candidateMeta)) {
-        return;
-      }
-      this.lockArticleIdentity(candidateMeta);
-
-      if (parsed.pushList && parsed.pushList.length > 0) {
-        // Catch gap if massive burst arrived since previous EOF page.
-        // Use KEY_PGUP ('\x1b[5~'), NEVER 'b' ('b' = previous article on PTT!).
-        if (this.pushes.length > 0 && !this.seenSignatures.has(this.makeSignature(parsed.pushList[0]))) {
-          const eofRange = this.extractPageLineRange(screenLines);
-          const eofProg = this.extractPageProgress(screenLines);
-          if (eofProg.curPage !== 1) {
-            await this.sendToTab(tab.id, '\x1b[5~', session);
-            const movedUp = await this.waitForScreenCondition(
-              tab,
-              (lines, s) => {
-                if (s !== 'reading') return true;
-                const nr = this.extractPageLineRange(lines);
-                const np = this.extractPageProgress(lines);
-                if (eofRange && nr && nr.startNum < eofRange.startNum) return true;
-                return Boolean(eofProg.curPage && np.curPage && np.curPage < eofProg.curPage);
-              },
-              { timeoutMs: 1500, settleMs: 45, generation: gen }
-            );
-            if (!this.isOpen || gen !== this.sessionGeneration || this.detectBbsState(tab.buf) !== 'reading') {
-              return;
-            }
-            const upLines = this.getScreenLines(tab.buf);
-            const upParsed = this.parseScreenLinesSafely(upLines);
-            const upAid = this.extractAidMetadata(upLines);
-            const upOk = this.matchesTargetArticle({
-              ...upParsed,
-              aid: upParsed.aid || upAid.aid,
-              board: upParsed.board || this.getBoardFromScreen(upLines, tab.buf) || upAid.board,
-            });
-            if (!upOk) {
-              return;
-            }
-            let gapAddedCount = 0;
-            if (movedUp && upParsed.pushList) {
-              this.syncAutoScrollFromContainer();
-              for (const p of upParsed.pushList) {
-                const sig = this.makeSignature(p);
-                if (!this.seenSignatures.has(sig)) {
-                  this.seenSignatures.add(sig);
-                  p.floor = this.pushes.length + 1;
-                  this.pushes.push(p);
-                  this.appendPushElement(p);
-                  gapAddedCount++;
+        if (parsed.pushList && parsed.pushList.length > 0) {
+          // Catch gap if massive burst arrived since previous EOF page.
+          // Use KEY_PGUP ('\x1b[5~'), NEVER 'b' ('b' = previous article on PTT!).
+          if (this.pushes.length > 0 && !this.seenSignatures.has(this.makeSignature(parsed.pushList[0]))) {
+            const eofRange = this.extractPageLineRange(screenLines);
+            const eofProg = this.extractPageProgress(screenLines);
+            if (eofProg.curPage !== 1) {
+              const waitMovedUp = this.waitForScreenCondition(
+                tab,
+                (lines, s) => {
+                  if (s !== 'reading') return true;
+                  const nr = this.extractPageLineRange(lines);
+                  const np = this.extractPageProgress(lines);
+                  if (eofRange && nr && nr.startNum < eofRange.startNum) return true;
+                  return Boolean(eofProg.curPage && np.curPage && np.curPage < eofProg.curPage);
+                },
+                { timeoutMs: 1500, settleMs: 45, requireUpdate: true, generation: gen }
+              );
+              await this._send(tab, '\x1b[5~', session, lease);
+              const movedUp = await waitMovedUp;
+              if (!this.isOpen || gen !== this.sessionGeneration || this.detectBbsState(tab.buf) !== 'reading') {
+                return;
+              }
+              const upLines = this.getScreenLines(tab.buf);
+              const upParsed = this.parseScreenLinesSafely(upLines);
+              const upAid = this.extractAidMetadata(upLines);
+              const upOk = this.matchesTargetArticle({
+                ...upParsed,
+                aid: upParsed.aid || upAid.aid,
+                board: upParsed.board || this.getBoardFromScreen(upLines, tab.buf) || upAid.board,
+              });
+              if (!upOk) {
+                return;
+              }
+              let gapAddedCount = 0;
+              if (movedUp && upParsed.pushList) {
+                this.syncAutoScrollFromContainer();
+                for (const p of upParsed.pushList) {
+                  const sig = this.makeSignature(p);
+                  if (!this.seenSignatures.has(sig)) {
+                    this.seenSignatures.add(sig);
+                    p.floor = this.pushes.length + 1;
+                    this.pushes.push(p);
+                    this.appendPushElement(p);
+                    gapAddedCount++;
+                  }
+                }
+                if (gapAddedCount > 0) {
+                  this.updateStats();
+                  if (this.autoScroll) {
+                    this.scrollToBottom();
+                  } else {
+                    this.unreadCount += gapAddedCount;
+                    this.updateUnreadPill();
+                  }
                 }
               }
-              if (gapAddedCount > 0) {
-                this.updateStats();
-                if (this.autoScroll) {
-                  this.scrollToBottom();
-                } else {
-                  this.unreadCount += gapAddedCount;
-                  this.updateUnreadPill();
-                }
+              if (this.isOpen && gen === this.sessionGeneration && this.detectBbsState(tab.buf) === 'reading' && !this.isReadingAtEof(upLines)) {
+                const waitEof = this.waitForReadingEof(tab, 1500, gen, { requireUpdate: true });
+                await this._send(tab, '$', session, lease);
+                await waitEof;
               }
             }
-            if (this.isOpen && gen === this.sessionGeneration && this.detectBbsState(tab.buf) === 'reading' && !this.isReadingAtEof(upLines)) {
-              await this.sendToTab(tab.id, '$', session);
-              await this.waitForReadingEof(tab, 1500, gen);
+          }
+
+          if (!this.isOpen || gen !== this.sessionGeneration) return;
+
+          this.syncAutoScrollFromContainer();
+          let addedCount = 0;
+          for (const p of parsed.pushList) {
+            const sig = this.makeSignature(p);
+            if (!this.seenSignatures.has(sig)) {
+              this.seenSignatures.add(sig);
+              p.floor = this.pushes.length + 1;
+              this.pushes.push(p);
+              this.appendPushElement(p);
+              addedCount++;
+            }
+          }
+
+          if (addedCount > 0) {
+            this.updateStats();
+            if (this.autoScroll) {
+              this.scrollToBottom();
+            } else {
+              this.unreadCount += addedCount;
+              this.updateUnreadPill();
             }
           }
         }
 
-        if (!this.isOpen || gen !== this.sessionGeneration) return;
-
-        this.syncAutoScrollFromContainer();
-        let addedCount = 0;
-        for (const p of parsed.pushList) {
-          const sig = this.makeSignature(p);
-          if (!this.seenSignatures.has(sig)) {
-            this.seenSignatures.add(sig);
-            p.floor = this.pushes.length + 1;
-            this.pushes.push(p);
-            this.appendPushElement(p);
-            addedCount++;
-          }
+        // Automatically backfill remaining older history chunks in the background
+        // using pmore's ':' goto-line prompt + PageUp ('\x1b[5~'), keeping live polling active.
+        if (
+          this.isOpen &&
+          gen === this.sessionGeneration &&
+          this.hasMoreHistory &&
+          this.canUseGotoPrompt &&
+          this.oldestCapturedLineNum > 1 &&
+          !this.isSending &&
+          !this.isCrawlingHistory &&
+          this.detectBbsState(tab.buf) === 'reading'
+        ) {
+          await this.crawlBackwardBatch(tab, session, gen, 8, lease);
         }
-
-        if (addedCount > 0) {
-          this.updateStats();
-          if (this.autoScroll) {
-            this.scrollToBottom();
-          } else {
-            this.unreadCount += addedCount;
-            this.updateUnreadPill();
-          }
-        }
-      }
-
-      // Automatically backfill remaining older history chunks in the background
-      // using pmore's ':' goto-line prompt + PageUp ('\x1b[5~'), keeping live polling active.
-      if (
-        this.isOpen &&
-        gen === this.sessionGeneration &&
-        this.hasMoreHistory &&
-        this.canUseGotoPrompt &&
-        this.oldestCapturedLineNum > 1 &&
-        !this.isSending &&
-        !this.isCrawlingHistory &&
-        this.detectBbsState(tab.buf) === 'reading'
-      ) {
-        await this.crawlBackwardBatch(tab, session, gen, 8);
-      }
+      });
     } catch (err) {
       // Background poll failure should stay silent without interrupting user
       console.warn('[LiveChat] Poll error:', err);
@@ -3037,7 +3320,7 @@ export class LiveChatModal {
 
     // Wait for any in-flight background poll or history crawl to settle
     let settleWait = 0;
-    while ((this.isPolling || this.isCrawlingHistory) && settleWait < 30) {
+    while ((this.isPolling || this.isCrawlingHistory) && settleWait < 120) {
       await new Promise((r) => setTimeout(r, 50));
       settleWait++;
     }
@@ -3048,77 +3331,88 @@ export class LiveChatModal {
     let optimisticPush = null;
 
     try {
-      // 0a. Check if terminal is stuck in an article reply or edit prompt
-      const screenLines = this.getScreenLines(this.tab.buf);
-      const bottom = (screenLines[screenLines.length - 1] || '') + '\n' + (screenLines[screenLines.length - 2] || '');
-      if (/回應至\s*[(（]|請問要引用原文嗎|引用原文\s*[(（]|文章標題\s*[:：]|發表文章種類/.test(bottom)) {
-        const session = await this.getConnectionSession(this.tab.id);
-        if (session && this.sendToTab) {
-          await this.sendToTab(this.tab.id, 'q\x1b', session);
-        }
-        this.onShowToast?.('偵測到終端機處於文章回應或發文畫面，已自動為您取消以防誤發');
+      if (this.isPolling || this.isCrawlingHistory) {
+        this.onShowToast?.('正在同步推文資料，請稍候再試');
         return;
       }
 
-      // 0b. BBS State Preflight check: Ensure terminal is inside the article before pushing
-      const session = await this.getConnectionSession?.(this.tab.id);
-      const inArticle = await this.ensureInTargetArticle(this.tab, session);
-      if (!inArticle) {
-        this.onShowToast?.('目前終端機尚未處於文章閱讀狀態，請先進入文章再推文');
-        return;
-      }
-
-      // 1. Split text into segments for automatic continuous push
-      const isOp = this.checkIsOp();
-      const segments = this.pushHelper?.splitText ? this.pushHelper.splitText(text) : [text];
-      let confirmedCount = 0;
-
-      for (let i = 0; i < segments.length; i++) {
-        if (!this.isOpen || !this.isSending) break;
-        const seg = segments[i];
-        const isFirst = (i === 0);
-        const segType = isOp ? '3' : (isFirst ? this.activeType : '3');
-
-        if (this.sendBtn) {
-          this.sendBtn.textContent = segments.length > 1 ? `發送中 (${i + 1}/${segments.length})...` : '發送中...';
-        }
-
-        let outcome = { status: 'confirmed' };
-        if (this.pushHelper) {
-          outcome = await this.pushHelper.sendSegmentSequence(seg, segType, isFirst);
-        }
-
-        if (outcome.status === 'cooldown') {
-          const sec = outcome.seconds || 5;
-          let remaining = sec + 0.5;
-          while (remaining > 0 && this.isOpen && this.isSending) {
-            if (this.sendBtn) {
-              this.sendBtn.textContent = `冷卻中 ${remaining.toFixed(1)}s (${i + 1}/${segments.length})`;
-            }
-            await new Promise((r) => setTimeout(r, 200));
-            remaining -= 0.2;
+      const acquired = await this.withInputLease(this.tab, async (lease) => {
+        // 0a. Check if terminal is stuck in an article reply or edit prompt
+        const screenLines = this.getScreenLines(this.tab.buf);
+        const bottom = (screenLines[screenLines.length - 1] || '') + '\n' + (screenLines[screenLines.length - 2] || '');
+        if (/回應至\s*[(（]|請問要引用原文嗎|引用原文\s*[(（]|文章標題\s*[:：]|發表文章種類/.test(bottom)) {
+          const session = await this.getConnectionSession(this.tab.id);
+          if (session && this.sendToTab) {
+            await this._send(this.tab, 'q\x1b', session, lease);
           }
-          i--; // Retry this segment!
-          continue;
+          this.onShowToast?.('偵測到終端機處於文章回應或發文畫面，已自動為您取消以防誤發');
+          return;
         }
 
-        if (outcome.status === 'aborted') {
-          this.onShowToast?.(outcome.error || '推文已中止');
-          break;
+        // 0b. BBS State Preflight check: Ensure terminal is inside the article before pushing
+        const session = await this.getConnectionSession?.(this.tab.id);
+        const inArticle = await this.ensureInTargetArticle(this.tab, session, this.sessionGeneration, lease);
+        if (!inArticle) {
+          this.onShowToast?.('目前終端機尚未處於文章閱讀狀態，請先進入文章再推文');
+          return;
         }
 
-        confirmedCount++;
+        // 1. Split text into segments for automatic continuous push
+        const isOp = this.checkIsOp();
+        const segments = this.pushHelper?.splitText ? this.pushHelper.splitText(text) : [text];
+        let confirmedCount = 0;
 
-        // Small safe delay between segments (300ms) if no cooldown
-        if (i < segments.length - 1 && this.isOpen && this.isSending) {
-          await new Promise((r) => setTimeout(r, 300));
+        for (let i = 0; i < segments.length; i++) {
+          if (!this.isOpen || !this.isSending) break;
+          const seg = segments[i];
+          const isFirst = (i === 0);
+          const segType = isOp ? '3' : (isFirst ? this.activeType : '3');
+
+          if (this.sendBtn) {
+            this.sendBtn.textContent = segments.length > 1 ? `發送中 (${i + 1}/${segments.length})...` : '發送中...';
+          }
+
+          let outcome = { status: 'confirmed' };
+          if (this.pushHelper) {
+            outcome = await this.pushHelper.sendSegmentSequence(seg, segType, isFirst, null, lease);
+          }
+
+          if (outcome.status === 'cooldown') {
+            const sec = outcome.seconds || 5;
+            let remaining = sec + 0.5;
+            while (remaining > 0 && this.isOpen && this.isSending) {
+              if (this.sendBtn) {
+                this.sendBtn.textContent = `冷卻中 ${remaining.toFixed(1)}s (${i + 1}/${segments.length})`;
+              }
+              await new Promise((r) => setTimeout(r, 200));
+              remaining -= 0.2;
+            }
+            i--; // Retry this segment!
+            continue;
+          }
+
+          if (outcome.status === 'aborted') {
+            this.onShowToast?.(outcome.error || '推文已中止');
+            break;
+          }
+
+          confirmedCount++;
+
+          // Small safe delay between segments (300ms) if no cooldown
+          if (i < segments.length - 1 && this.isOpen && this.isSending) {
+            await new Promise((r) => setTimeout(r, 300));
+          }
         }
-      }
 
-      if (confirmedCount > 0) {
-        if (input) input.value = '';
-        this.updateCharCount();
-        this.onShowToast?.(segments.length > 1 ? `已順利完成連續推文（共 ${confirmedCount} 段）！` : '推文已順利送出！');
+        if (confirmedCount > 0) {
+          if (input) input.value = '';
+          this.updateCharCount();
+          this.onShowToast?.(segments.length > 1 ? `已順利完成連續推文（共 ${confirmedCount} 段）！` : '推文已順利送出！');
+        }
+      }, { waitMs: 800 });
+
+      if (acquired === false) {
+        this.onShowToast?.('終端機正由其他操作使用中，請稍候再推文');
       }
     } catch (err) {
       this.onShowToast?.(`推文發送失敗：${err.message || err}`);

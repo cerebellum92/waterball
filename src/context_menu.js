@@ -53,6 +53,7 @@ export class ContextMenuController {
         if (sel) {
           writeClipboardText(sel).catch(() => {});
           this.onShowToast('已複製文字至剪貼簿');
+          this.activeTab.view.clearSelection();
         }
       }
       this.hide();
@@ -64,6 +65,7 @@ export class ContextMenuController {
         if (ansi) {
           writeClipboardText(ansi).catch(() => {});
           this.onShowToast('已複製含色彩 ANSI 代碼');
+          this.activeTab.view.clearSelection();
         }
       }
       this.hide();

@@ -177,7 +177,9 @@ const liveChatModal = new LiveChatModal({
   settingsManager,
   imagePreview,
   getConnectionSession: id => connectionCtrl.getConnectionSession(id),
-  sendToTab: (id, text, session) => connectionCtrl.sendDataToTabAndWait(id, text, session),
+  acquireInput: id => terminalPaste.busy ? null : connectionCtrl.acquireInputLease(id),
+  releaseInput: (id, token) => connectionCtrl.releaseInputLease(id, token),
+  sendToTab: (id, text, session, token = null) => connectionCtrl.sendDataToTabAndWait(id, text, session, token),
   pushHelper,
   onShowToast: showGlobalToast,
   onEditUserTag: (user) => {
@@ -316,6 +318,7 @@ const settingsUI = new SettingsUI({
     settingSmartDbcs: document.getElementById('setting-smart-dbcs'),
     settingMouseBrowsing: document.getElementById('setting-mouse-browsing'),
     settingWheelScroll: document.getElementById('setting-wheel-scroll'),
+    settingMouseSideButton: document.getElementById('setting-mouse-side-button'),
     settingAutoCopy: document.getElementById('setting-auto-copy'),
     settingImageUpload: document.getElementById('setting-image-upload'),
     settingImageHostProvider: document.getElementById('setting-image-host-provider'),
@@ -329,6 +332,7 @@ const settingsUI = new SettingsUI({
     settingImagePreview: document.getElementById('setting-image-preview'),
     settingRememberWindow: document.getElementById('setting-remember-window'),
     settingToolbarScale: document.getElementById('setting-toolbar-scale'),
+    settingTerminalFontScale: document.getElementById('setting-terminal-font-scale'),
     btnCheckUpdate: document.getElementById('btn-check-update'),
     updateStatusMsg: document.getElementById('update-status-msg'),
     settingBlacklistEnabled: document.getElementById('setting-blacklist-enabled'),
@@ -512,6 +516,41 @@ tabManager.onWordLeave = () => {
   userTagsUI.hideTooltip();
 };
 
+const MOUSE_SIDE_KEY_MAP = {
+  page: { back: '\x1b[5~', forward: '\x1b[6~' }, // PageUp / PageDown
+  nav: { back: '\x1b[D', forward: '\x1b[C' },    // Arrow Left / Arrow Right
+};
+
+function isAnyModalOpen() {
+  return !!(
+    shortcutsModal?.isOpen() ||
+    aidJumpModal?.isOpen ||
+    picketReportModal?.isOpen ||
+    boardSwitcherWidget?.isOpen ||
+    exportModal?.isOpen ||
+    paletteWidget?.isOpen ||
+    settingsUI?.isOpen() ||
+    pushHelper?.isOpen ||
+    waterballUI?.isOpen() ||
+    userTagsUI?.isOpen() ||
+    articleMonitorUI?.isOpen() ||
+    tabManager?.isTabSwitcherOpen?.() ||
+    articleReader?.isOpen ||
+    liveChatModal?.isOpen
+  );
+}
+
+function handleMouseSideAction(side, tab = tabManager.getActiveTab()) {
+  const mode = settingsManager.settings.mouseSideButtonAction || 'page';
+  if (mode === 'none' || isAnyModalOpen()) return;
+  const seq = MOUSE_SIDE_KEY_MAP[mode]?.[side];
+  if (!seq) return;
+  imagePreview.hideImmediate();
+  settingsManager.recordActivity();
+  if (!tab || !tab.isConnected) return;
+  connectionCtrl.sendData(seq);
+}
+
 tabManager.onWheel = (direction, tab) => {
   imagePreview.hideImmediate();
   settingsManager.recordActivity();
@@ -519,6 +558,25 @@ tabManager.onWheel = (direction, tab) => {
   if (!settingsManager.settings.wheelScrollPage) return;
   connectionCtrl.sendData(direction === 'down' ? '\x1b[6~' : '\x1b[5~');
 };
+
+tabManager.onSideButton = (side, tab) => {
+  handleMouseSideAction(side, tab);
+};
+
+// Also guard viewport margins/toolbars against Edge/Chrome mouse side-button history navigation
+const handleWindowSideButton = (e, triggerAction = false) => {
+  if (e.button !== 3 && e.button !== 4) return;
+  const mode = settingsManager.settings.mouseSideButtonAction || 'page';
+  if (mode === 'none') return;
+  e.preventDefault();
+  if (!triggerAction || isAnyModalOpen()) return;
+  const activeTab = tabManager.getActiveTab();
+  if (activeTab?.view?.wrapper?.contains?.(e.target)) return;
+  handleMouseSideAction(e.button === 3 ? 'back' : 'forward', activeTab);
+};
+window.addEventListener('mousedown', (e) => handleWindowSideButton(e, false));
+window.addEventListener('auxclick', (e) => handleWindowSideButton(e, false));
+window.addEventListener('mouseup', (e) => handleWindowSideButton(e, true));
 
 tabManager.onArticleClick = (row, tab) => {
   imagePreview.hideImmediate();
@@ -554,11 +612,16 @@ tabManager.onShortcutClick = (shortcut, tab) => {
   connectionCtrl.sendDataToTab(tab.id, data);
 };
 
-tabManager.onSelectionChange = (selection, tab) => {
-  if (settingsManager.settings.autoCopySelection && selection && tab?.view) {
+tabManager.onSelectionComplete = (selection, tab) => {
+  if (settingsManager.settings.autoCopySelection !== false && selection && tab?.view) {
     const text = tab.view.getSelectionText();
     if (text) {
-      writeClipboardText(text).catch(() => {});
+      writeClipboardText(text)
+        .then(() => {
+          showGlobalToast('📋 已自動複製至剪貼簿');
+        })
+        .catch(() => {});
+      tab.view.clearSelection();
     }
   }
 };
@@ -1192,6 +1255,12 @@ window.addEventListener('keydown', (e) => {
     }
   }
 
+  if ((e.key === 'BrowserBack' || e.key === 'BrowserForward') && (settingsManager.settings.mouseSideButtonAction || 'page') !== 'none') {
+    e.preventDefault();
+    handleMouseSideAction(e.key === 'BrowserBack' ? 'back' : 'forward');
+    return;
+  }
+
   // 4. Client Global Shortcuts Dispatch
   const env = resolveEnv({ isMac });
 
@@ -1381,6 +1450,7 @@ window.addEventListener('keydown', (e) => {
         .catch((err) => {
           console.error('Clipboard copy error:', err);
         });
+      view.clearSelection();
     }
     return;
   }
@@ -1450,10 +1520,25 @@ setTimeout(async () => {
   }
 }, 2000);
 
+  if (isTauri()) {
+    try {
+      if (document.fonts?.ready) {
+        await Promise.race([
+          document.fonts.ready.catch(() => {}),
+          new Promise((resolve) => setTimeout(resolve, 1200)),
+        ]);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    } catch {}
+    await safeInvoke('complete_startup').catch(() => {});
+  }
 }
 
 startApp().catch(error => {
   console.error('Waterball initialization failed:', error);
   const status = document.getElementById('status-text');
   if (status) status.textContent = `初始化失敗：${error.message || error}`;
+  if (isTauri()) {
+    safeInvoke('complete_startup').catch(() => {});
+  }
 });

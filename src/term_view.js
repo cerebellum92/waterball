@@ -4,6 +4,47 @@ import { terminalDiagnostics } from './terminal_diagnostics.js';
 
 const isDevelopment = import.meta.env?.DEV ?? false;
 
+// Arm weights (0=none, 1=light, 2=heavy, 3=double) encoded as [U, R, D, L] for U+2500..U+257F
+const BOX_ARM_MAP = {
+  0x2500: '0101', 0x2501: '0202', 0x2502: '1010', 0x2503: '2020',
+  0x250C: '0110', 0x250D: '0210', 0x250E: '0120', 0x250F: '0220',
+  0x2510: '0011', 0x2511: '0012', 0x2512: '0021', 0x2513: '0022',
+  0x2514: '1100', 0x2515: '1200', 0x2516: '2100', 0x2517: '2200',
+  0x2518: '1001', 0x2519: '1002', 0x251A: '2001', 0x251B: '2002',
+  0x251C: '1110', 0x251D: '1210', 0x251E: '2110', 0x251F: '1120',
+  0x2520: '2120', 0x2521: '2210', 0x2522: '1220', 0x2523: '2220',
+  0x2524: '1011', 0x2525: '1012', 0x2526: '2011', 0x2527: '1021',
+  0x2528: '2021', 0x2529: '2012', 0x252A: '1022', 0x252B: '2022',
+  0x252C: '0111', 0x252D: '0112', 0x252E: '0211', 0x252F: '0212',
+  0x2530: '0121', 0x2531: '0122', 0x2532: '0221', 0x2533: '0222',
+  0x2534: '1101', 0x2535: '1102', 0x2536: '1201', 0x2537: '1202',
+  0x2538: '2101', 0x2539: '2102', 0x253A: '2201', 0x253B: '2202',
+  0x253C: '1111', 0x253D: '1112', 0x253E: '1211', 0x253F: '1212',
+  0x2540: '2111', 0x2541: '1121', 0x2542: '2121', 0x2543: '2112',
+  0x2544: '2211', 0x2545: '1122', 0x2546: '1221', 0x2547: '2212',
+  0x2548: '1222', 0x2549: '2122', 0x254A: '2221', 0x254B: '2222',
+  0x2550: '0303', 0x2551: '3030', 0x2552: '0310', 0x2553: '0130',
+  0x2554: '0330', 0x2555: '0013', 0x2556: '0031', 0x2557: '0033',
+  0x2558: '1300', 0x2559: '3100', 0x255A: '3300', 0x255B: '1003',
+  0x255C: '3001', 0x255D: '3003', 0x255E: '1310', 0x255F: '3130',
+  0x2560: '3330', 0x2561: '1013', 0x2562: '3031', 0x2563: '3033',
+  0x2564: '0313', 0x2565: '0131', 0x2566: '0333', 0x2567: '1303',
+  0x2568: '3101', 0x2569: '3303', 0x256A: '1313', 0x256B: '3131',
+  0x256C: '3333', 0x2574: '0001', 0x2575: '1000', 0x2576: '0100',
+  0x2577: '0010', 0x2578: '0002', 0x2579: '2000', 0x257A: '0200',
+  0x257B: '0020', 0x257C: '0201', 0x257D: '1020', 0x257E: '0102',
+  0x257F: '2010',
+};
+
+const DASHED_BOX_MAP = {
+  0x2504: ['H', 1, 3], 0x2505: ['H', 2, 3], 0x2506: ['V', 1, 3], 0x2507: ['V', 2, 3],
+  0x2508: ['H', 1, 4], 0x2509: ['H', 2, 4], 0x250A: ['V', 1, 4], 0x250B: ['V', 2, 4],
+  0x254C: ['H', 1, 2], 0x254D: ['H', 2, 2], 0x254E: ['V', 1, 2], 0x254F: ['V', 2, 2],
+};
+
+// Quadrant bitmasks for U+2596..U+259F: bit0=UL, bit1=UR, bit2=LL, bit3=LR
+const QUADRANT_MASKS = [4, 8, 1, 13, 9, 7, 11, 2, 6, 14];
+
 export class TermView {
   constructor(container, termBuf, imeInput = null) {
     this.container = container;
@@ -46,7 +87,10 @@ export class TermView {
 
     this.fontFamily = 'auto';
     this.customFont = '';
+    this.terminalFontScale = 0.92;
+    this.sideButtonEnabled = true;
     this.cursorStyle = 'smart';
+    this.selectionSnapshot = null;
 
     this.renderRequested = false;
     this.measureCache = new Map();
@@ -99,6 +143,8 @@ export class TermView {
     this.onUrlLeave = null;
     this.onWheel = null;
     this.onSelectionChange = null;
+    this.onSelectionComplete = null;
+    this.onSideButton = null;
     this.onArticleClick = null;
     this.onBoardClick = null;
     this.onShortcutClick = null;
@@ -106,6 +152,11 @@ export class TermView {
     this.initMouseEvents();
 
     this.buf.onUpdate = () => {
+      if (this.selection && !this.isSelecting && this.hasSelectionScreenChanged()) {
+        this.selection = null;
+        this.selectionSnapshot = null;
+        this.buf.markAllDirty();
+      }
       this.resetCursorBlink();
       this.scheduleRedraw();
     };
@@ -151,9 +202,23 @@ export class TermView {
         this.mouseDownPos = pos;
         this.mouseDownPixel = { x: e.clientX, y: e.clientY };
         this.selection = null;
+        this.selectionSnapshot = null;
         this.redraw();
       }
     });
+
+    const sideTarget = this.wrapper || this.canvas;
+    const handleSideButtonEvent = (e, triggerAction = false) => {
+      if (!this.sideButtonEnabled) return;
+      if (e.button !== 3 && e.button !== 4) return;
+      e.preventDefault();
+      if (triggerAction) {
+        this.onSideButton?.(e.button === 3 ? 'back' : 'forward');
+      }
+    };
+    sideTarget.addEventListener('mousedown', (e) => handleSideButtonEvent(e, false));
+    sideTarget.addEventListener('auxclick', (e) => handleSideButtonEvent(e, false));
+    sideTarget.addEventListener('mouseup', (e) => handleSideButtonEvent(e, true));
 
     window.addEventListener('mousemove', (e) => {
       if (this.isSelecting && this.mouseDownPos) {
@@ -168,6 +233,7 @@ export class TermView {
           endX: pos.col,
           endY: pos.row,
         };
+        this.selectionSnapshot = this.getScreenTextSnapshot();
         this.onSelectionChange?.(this.selection);
         this.redraw();
       } else {
@@ -293,7 +359,10 @@ export class TermView {
     window.addEventListener('mouseup', (e) => {
       if (this.isSelecting) {
         this.isSelecting = false;
-        if (!this.isDragging && this.mouseDownPos) {
+        if (this.isDragging && this.selection) {
+          this.selectionSnapshot = this.getScreenTextSnapshot();
+          this.onSelectionComplete?.(this.selection);
+        } else if (!this.isDragging && this.mouseDownPos) {
           if (this.isRowMasked(this.mouseDownPos.row)) {
             this.revealBlacklistRow(this.mouseDownPos.row);
             this.mouseDownPixel = null;
@@ -691,6 +760,14 @@ export class TermView {
     }
   }
 
+  /**
+   * Enable or disable terminal handling for browser mouse side buttons (Back/Forward).
+   * @param {boolean} enabled
+   */
+  setSideButtonEnabled(enabled) {
+    this.sideButtonEnabled = enabled !== false;
+  }
+
   isPttArticleListScreen() {
     return this.getBbsState() === 'article-list';
   }
@@ -737,8 +814,23 @@ export class TermView {
     return { col, row };
   }
 
+  /**
+   * Snapshot visible terminal characters to detect real screen changes vs cursor blink.
+   * @returns {string}
+   */
+  getScreenTextSnapshot() {
+    if (!this.buf?.lines) return '';
+    return this.buf.lines.map((row) => row.map((c) => c.ch || ' ').join('')).join('\n');
+  }
+
+  hasSelectionScreenChanged() {
+    if (this.selectionSnapshot === null) return true;
+    return this.getScreenTextSnapshot() !== this.selectionSnapshot;
+  }
+
   clearSelection() {
     this.selection = null;
+    this.selectionSnapshot = null;
     this.redraw();
   }
 
@@ -897,9 +989,12 @@ export class TermView {
     return w;
   }
 
-  setFontStyle(fontFamily = 'auto', customFont = '') {
+  setFontStyle(fontFamily = 'auto', customFont = '', terminalFontScale = this.terminalFontScale) {
     this.fontFamily = fontFamily;
     this.customFont = customFont;
+    if (typeof terminalFontScale === 'number' && Number.isFinite(terminalFontScale) && terminalFontScale >= 0.7 && terminalFontScale <= 1.05) {
+      this.terminalFontScale = terminalFontScale;
+    }
     this.measureCache.clear();
     this.buf.markAllDirty();
     this.scheduleRedraw();
@@ -923,31 +1018,24 @@ export class TermView {
     const availW = Math.max(100, containerW - padX - 8);
     const availH = Math.max(100, containerH - padY - 8);
 
-    const cellW_fromW = availW / 80;
-    const cellH_fromW = cellW_fromW * 2;
-    const cellH_fromH = availH / 24;
-    const cellW_fromH = cellH_fromH / 2;
-
-    let cellW, cellH;
-    if (cellH_fromW * 24 <= availH) {
-      cellW = Math.max(4, cellW_fromW);
-      cellH = Math.max(8, cellH_fromW);
-    } else {
-      cellW = Math.max(4, cellW_fromH);
-      cellH = Math.max(8, cellH_fromH);
-    }
+    // Lock each terminal cell to an exact integer number of physical pixels (2:1 aspect ratio)
+    // so fractional Windows DPI scaling (e.g. 125% / 150%) never lands row clips on subpixel seams.
+    const dpr = window.devicePixelRatio || 1;
+    const physCellW = Math.max(4, Math.floor(Math.min((availW * dpr) / 80, (availH * dpr) / 48)));
+    const physCellH = physCellW * 2;
+    const cellW = physCellW / dpr;
+    const cellH = physCellH / dpr;
 
     this.cellW = cellW;
     this.cellH = cellH;
 
-    const dpr = window.devicePixelRatio || 1;
-    const targetW = Math.round(cellW * 80);
-    const targetH = Math.round(cellH * 24);
+    const canvasW = physCellW * 80;
+    const canvasH = physCellH * 24;
 
-    this.canvas.width = targetW * dpr;
-    this.canvas.height = targetH * dpr;
-    this.canvas.style.width = `${targetW}px`;
-    this.canvas.style.height = `${targetH}px`;
+    this.canvas.width = canvasW;
+    this.canvas.height = canvasH;
+    this.canvas.style.width = `${canvasW / dpr}px`;
+    this.canvas.style.height = `${canvasH / dpr}px`;
 
     this.ctx.setTransform(1, 0, 0, 1, 0, 0);
     this.ctx.scale(dpr, dpr);
@@ -955,6 +1043,227 @@ export class TermView {
 
     this.buf.markAllDirty();
     this.redraw();
+  }
+
+  /**
+   * Pixel-exact vector renderer for Box Drawing (U+2500..U+257F), Block Elements (U+2580..U+259F),
+   * and solid ANSI triangles (◢◣◥◤). Eliminates cell-grid black seams across Windows fractional DPI
+   * and non-monospace fallback fonts (e.g. Microsoft JhengHei in Edge).
+   * Note: intentionally uses fillRect / beginPath+stroke/fill (never ctx.rect) to keep clip rects predictable.
+   */
+  drawBoxOrBlockGlyph(ctx, ch, x1, y1, cellWidth, cellHeight, baseCellW, dpr = 1) {
+    if (!ch || ch.length !== 1) return false;
+    const code = ch.charCodeAt(0);
+    const seamX = Math.max(0.55, 1 / (dpr || 1));
+    const seamY = Math.max(0.6, 1 / (dpr || 1));
+    const x2 = x1 + cellWidth;
+    const y2 = y1 + cellHeight;
+
+    // 1. Solid geometric triangles used in BBS ANSI art
+    if (code >= 0x25E2 && code <= 0x25E5) {
+      ctx.beginPath();
+      if (code === 0x25E2) { // ◢
+        ctx.moveTo(x2 + seamX, y1);
+        ctx.lineTo(x2 + seamX, y2 + seamY);
+        ctx.lineTo(x1, y2 + seamY);
+      } else if (code === 0x25E3) { // ◣
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2 + seamX, y2 + seamY);
+        ctx.lineTo(x1, y2 + seamY);
+      } else if (code === 0x25E5) { // ◥
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2 + seamX, y1);
+        ctx.lineTo(x2 + seamX, y2 + seamY);
+      } else { // ◤ (0x25E4)
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2 + seamX, y1);
+        ctx.lineTo(x1, y2 + seamY);
+      }
+      ctx.closePath();
+      ctx.fill();
+      return true;
+    }
+
+    // 2. Block Elements (U+2580..U+259F)
+    if (code >= 0x2580 && code <= 0x259F) {
+      if (code === 0x2588) { // █
+        ctx.fillRect(x1, y1, cellWidth + seamX, cellHeight + seamY);
+      } else if (code === 0x2580) { // ▀
+        const halfH = Math.round(cellHeight / 2);
+        ctx.fillRect(x1, y1, cellWidth + seamX, halfH + seamY * 0.5);
+      } else if (code >= 0x2581 && code <= 0x2587) { // ▁..▇
+        const bh = Math.max(1, Math.round(cellHeight * ((code - 0x2580) / 8)));
+        ctx.fillRect(x1, y1 + cellHeight - bh, cellWidth + seamX, bh + seamY);
+      } else if (code >= 0x2589 && code <= 0x258F) { // ▉..▏
+        const bw = Math.max(1, Math.round(cellWidth * ((0x2590 - code) / 8)));
+        ctx.fillRect(x1, y1, bw, cellHeight + seamY);
+      } else if (code === 0x2590) { // ▐
+        const halfW = Math.round(cellWidth / 2);
+        ctx.fillRect(x1 + halfW, y1, cellWidth - halfW + seamX, cellHeight + seamY);
+      } else if (code >= 0x2591 && code <= 0x2593) { // ░▒▓
+        const alpha = (code - 0x2590) * 0.25;
+        ctx.save();
+        ctx.globalAlpha *= alpha;
+        ctx.fillRect(x1, y1, cellWidth + seamX, cellHeight + seamY);
+        ctx.restore();
+      } else if (code === 0x2594) { // ▔
+        const th = Math.max(1, Math.round(cellHeight / 8));
+        ctx.fillRect(x1, y1, cellWidth + seamX, th);
+      } else if (code === 0x2595) { // ▕
+        const rw = Math.max(1, Math.round(cellWidth / 8));
+        ctx.fillRect(x1 + cellWidth - rw, y1, rw + seamX, cellHeight + seamY);
+      } else { // ▖..▟ (0x2596..0x259F)
+        const mask = QUADRANT_MASKS[code - 0x2596];
+        const leftW = Math.round(cellWidth / 2);
+        const rightW = cellWidth - leftW + seamX;
+        const topH = Math.round(cellHeight / 2);
+        const botH = cellHeight - topH + seamY;
+        if (mask & 1) ctx.fillRect(x1, y1, leftW + 0.1, topH + 0.1);
+        if (mask & 2) ctx.fillRect(x1 + leftW, y1, rightW, topH + 0.1);
+        if (mask & 4) ctx.fillRect(x1, y1 + topH, leftW + 0.1, botH);
+        if (mask & 8) ctx.fillRect(x1 + leftW, y1 + topH, rightW, botH);
+      }
+      return true;
+    }
+
+    // 3. Box Drawing (U+2500..U+257F)
+    if (code < 0x2500 || code > 0x257F) return false;
+
+    const lightW = Math.max(1, Math.round(Math.min(baseCellW, cellHeight) * 0.08));
+    const heavyW = Math.max(2, lightW * 2);
+    const hl = lightW / 2;
+    const cx = x1 + cellWidth / 2;
+    const cy = y1 + cellHeight / 2;
+
+    if (code >= 0x256D && code <= 0x2570) { // Rounded corners ╭╮╯╰
+      const r = Math.min(cellWidth, cellHeight) * 0.35;
+      ctx.save();
+      ctx.strokeStyle = ctx.fillStyle;
+      ctx.lineWidth = lightW;
+      ctx.beginPath();
+      if (code === 0x256D) {
+        ctx.moveTo(cx, y2 + seamY);
+        if (typeof ctx.arcTo === 'function') ctx.arcTo(cx, cy, x2 + seamX, cy, r);
+        ctx.lineTo(x2 + seamX, cy);
+      } else if (code === 0x256E) {
+        ctx.moveTo(x1 - seamX * 0.5, cy);
+        if (typeof ctx.arcTo === 'function') ctx.arcTo(cx, cy, cx, y2 + seamY, r);
+        ctx.lineTo(cx, y2 + seamY);
+      } else if (code === 0x256F) {
+        ctx.moveTo(cx, y1 - seamY * 0.5);
+        if (typeof ctx.arcTo === 'function') ctx.arcTo(cx, cy, x1 - seamX * 0.5, cy, r);
+        ctx.lineTo(x1 - seamX * 0.5, cy);
+      } else {
+        ctx.moveTo(cx, y1 - seamY * 0.5);
+        if (typeof ctx.arcTo === 'function') ctx.arcTo(cx, cy, x2 + seamX, cy, r);
+        ctx.lineTo(x2 + seamX, cy);
+      }
+      ctx.stroke();
+      ctx.restore();
+      return true;
+    }
+
+    if (code >= 0x2571 && code <= 0x2573) { // Diagonals ╱╲╳
+      ctx.save();
+      ctx.strokeStyle = ctx.fillStyle;
+      ctx.lineWidth = lightW;
+      ctx.beginPath();
+      if (code === 0x2571 || code === 0x2573) {
+        ctx.moveTo(x1, y2 + seamY * 0.5);
+        ctx.lineTo(x2 + seamX * 0.5, y1);
+      }
+      if (code === 0x2572 || code === 0x2573) {
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2 + seamX * 0.5, y2 + seamY * 0.5);
+      }
+      ctx.stroke();
+      ctx.restore();
+      return true;
+    }
+
+    const dashed = DASHED_BOX_MAP[code];
+    if (dashed) {
+      const [axis, weight, count] = dashed;
+      const thick = weight === 2 ? heavyW : lightW;
+      if (axis === 'H') {
+        const step = cellWidth / count;
+        const dashW = Math.max(1, step * 0.65);
+        const offset = (step - dashW) / 2;
+        for (let i = 0; i < count; i++) {
+          ctx.fillRect(x1 + i * step + offset, cy - thick / 2, dashW, thick);
+        }
+      } else {
+        const step = cellHeight / count;
+        const dashH = Math.max(1, step * 0.65);
+        const offset = (step - dashH) / 2;
+        for (let i = 0; i < count; i++) {
+          ctx.fillRect(cx - thick / 2, y1 + i * step + offset, thick, dashH);
+        }
+      }
+      return true;
+    }
+
+    const arms = BOX_ARM_MAP[code];
+    if (!arms) return false;
+
+    const u = Number(arms[0]);
+    const r = Number(arms[1]);
+    const d = Number(arms[2]);
+    const l = Number(arms[3]);
+    const thickOf = (w) => (w === 2 ? heavyW : w === 1 ? lightW : 0);
+    const drawV = (xc, thick, ys, ye) => ctx.fillRect(xc - thick / 2, ys, thick, Math.max(0, ye - ys));
+    const drawH = (yc, thick, xs, xe) => ctx.fillRect(xs, yc - thick / 2, Math.max(0, xe - xs), thick);
+
+    if (u < 3 && r < 3 && d < 3 && l < 3) {
+      const maxH = Math.max(thickOf(l), thickOf(r));
+      const maxV = Math.max(thickOf(u), thickOf(d));
+      if (u) drawV(cx, thickOf(u), y1 - seamY * 0.5, cy + maxH / 2);
+      if (d) drawV(cx, thickOf(d), cy - maxH / 2, y2 + seamY);
+      if (l) drawH(cy, thickOf(l), x1 - seamX * 0.5, cx + maxV / 2);
+      if (r) drawH(cy, thickOf(r), cx - maxV / 2, x2 + seamX);
+      return true;
+    }
+
+    // Double-line combinations (═║╔╗╚╝╠╣╦╩╬╞╟╡╢╤╥╧╨╪╫...)
+    const off = Math.max(2, Math.round(Math.min(baseCellW, cellHeight) * 0.14));
+    const yTop = y1 - seamY * 0.5;
+    const yBot = y2 + seamY;
+    const xLeft = x1 - seamX * 0.5;
+    const xRight = x2 + seamX;
+
+    if (u === 3) {
+      drawV(cx - off, lightW, yTop, l === 3 ? cy - off + hl : l > 0 ? cy + hl : d === 3 ? cy + hl : r === 3 ? cy + off + hl : cy + hl);
+      drawV(cx + off, lightW, yTop, r === 3 ? cy - off + hl : r > 0 ? cy + hl : d === 3 ? cy + hl : l === 3 ? cy + off + hl : cy + hl);
+    } else if (u > 0) {
+      const yEnd = (l === 3 && r === 3 && !d) ? cy - off + hl : (!d && (l === 3 || r === 3)) ? cy + off + hl : cy + hl;
+      drawV(cx, thickOf(u), yTop, yEnd);
+    }
+
+    if (d === 3) {
+      drawV(cx - off, lightW, l === 3 ? cy + off - hl : l > 0 ? cy - hl : u === 3 ? cy - hl : r === 3 ? cy - off - hl : cy - hl, yBot);
+      drawV(cx + off, lightW, r === 3 ? cy + off - hl : r > 0 ? cy - hl : u === 3 ? cy - hl : l === 3 ? cy - off - hl : cy - hl, yBot);
+    } else if (d > 0) {
+      const yStart = (l === 3 && r === 3 && !u) ? cy + off - hl : (!u && (l === 3 || r === 3)) ? cy - off - hl : cy - hl;
+      drawV(cx, thickOf(d), yStart, yBot);
+    }
+
+    if (l === 3) {
+      drawH(cy - off, lightW, xLeft, u === 3 ? cx - off + hl : u > 0 ? cx + hl : r === 3 ? cx + hl : d === 3 ? cx + off + hl : cx + hl);
+      drawH(cy + off, lightW, xLeft, d === 3 ? cx - off + hl : d > 0 ? cx + hl : r === 3 ? cx + hl : u === 3 ? cx + off + hl : cx + hl);
+    } else if (l > 0) {
+      const xEnd = (u === 3 && d === 3 && !r) ? cx - off + hl : (!r && (u === 3 || d === 3)) ? cx + off + hl : cx + hl;
+      drawH(cy, thickOf(l), xLeft, xEnd);
+    }
+
+    if (r === 3) {
+      drawH(cy - off, lightW, u === 3 ? cx + off - hl : u > 0 ? cx - hl : l === 3 ? cx - hl : d === 3 ? cx - off - hl : cx - hl, xRight);
+      drawH(cy + off, lightW, d === 3 ? cx + off - hl : d > 0 ? cx - hl : l === 3 ? cx - hl : u === 3 ? cx - off - hl : cx - hl, xRight);
+    } else if (r > 0) {
+      const xStart = (u === 3 && d === 3 && !l) ? cx + off - hl : (!l && (u === 3 || d === 3)) ? cx - off - hl : cx - hl;
+      drawH(cy, thickOf(r), xStart, xRight);
+    }
+
+    return true;
   }
 
   redraw(forceFull = false) {
@@ -1015,7 +1324,10 @@ export class TermView {
       }
     }
 
-    const fontSize = Math.floor(cellH * 0.82);
+    const fontScale = (typeof this.terminalFontScale === 'number' && Number.isFinite(this.terminalFontScale))
+      ? this.terminalFontScale
+      : 0.92;
+    const fontSize = Math.floor(cellH * fontScale);
     ctx.font = `${fontSize}px ${this.getRenderFontFamilyString()}`;
     ctx.textBaseline = 'middle';
 
@@ -1023,17 +1335,25 @@ export class TermView {
     const filterScreenState = this.getBbsState();
     // 0. Clear entire canvas background to completely eliminate ghost cursors and screen residuals
     const dpr = window.devicePixelRatio || 1;
-    ctx.clearRect(0, 0, this.canvas.width / dpr, this.canvas.height / dpr);
+    const scaleX = (this.canvas.width && cellW > 0) ? (this.canvas.width / (cellW * cols)) : dpr;
+    const scaleY = (this.canvas.height && cellH > 0) ? (this.canvas.height / (cellH * rows)) : dpr;
+    const snapX = (v) => Math.round(v * scaleX) / scaleX;
+    const snapY = (v) => Math.round(v * scaleY) / scaleY;
+    const logicalW = this.canvas.width / dpr;
+    const logicalH = this.canvas.height / dpr;
+
+    ctx.clearRect(0, 0, logicalW, logicalH);
     ctx.fillStyle = '#000000';
-    ctx.fillRect(0, 0, this.canvas.width / dpr, this.canvas.height / dpr);
+    ctx.fillRect(0, 0, logicalW, logicalH);
 
     for (let r = 0; r < rows; r++) {
       ctx.save();
       try {
-        const clipY = Math.round(r * cellH);
-        const clipHeight = Math.round((r + 1) * cellH) - clipY;
+        const clipY = snapY(r * cellH);
+        const clipY2 = snapY((r + 1) * cellH);
+        const clipHeight = clipY2 - clipY;
         ctx.beginPath();
-        ctx.rect(0, clipY, this.canvas.width / dpr, clipHeight);
+        ctx.rect(0, clipY, logicalW, clipHeight);
         ctx.clip();
         const meta = this.getRowMetadata(r, filterScreenState);
         const isBlacklisted = meta.isBlacklisted && this.revealedBlacklistRows?.get(r) !== meta.key;
@@ -1042,18 +1362,18 @@ export class TermView {
         if (isBlacklisted) {
           if (mode === 'hide') {
             ctx.fillStyle = '#0a0a0a';
-            ctx.fillRect(0, Math.round(r * cellH), this.canvas.width / dpr, clipHeight);
+            ctx.fillRect(0, clipY, logicalW, clipHeight);
             ctx.fillStyle = '#3a3a3a';
             ctx.font = `italic ${Math.round(cellH * 0.58)}px sans-serif`;
-            ctx.fillText(`[🚫 黑名單已隱藏: ${meta.reason}]`, 12, Math.round(r * cellH + cellH * 0.52));
+            ctx.fillText(`[🚫 黑名單已隱藏: ${meta.reason}]`, 12, clipY + cellH * 0.52);
             ctx.font = `${fontSize}px ${this.getRenderFontFamilyString()}`;
             continue;
           } else if (mode === 'mask') {
             ctx.fillStyle = '#111111';
-            ctx.fillRect(0, Math.round(r * cellH), this.canvas.width / dpr, clipHeight);
+            ctx.fillRect(0, clipY, logicalW, clipHeight);
             ctx.fillStyle = '#6b7280';
             ctx.font = `italic ${Math.round(cellH * 0.58)}px sans-serif`;
-            ctx.fillText(`[🛡️ 遮蔽黑名單行: ${meta.reason}]`, 12, Math.round(r * cellH + cellH * 0.52));
+            ctx.fillText(`[🛡️ 遮蔽黑名單行: ${meta.reason}]`, 12, clipY + cellH * 0.52);
             ctx.font = `${fontSize}px ${this.getRenderFontFamilyString()}`;
             continue;
           } else {
@@ -1062,12 +1382,12 @@ export class TermView {
         }
 
         const line = buf.lines[r];
-        const y1 = Math.round(r * cellH);
-        const y2 = Math.round((r + 1) * cellH);
-        const cellHeight = y2 - y1;
-        const centerY = y1 + Math.round(cellHeight * 0.52);
+        const y1 = clipY;
+        const y2 = clipY2;
+        const cellHeight = clipHeight;
+        const centerY = y1 + cellHeight * 0.52;
 
-        // 1. Draw continuous background spans (100% eliminates fractional DPI grid lines)
+        // 1. Draw continuous background spans (snapped to physical pixels)
         let bgStartCol = 0;
         let curBg = line[0].getBg();
 
@@ -1075,10 +1395,10 @@ export class TermView {
           const bg = (c < cols) ? line[c].getBg() : -1;
           if (bg !== curBg) {
             if (curBg !== 0) {
-              const x1 = Math.round(bgStartCol * cellW);
-              const x2 = Math.round(c * cellW);
+              const x1 = snapX(bgStartCol * cellW);
+              const x2 = snapX(c * cellW);
               ctx.fillStyle = typeof curBg === 'string' ? curBg : (TERM_COLORS[curBg] || '#000000');
-              ctx.fillRect(x1, y1, x2 - x1, cellHeight + 0.6);
+              ctx.fillRect(x1, y1, x2 - x1, cellHeight + 0.6 / scaleY);
             }
             bgStartCol = c;
             curBg = bg;
@@ -1094,8 +1414,8 @@ export class TermView {
           // Verify that lead byte is genuinely followed by a trail byte before spanning 2 cells
           const isLead = cell.isLeadByte && (c + 1 < cols) && !!line[c + 1].isTrailByte;
 
-          const x1 = Math.round(c * cellW);
-          const x2 = Math.round((c + (isLead ? 2 : 1)) * cellW);
+          const x1 = snapX(c * cellW);
+          const x2 = snapX((c + (isLead ? 2 : 1)) * cellW);
           const cellWidth = x2 - x1;
 
           const fgVal = cell.getFg();
@@ -1112,8 +1432,8 @@ export class TermView {
               if (splitGlyph) {
                 ctx.save();
                 ctx.beginPath();
-                const clipStart = Math.round((c + half) * cellW);
-                const clipEnd = Math.round((c + half + 1) * cellW);
+                const clipStart = snapX((c + half) * cellW);
+                const clipEnd = snapX((c + half + 1) * cellW);
                 ctx.rect(clipStart, y1, clipEnd - clipStart, cellHeight);
                 ctx.clip();
               }
@@ -1121,49 +1441,9 @@ export class TermView {
               ctx.fillStyle = half === 0 ? fgCol
                 : typeof halfFg === 'string' ? halfFg : (TERM_COLORS[halfFg] || '#ffffff');
 
-              // Direct pixel-perfect solid block drawing for BBS ANSI art (zero seams)
-              if (cell.ch === '█') {
-                ctx.fillRect(x1, y1, cellWidth + 0.5, cellHeight + 0.6);
-              } else if (cell.ch === '▀') {
-                const halfH = Math.round(cellHeight / 2);
-                ctx.fillRect(x1, y1, cellWidth + 0.5, halfH + 0.3);
-              } else if (cell.ch === '▄') {
-                const halfH = Math.round(cellHeight / 2);
-                ctx.fillRect(x1, y1 + halfH, cellWidth + 0.5, cellHeight - halfH + 0.6);
-              } else if (cell.ch === '▌') {
-                const halfW = Math.round(cellWidth / 2);
-                ctx.fillRect(x1, y1, halfW, cellHeight + 0.6);
-              } else if (cell.ch === '▐') {
-                const halfW = Math.round(cellWidth / 2);
-                ctx.fillRect(x1 + halfW, y1, cellWidth - halfW + 0.5, cellHeight + 0.6);
-              } else if (cell.ch === '◢') {
-                ctx.beginPath();
-                ctx.moveTo(x2, y1);
-                ctx.lineTo(x2, y2 + 0.6);
-                ctx.lineTo(x1, y2 + 0.6);
-                ctx.closePath();
-                ctx.fill();
-              } else if (cell.ch === '◣') {
-                ctx.beginPath();
-                ctx.moveTo(x1, y1);
-                ctx.lineTo(x2, y2 + 0.6);
-                ctx.lineTo(x1, y2 + 0.6);
-                ctx.closePath();
-                ctx.fill();
-              } else if (cell.ch === '◥') {
-                ctx.beginPath();
-                ctx.moveTo(x1, y1);
-                ctx.lineTo(x2, y1);
-                ctx.lineTo(x2, y2 + 0.6);
-                ctx.closePath();
-                ctx.fill();
-              } else if (cell.ch === '◤') {
-                ctx.beginPath();
-                ctx.moveTo(x1, y1);
-                ctx.lineTo(x2, y1);
-                ctx.lineTo(x1, y2 + 0.6);
-                ctx.closePath();
-                ctx.fill();
+              // Direct pixel-perfect vector drawing for BBS Box Drawing, Block Elements & triangles (zero seams)
+              if (this.drawBoxOrBlockGlyph(ctx, cell.ch, x1, y1, cellWidth, cellHeight, cellW, dpr)) {
+                // Vector glyph rendered directly
               } else if (isLead) {
                 // Full-width character (CJK / special symbols): preserve natural aspect ratio without horizontal stretching
                 const charW = this.getCharWidth(cell.ch, fontSize, ctx);
@@ -1302,10 +1582,10 @@ export class TermView {
       for (let r = sY; r <= eY; r++) {
         const colStart = (r === sY) ? Math.max(0, sX) : 0;
         const colEnd = (r === eY) ? Math.min(cols - 1, eX) : cols - 1;
-        const sx1 = Math.round(colStart * cellW);
-        const sx2 = Math.round((colEnd + 1) * cellW);
-        const sy1 = Math.round(r * cellH);
-        const sy2 = Math.round((r + 1) * cellH);
+        const sx1 = snapX(colStart * cellW);
+        const sx2 = snapX((colEnd + 1) * cellW);
+        const sy1 = snapY(r * cellH);
+        const sy2 = snapY((r + 1) * cellH);
         ctx.fillRect(sx1, sy1, sx2 - sx1, sy2 - sy1);
       }
     }

@@ -636,17 +636,17 @@ export class PushHelper {
     return null;
   }
 
-  async sendKeystroke(data, tab = this.getActiveTab?.()) {
+  async sendKeystroke(data, tab = this.getActiveTab?.(), inputLease = this._inputLease || null) {
     if (!tab) return;
     if (this.sendToTab) {
       const session = this.getSession ? await this.getSession(tab.id) : null;
-      await this.sendToTab(tab.id, data, session, this._inputLease || null);
+      await this.sendToTab(tab.id, data, session, inputLease);
     } else if (this.sendData) {
       this.sendData(data);
     }
   }
 
-  async sendSegmentSequence(seg, typeKey = '1', isFirstSegment = true, signal = null) {
+  async sendSegmentSequence(seg, typeKey = '1', isFirstSegment = true, signal = null, inputLease = this._inputLease || null) {
     const tab = this.getActiveTab?.();
     if (!tab || !tab.isConnected) throw new Error('連線已中斷，無法推文');
     const isPtt = this.detectTargetStation(tab) !== 'maple';
@@ -664,12 +664,12 @@ export class PushHelper {
 
     if (!atInput && !atChoice) {
       // Not yet in push interface: trigger push mode with 'X' (or '%' on Maple)
-      await this.sendKeystroke(pushKey, tab);
+      await this.sendKeystroke(pushKey, tab, inputLease);
       await this.sleep(keyDelay, signal);
       if (this.abortController || signal?.aborted) return { status: 'aborted' };
 
       if (this.isArticleReplyOrEditPrompt(tab)) {
-        await this.sendKeystroke('q\x1b', tab);
+        await this.sendKeystroke('q\x1b', tab, inputLease);
         return { status: 'aborted', error: '終端機進入非預期狀態，已安全取消' };
       }
 
@@ -681,7 +681,7 @@ export class PushHelper {
     // ABORT immediately! Never send segment text or 'y\r' blindly into an unknown screen.
     if (!atInput && !atChoice) {
       if (this.isArticleReplyOrEditPrompt(tab)) {
-        await this.sendKeystroke('q\x1b', tab);
+        await this.sendKeystroke('q\x1b', tab, inputLease);
       }
       console.warn('[PushHelper] Failed to enter push mode; aborting sequence to protect BBS buffer');
       return { status: 'aborted', error: '無法進入推文模式（請確認終端機處於文章閱讀狀態）' };
@@ -692,7 +692,7 @@ export class PushHelper {
       // On subsequent segments (isFirstSegment === false), choose '3' (→)
       const choice = !isFirstSegment ? '3' : (['1', '2', '3'].includes(typeKey) ? typeKey : '1');
       const optionStr = isPtt ? choice : `${choice}\r`;
-      await this.sendKeystroke(optionStr, tab);
+      await this.sendKeystroke(optionStr, tab, inputLease);
       await this.sleep(keyDelay, signal);
       if (this.abortController || signal?.aborted) return { status: 'aborted' };
 
@@ -704,16 +704,16 @@ export class PushHelper {
     }
 
     // 3. Send segment text + Enter
-    await this.sendKeystroke(`${seg}\r`, tab);
+    await this.sendKeystroke(`${seg}\r`, tab, inputLease);
     await this.sleep(keyDelay, signal);
     if (this.abortController || signal?.aborted) return { status: 'aborted' };
 
     // 4. Confirm saving (send y\r to commit prompt)
     if (this.isArticleReplyOrEditPrompt(tab)) {
-      await this.sendKeystroke('q\x1b', tab);
+      await this.sendKeystroke('q\x1b', tab, inputLease);
       return { status: 'aborted', error: '終端機處於異常狀態（非推文存檔畫面），已安全取消' };
     }
-    await this.sendKeystroke('y\r', tab);
+    await this.sendKeystroke('y\r', tab, inputLease);
     await this.sleep(keyDelay, signal);
     if (this.abortController || signal?.aborted) return { status: 'aborted' };
 

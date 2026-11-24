@@ -48,7 +48,8 @@ export const DEFAULT_SETTINGS = {
   smartDbcsBackspace: true,
   mouseBrowsingEnabled: true,
   wheelScrollPage: true,
-  autoCopySelection: false,
+  mouseSideButtonAction: 'page', // 'page' (PageUp/Down) | 'nav' (Left/Right) | 'none'
+  autoCopySelection: true,
   imageUploadEnabled: true,
   imageUploadProvider: 'imgur', // 'imgur' | 'catbox' | 'custom'
   imageUploadImgurClientId: '',
@@ -60,6 +61,7 @@ export const DEFAULT_SETTINGS = {
   cursorBlinkRate: 500, // ms
   imagePreviewEnabled: true,
   toolbarScale: 'medium', // 'standard' | 'medium' | 'large'
+  terminalFontScale: 0.92, // 0.84 | 0.92 | 0.98
   fontFamily: 'auto', // 'auto' | 'mingliu' | 'jhenghei' | 'monospace'
   customFont: '', // Custom font name
   rememberWindowState: true, // Auto-restore window size & position
