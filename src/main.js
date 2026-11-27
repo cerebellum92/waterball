@@ -37,6 +37,8 @@ import { waterballUI } from './waterball_ui.js';
 import { articleMonitorManager, normalizePttArticleUrl } from './article_monitor.js';
 import { articleMonitorUI } from './article_monitor_ui.js';
 import { ShortcutsModal } from './shortcuts_modal.js';
+import { FloatingNavDock, computeWindowFitInnerSize } from './floating_nav_dock.js';
+import { TOOLBAR_BUTTON_CATALOG, togglePinnedToolbarButton, applyToolbarButtonLayout } from './toolbar_layout.js';
 import { resolveEnv, matchShortcut, getShortcutTooltip } from './shortcuts_config.js';
 
 async function startApp() {
@@ -79,6 +81,9 @@ const collapseToolbarBtn = document.getElementById('collapse-toolbar-btn');
 const floatingExpandBtn = document.getElementById('floating-expand-btn');
 const toolbar = document.getElementById('toolbar');
 const toolbarActions = document.getElementById('toolbar-actions');
+const tabStrip = document.getElementById('tab-strip') || tabBar;
+const tabBarActions = document.getElementById('tab-bar-actions');
+const statusIndicator = document.getElementById('status-indicator');
 const statusDot = document.getElementById('status-dot');
 const statusText = document.getElementById('status-text');
 const terminalContainer = document.getElementById('terminal-container');
@@ -92,6 +97,19 @@ function updateMouseBrowsingButton(enabled) {
 }
 
 function updateToolbarMode() {
+  if (tabBar && tabBarActions) {
+    document.body.classList.remove('tabbar-icons-only');
+    void tabBar.offsetWidth;
+    const barRect = tabBar.getBoundingClientRect();
+    const actionsRect = tabBarActions.getBoundingClientRect();
+    const stripRect = tabStrip?.getBoundingClientRect();
+    const stripNaturalW = tabStrip?.scrollWidth || 0;
+    const topOverflows = actionsRect.right > barRect.right + 1
+      || tabBar.scrollWidth > tabBar.clientWidth + 1
+      || Boolean(stripRect && stripNaturalW > stripRect.width + 1 && stripRect.width < Math.min(stripNaturalW, 200));
+    document.body.classList.toggle('tabbar-icons-only', topOverflows);
+  }
+
   if (!toolbar || !toolbarActions) return;
   if (document.body.classList.contains('toolbar-collapsed')) return;
 
@@ -137,7 +155,7 @@ function showGlobalToast(message, duration = 2200) {
 }
 
 // 1. Tab Manager Setup
-const tabManager = new TabManager(tabBar, terminalContainer, imeInput);
+const tabManager = new TabManager(tabStrip, terminalContainer, imeInput);
 
 // 2. Auxiliary Tool Widgets
 const updateChecker = new UpdateChecker();
@@ -317,6 +335,7 @@ const settingsUI = new SettingsUI({
     settingNotifySound: document.getElementById('setting-notify-sound'),
     settingSmartDbcs: document.getElementById('setting-smart-dbcs'),
     settingMouseBrowsing: document.getElementById('setting-mouse-browsing'),
+    settingFloatingNav: document.getElementById('setting-floating-nav'),
     settingWheelScroll: document.getElementById('setting-wheel-scroll'),
     settingMouseSideButton: document.getElementById('setting-mouse-side-button'),
     settingAutoCopy: document.getElementById('setting-auto-copy'),
@@ -331,6 +350,10 @@ const settingsUI = new SettingsUI({
     settingBlinkRate: document.getElementById('setting-blink-rate'),
     settingImagePreview: document.getElementById('setting-image-preview'),
     settingRememberWindow: document.getElementById('setting-remember-window'),
+    settingAutoFitWindow: document.getElementById('setting-auto-fit-window'),
+    btnFitWindowNow: document.getElementById('btn-fit-window-now'),
+    settingPinnedToolbarList: document.getElementById('setting-pinned-toolbar-list'),
+    btnResetPinnedToolbar: document.getElementById('btn-reset-pinned-toolbar'),
     settingToolbarScale: document.getElementById('setting-toolbar-scale'),
     settingTerminalFontScale: document.getElementById('setting-terminal-font-scale'),
     btnCheckUpdate: document.getElementById('btn-check-update'),
@@ -365,7 +388,109 @@ const settingsUI = new SettingsUI({
   onFocusTerminal: () => imeCtrl.focusTerminal(),
   onShowToast: showGlobalToast,
   onMouseBrowsingChange: updateMouseBrowsingButton,
+  onFloatingNavChange: (enabled) => {
+    floatingNavDock.setEnabled(enabled);
+    syncFloatingNavDock();
+  },
+  onFitWindowNow: () => {
+    void fitDesktopWindowToTerminal({ mode: 'shrink', notify: true });
+  },
+  onPinnedToolbarChange: (pinnedIds) => {
+    applyPinnedToolbarLayout(pinnedIds);
+  },
 });
+
+if (!isTauri()) {
+  document.getElementById('setting-window-aspect-group')?.classList.add('hidden');
+}
+if (document.body.classList.contains('is-mobile')) {
+  document.getElementById('setting-pinned-toolbar-group')?.classList.add('hidden');
+}
+
+function syncCollapseButtonAppearance(collapsed) {
+  if (!collapseToolbarBtn) return;
+  const iconEl = collapseToolbarBtn.querySelector('.tb-icon');
+  const labelEl = collapseToolbarBtn.querySelector('.tb-label');
+  if (iconEl) iconEl.textContent = collapsed ? '▼' : '▲';
+  if (labelEl) labelEl.textContent = collapsed ? '展開' : '收合';
+  const hk = isMac ? 'Option+B' : 'Alt+B';
+  collapseToolbarBtn.title = collapsed ? `展開功能列 (${hk})` : `收合功能列 (${hk})`;
+}
+
+function applyPinnedToolbarLayout(pinnedIds = settingsManager.settings.pinnedToolbarButtons) {
+  applyToolbarButtonLayout({
+    pinnedIds,
+    tabBarActionsEl: tabBarActions,
+    toolbarActionsEl: toolbarActions,
+    collapseBtnEl: collapseToolbarBtn,
+    statusIndicatorEl: statusIndicator,
+    isMobile: document.body.classList.contains('is-mobile'),
+  });
+  syncCollapseButtonAppearance(document.body.classList.contains('toolbar-collapsed'));
+  updateToolbarMode();
+}
+
+for (const item of TOOLBAR_BUTTON_CATALOG) {
+  const btn = document.getElementById(item.id);
+  if (!btn) continue;
+  btn.addEventListener('contextmenu', (e) => {
+    if (document.body.classList.contains('is-mobile')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const result = togglePinnedToolbarButton(settingsManager.settings.pinnedToolbarButtons, item.id);
+    if (!result.changed) return;
+    settingsManager.saveSettings({ pinnedToolbarButtons: result.pinned });
+    applyPinnedToolbarLayout(result.pinned);
+    showGlobalToast(
+      result.isPinned
+        ? `📌 已將「${item.label}」固定於第 1 排（收合後仍顯示）`
+        : `已將「${item.label}」移回第 2 排功能列`
+    );
+  });
+}
+
+let initialFloatingNavCollapsed = false;
+try {
+  initialFloatingNavCollapsed = localStorage.getItem('waterball_floating_nav_collapsed') === 'true';
+} catch (_) {}
+
+const floatingNavDock = new FloatingNavDock({
+  rootEl: document.getElementById('floating-nav-dock'),
+  enabled: settingsManager.settings.floatingNavEnabled !== false,
+  collapsed: initialFloatingNavCollapsed,
+  canFitWindow: isTauri(),
+  onSendAction: (seq) => {
+    const activeTab = tabManager.getActiveTab();
+    if (!activeTab || !activeTab.isConnected) {
+      showGlobalToast('尚未連線至 BBS');
+      return;
+    }
+    imagePreview.hideImmediate();
+    settingsManager.recordActivity();
+    connectionCtrl.sendData(seq);
+  },
+  onFitWindow: () => {
+    void fitDesktopWindowToTerminal({ mode: 'shrink', notify: true });
+  },
+  onFocusTerminal: (force) => imeCtrl.focusTerminal(force),
+  onCollapsedChange: (collapsed) => {
+    try {
+      localStorage.setItem('waterball_floating_nav_collapsed', collapsed ? 'true' : 'false');
+    } catch (_) {}
+    syncFloatingNavDock();
+  },
+});
+
+function syncFloatingNavDock() {
+  const activeTab = tabManager.getActiveTab();
+  floatingNavDock.update({
+    isSplit: Boolean(tabManager.isSplit),
+    isMobile: document.body.classList.contains('is-mobile'),
+    isConnected: Boolean(activeTab?.isConnected),
+    containerEl: terminalContainer,
+    canvasEl: activeTab?.view?.canvas || null,
+  });
+}
 
 updateMouseBrowsingButton(settingsManager.settings.mouseBrowsingEnabled !== false);
 mouseBrowsingBtn?.addEventListener('click', () => {
@@ -459,6 +584,10 @@ userTagsManager.addListener(() => {
 });
 
 // Tab Manager Event Hooks
+tabManager.onTabBarRender = () => {
+  updateToolbarMode();
+};
+
 tabManager.onActiveTabChange = (activeTab) => {
   if (!activeTab) return;
   imagePreview.hideImmediate();
@@ -467,6 +596,7 @@ tabManager.onActiveTabChange = (activeTab) => {
   if (addressInput) addressInput.value = activeTab.address;
   if (encodingSelect) encodingSelect.value = activeTab.encoding;
   connectionCtrl.updateToolbarConnectionState(activeTab.status);
+  syncFloatingNavDock();
 };
 
 tabManager.onTabCloseRequest = (closingTab) => {
@@ -667,6 +797,8 @@ function applyPlatformShortcutTooltips() {
   if (ctxPush) ctxPush.textContent = `💬 快速開啟長推文小幫手 (${env.isMac ? 'Cmd+Shift+X' : 'Alt+X'})`;
 }
 applyPlatformShortcutTooltips();
+applyPinnedToolbarLayout();
+syncFloatingNavDock();
 
 // Window resize handling & Window state persistence
 let windowStateSaveTimer = null;
@@ -712,6 +844,77 @@ function persistWindowState(immediate = false) {
   }
 }
 
+let autoFitTimer = null;
+let lastViewportSizeTimer = null;
+let ignoreAutoFitUntil = 0;
+let lastViewportSize = { width: window.innerWidth, height: window.innerHeight };
+
+async function fitDesktopWindowToTerminal({ mode = 'shrink', notify = false } = {}) {
+  if (!isTauri()) return false;
+  if (tabManager.isSplit) {
+    if (notify) showGlobalToast('雙分割畫面模式不適用單一終端機比例貼合');
+    return false;
+  }
+  const availW = window.screen?.availWidth || 0;
+  const availH = window.screen?.availHeight || 0;
+  if (availW > 0 && availH > 0 && window.innerWidth >= availW && window.innerHeight >= availH) {
+    if (notify) showGlobalToast('視窗目前為最大化，請先還原視窗大小再貼合');
+    return false;
+  }
+
+  let padX = 0;
+  let padY = 0;
+  try {
+    const style = window.getComputedStyle(terminalContainer);
+    padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+    padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+  } catch (_) {}
+
+  const fit = computeWindowFitInnerSize({
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
+    containerWidth: terminalContainer.clientWidth || window.innerWidth,
+    containerHeight: terminalContainer.clientHeight || window.innerHeight,
+    padX,
+    padY,
+    dpr: window.devicePixelRatio || 1,
+    prevInnerWidth: lastViewportSize.width,
+    prevInnerHeight: lastViewportSize.height,
+    mode,
+    maxInnerWidth: availW > 0 ? Math.max(360, availW - 16) : 10000,
+    maxInnerHeight: availH > 0 ? Math.max(360, availH - 64) : 10000,
+  });
+
+  if (!fit.changed) {
+    if (notify) showGlobalToast('⊡ 目前視窗已貼合終端機比例');
+    return false;
+  }
+
+  ignoreAutoFitUntil = Date.now() + 500;
+  try {
+    const applied = await safeInvoke('fit_window_inner_size', {
+      width: fit.width,
+      height: fit.height,
+    });
+    if (applied) {
+      lastViewportSize = { width: fit.width, height: fit.height };
+      persistWindowState();
+      if (notify) showGlobalToast('⊡ 已貼合終端機比例（消除多餘黑邊）');
+      return true;
+    }
+  } catch (err) {
+    console.warn('Failed to fit window size:', err);
+  }
+  return false;
+}
+
+terminalContainer?.addEventListener('dblclick', (e) => {
+  if (!isTauri() || tabManager.isSplit || isAnyModalOpen()) return;
+  const canvas = tabManager.getActiveTab()?.view?.canvas;
+  if (canvas && (e.target === canvas || canvas.contains?.(e.target))) return;
+  void fitDesktopWindowToTerminal({ mode: 'shrink', notify: true });
+});
+
 function resizeActiveTerminals() {
   if (tabManager.isSplit) {
     tabManager.getPrimaryTab()?.view?.resize();
@@ -720,6 +923,7 @@ function resizeActiveTerminals() {
     const activeTab = tabManager.getActiveTab();
     if (activeTab?.view) activeTab.view.resize();
   }
+  syncFloatingNavDock();
 }
 
 const resizeObserver = new ResizeObserver(() => {
@@ -731,6 +935,22 @@ window.addEventListener('resize', () => {
   updateToolbarMode();
   resizeActiveTerminals();
   persistWindowState();
+
+  clearTimeout(autoFitTimer);
+  clearTimeout(lastViewportSizeTimer);
+  if (isTauri() && settingsManager.settings.autoFitWindowAspect && !tabManager.isSplit && Date.now() >= ignoreAutoFitUntil) {
+    autoFitTimer = setTimeout(() => {
+      void fitDesktopWindowToTerminal({ mode: 'auto', notify: false }).finally(() => {
+        lastViewportSize = { width: window.innerWidth, height: window.innerHeight };
+      });
+    }, 220);
+  } else {
+    lastViewportSizeTimer = setTimeout(() => {
+      if (Date.now() >= ignoreAutoFitUntil) {
+        lastViewportSize = { width: window.innerWidth, height: window.innerHeight };
+      }
+    }, 260);
+  }
 });
 
 window.addEventListener('beforeunload', () => {
@@ -781,6 +1001,7 @@ function setToolbarCollapsed(collapsed, options = {}) {
   const { focusTerminal = true, showNotice = false } = options;
   const wasCollapsed = document.body.classList.contains('toolbar-collapsed');
   document.body.classList.toggle('toolbar-collapsed', collapsed);
+  syncCollapseButtonAppearance(collapsed);
 
   try {
     localStorage.setItem('waterball_toolbar_collapsed', collapsed ? 'true' : 'false');
@@ -788,21 +1009,20 @@ function setToolbarCollapsed(collapsed, options = {}) {
     console.warn('Failed to persist toolbar state:', err);
   }
 
-  if (!collapsed) {
-    updateToolbarMode();
-  }
+  updateToolbarMode();
 
   const activeTab = tabManager.getActiveTab();
   if (activeTab?.view) {
     activeTab.view.resize();
   }
+  syncFloatingNavDock();
 
   if (focusTerminal) {
     imeCtrl.focusTerminal(true);
   }
 
   if (showNotice && collapsed && !wasCollapsed) {
-    showGlobalToast(`功能列已收合；可點選右上角「▼ 功能列」或按 ${isMac ? 'Option+B' : 'Alt+B'} 展開`, 2500);
+    showGlobalToast(`功能列已收合；可點選右上角「▼ 展開」或按 ${isMac ? 'Option+B' : 'Alt+B'} 展開`, 2500);
   }
 }
 
@@ -812,7 +1032,7 @@ function toggleToolbar(showNotice = false) {
 }
 
 collapseToolbarBtn?.addEventListener('click', () => {
-  setToolbarCollapsed(true, { showNotice: true });
+  toggleToolbar(true);
 });
 
 floatingExpandBtn?.addEventListener('click', () => {

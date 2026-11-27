@@ -97,6 +97,7 @@ export class TabManager {
     this.onArticleClick = null;
     this.onBoardClick = null;
     this.onBell = null;
+    this.onTerminalResponse = null;
 
     // Mobile Chrome-style Tab Switcher elements
     this.mobileTabBtn = document.getElementById('mobile-tab-btn');
@@ -179,6 +180,7 @@ export class TabManager {
     tab.view.onBoardClick = (row) => this.onBoardClick?.(row, tab);
     tab.view.onShortcutClick = (shortcut) => this.onShortcutClick?.(shortcut, tab);
     tab.view.onContextMenu = (info) => this.onContextMenu?.(info, tab);
+    tab.parser.onResponse = (reply) => this.onTerminalResponse?.(tab, reply);
     tab.buf.onBell = () => this.onBell?.(tab);
 
     // Initial welcome banner for new tab
@@ -719,6 +721,7 @@ export class TabManager {
     tabList.appendChild(splitBtn);
 
     this.tabBarEl.appendChild(tabList);
+    this.onTabBarRender?.();
   }
 
   updateMobileTabBadge() {

@@ -166,7 +166,9 @@ export class AidJumpModal {
     if (!rows[cursorRow]?.trim() && tab.buf.cur_x === 0 && cursorRow > 0) promptRow--;
     const active = promptRow >= 0 && promptRow < rows.length ? rows[promptRow].trim() : '';
     const inputOrChoice = line => /^(?:[【\[◆※★]\s*)?(?:請(?:再(?:次)?)?輸入|請選擇|加註意見|您的意見|(?:帳號|密碼)\s*[:：])/.test(line.trim()) ||
-      /[\[（(]\s*[Yy]\s*\/\s*[Nn]\s*[\]）)]\s*[:：]?\s*$/.test(line) || /^(?:是否|確定要|確認要).*[?？:：]\s*$/.test(line.trim());
+      /[\[（(]\s*[Yy]\s*\/\s*[Nn]\s*[\]）)]\s*[:：]?\s*$/.test(line) ||
+      /^(?:是否|確定要|確認要).*[?？:：]\s*$/.test(line.trim()) ||
+      /確定要儲存變更嗎|確定要放棄填寫嗎|以上資料是否正確|\[Y\/S\]儲存/.test(line);
     const editorPrompt = line => /Ctrl[-+]X|編輯文章|\^X\s*(?:發表|寄出|存檔)/i.test(line);
     // Top-row search overlays leave the previous menu/list footer intact. An
     // inactive old input hint must not override the current empty input prompt.

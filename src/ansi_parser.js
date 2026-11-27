@@ -2,10 +2,12 @@
 import { decodeUao } from './uao_b2u.js';
 
 export class AnsiParser {
-  constructor(termbuf) {
+  constructor(termbuf, options = {}) {
     this.termbuf = termbuf;
     this.state = AnsiParser.STATE_TEXT;
     this.esc = '';
+    this.oscBuf = '';
+    this.onResponse = options.onResponse || null;
     this.pendingBig5Lead = null;
     this.pendingBig5Attr = null;
     this.pendingUtf8 = [];
@@ -17,6 +19,8 @@ export class AnsiParser {
     this.pendingUtf8 = [];
     this.state = AnsiParser.STATE_TEXT;
     this.esc = '';
+    this.oscBuf = '';
+    this.termbuf?.setHyperlink?.(null);
   }
 
   flushPendingBig5Lead() {
@@ -30,6 +34,8 @@ export class AnsiParser {
   static STATE_ESC = 1;
   static STATE_CSI = 2;
   static STATE_C1 = 3;
+  static STATE_OSC = 4;
+  static STATE_OSC_ESC = 5;
 
   feed(data, rawBig5 = false) {
     const term = this.termbuf;
@@ -41,6 +47,104 @@ export class AnsiParser {
     } finally {
       term.endOutputBatch();
     }
+  }
+
+  handleOsc(payload) {
+    if (!payload.startsWith('8;')) return;
+    const rest = payload.slice(2);
+    const sep = rest.indexOf(';');
+    if (sep === -1) return;
+    const uri = rest.slice(sep + 1).trim();
+    if (!uri) {
+      this.termbuf?.setHyperlink?.(null);
+      return;
+    }
+    if (uri.length > 2048 || /[\s\x00-\x1f\x7f]/.test(uri)) {
+      this.termbuf?.setHyperlink?.(null);
+      return;
+    }
+    try {
+      const parsed = new URL(uri);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        this.termbuf?.setHyperlink?.(uri);
+      } else {
+        this.termbuf?.setHyperlink?.(null);
+      }
+    } catch {
+      this.termbuf?.setHyperlink?.(null);
+    }
+  }
+
+  handleEscByte(ch, rawBig5) {
+    const term = this.termbuf;
+    if (ch === '[') {
+      this.state = AnsiParser.STATE_CSI;
+      this.esc = '';
+      return '';
+    }
+    if (ch === ']') {
+      const flushed = rawBig5 ? this.flushPendingBig5Lead() : '';
+      this.state = AnsiParser.STATE_OSC;
+      this.oscBuf = '';
+      return flushed;
+    }
+    const flushed = rawBig5 ? this.flushPendingBig5Lead() : '';
+    // Process C1 / single-byte ESC commands immediately
+    this.state = AnsiParser.STATE_TEXT;
+    this.esc = '';
+    switch (ch) {
+      case '7':
+        // DECSC: save cursor pos & attr
+        term.cur_x_sav = term.cur_x;
+        term.cur_y_sav = term.cur_y;
+        term.cur_attr_sav = { ...term.curAttr };
+        break;
+      case '8':
+        // DECRC: restore cursor pos & attr
+        if (term.cur_x_sav >= 0 && term.cur_y_sav >= 0) {
+          term.gotoPos(term.cur_x_sav, term.cur_y_sav);
+        }
+        if (term.cur_attr_sav) {
+          term.curAttr.copyFrom(term.cur_attr_sav);
+        }
+        break;
+      case 'D':
+        // IND: index (down one line, scroll if at bottom)
+        term.lineFeed();
+        break;
+      case 'E':
+        // NEL: next line (down + carriage return)
+        term.lineFeed();
+        term.carriageReturn();
+        break;
+      case 'M':
+        // RI: reverse index (up one line, reverse scroll if at top)
+        if (term.cur_y > term.scrollTop) {
+          term.cur_y--;
+          term.markRowDirty(term.cur_y);
+          term.queueUpdate();
+        } else {
+          term.scroll(true, 1);
+        }
+        break;
+      case '(':
+      case ')':
+      case '*':
+      case '+':
+      case '-':
+      case '.':
+      case '/':
+      case ' ':
+      case '#':
+      case '%':
+        // 2-byte charset designation: expect 1 more byte in STATE_C1
+        this.state = AnsiParser.STATE_C1;
+        this.esc = ch;
+        break;
+      default:
+        break;
+    }
+    return flushed;
   }
 
   feedInternal(data, rawBig5 = false) {
@@ -125,18 +229,23 @@ export class AnsiParser {
       }
       if (rawBig5) decodedText += ch;
 
-      // ESC (0x1B) cancels any in-progress escape sequence and starts a new one immediately
+      // ESC (0x1B) terminates OSC if followed by '\' (ST), otherwise starts a new escape sequence
       if (ch === '\x1b') {
+        if (this.state === AnsiParser.STATE_OSC) {
+          this.state = AnsiParser.STATE_OSC_ESC;
+          continue;
+        }
         if (s) {
           term.puts(s);
           s = '';
         }
+        this.oscBuf = '';
         this.state = AnsiParser.STATE_ESC;
         this.esc = '';
         continue;
       }
 
-      if (ch === '\x9b') {
+      if (ch === '\x9b' && this.state !== AnsiParser.STATE_OSC && this.state !== AnsiParser.STATE_OSC_ESC) {
         if (s) {
           term.puts(s);
           s = '';
@@ -152,66 +261,30 @@ export class AnsiParser {
           break;
 
         case AnsiParser.STATE_ESC:
-          if (ch === '[') {
-            this.state = AnsiParser.STATE_CSI;
-            this.esc = '';
-          } else {
-            if (rawBig5) decodedText += this.flushPendingBig5Lead();
-            // Process C1 / single-byte ESC commands immediately
+          decodedText += this.handleEscByte(ch, rawBig5);
+          break;
+
+        case AnsiParser.STATE_OSC:
+          if (ch === '\x07') {
+            this.handleOsc(this.oscBuf);
+            this.oscBuf = '';
             this.state = AnsiParser.STATE_TEXT;
-            this.esc = '';
-            switch (ch) {
-              case '7':
-                // DECSC: save cursor pos & attr
-                term.cur_x_sav = term.cur_x;
-                term.cur_y_sav = term.cur_y;
-                term.cur_attr_sav = { ...term.curAttr };
-                break;
-              case '8':
-                // DECRC: restore cursor pos & attr
-                if (term.cur_x_sav >= 0 && term.cur_y_sav >= 0) {
-                  term.gotoPos(term.cur_x_sav, term.cur_y_sav);
-                }
-                if (term.cur_attr_sav) {
-                  term.curAttr.copyFrom(term.cur_attr_sav);
-                }
-                break;
-              case 'D':
-                // IND: index (down one line, scroll if at bottom)
-                term.lineFeed();
-                break;
-              case 'E':
-                // NEL: next line (down + carriage return)
-                term.lineFeed();
-                term.carriageReturn();
-                break;
-              case 'M':
-                // RI: reverse index (up one line, reverse scroll if at top)
-                if (term.cur_y > term.scrollTop) {
-                  term.cur_y--;
-                  term.markRowDirty(term.cur_y);
-                  term.queueUpdate();
-                } else {
-                  term.scroll(true, 1);
-                }
-                break;
-              case '(':
-              case ')':
-              case '*':
-              case '+':
-              case '-':
-              case '.':
-              case '/':
-              case ' ':
-              case '#':
-              case '%':
-                // 2-byte charset designation: expect 1 more byte in STATE_C1
-                this.state = AnsiParser.STATE_C1;
-                this.esc = ch;
-                break;
-              default:
-                break;
-            }
+          } else if (ch === '\x18' || ch === '\x1a') {
+            this.oscBuf = '';
+            this.state = AnsiParser.STATE_TEXT;
+          } else if (this.oscBuf.length < 4096) {
+            this.oscBuf += ch;
+          }
+          break;
+
+        case AnsiParser.STATE_OSC_ESC:
+          if (ch === '\\') {
+            this.handleOsc(this.oscBuf);
+            this.oscBuf = '';
+            this.state = AnsiParser.STATE_TEXT;
+          } else {
+            this.oscBuf = '';
+            decodedText += this.handleEscByte(ch, rawBig5);
           }
           break;
 
@@ -367,14 +440,25 @@ export class AnsiParser {
                 break;
               case 'h':
                 if (firstChar === '?') {
-                  if (params[0] === 25) term.showCursor(true);
-                  if (params[0] === 2026) term.beginSynchronizedOutput();
+                  for (const p of params) {
+                    if (p === 25) term.showCursor(true);
+                    else if (p === 2026) term.beginSynchronizedOutput();
+                  }
                 }
                 break;
               case 'l':
                 if (firstChar === '?') {
-                  if (params[0] === 25) term.showCursor(false);
-                  if (params[0] === 2026) term.endSynchronizedOutput();
+                  for (const p of params) {
+                    if (p === 25) term.showCursor(false);
+                    else if (p === 2026) term.endSynchronizedOutput();
+                  }
+                }
+                break;
+              case 'n':
+                if (!firstChar && params[0] === 6 && typeof this.onResponse === 'function') {
+                  const row = Math.max(1, Math.min(term.rows, term.cur_y + 1));
+                  const col = Math.max(1, Math.min(term.cols, term.cur_x + 1));
+                  this.onResponse(`\x1b[${row};${col}R`);
                 }
                 break;
               case 'S':

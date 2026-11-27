@@ -11,7 +11,10 @@
 </head>
 <body>
   <div id="app">
-    <div id="tab-bar"></div>
+    <div id="tab-bar">
+      <div id="tab-strip"></div>
+      <div id="tab-bar-actions"></div>
+    </div>
     <div id="toolbar">
       <button id="mobile-tab-btn" class="mobile-tab-btn" title="切換分頁" aria-label="切換分頁">
         <span id="mobile-tab-count">1</span>
@@ -109,6 +112,7 @@
         aria-label="Terminal Input"
       ></textarea>
     </div>
+    <div id="floating-nav-dock" class="floating-nav-dock hidden" aria-label="滑鼠快捷導覽列"></div>
   </div>
 
   <!-- Settings Modal (設定中心彈窗) -->
@@ -218,6 +222,13 @@
                 <span>啟用滑鼠操作 BBS 選單與文章</span>
               </label>
               <p class="hint">關閉後仍可拖曳選取文字、點擊網址與使用右鍵選單，但滑鼠不會送出 BBS 快捷鍵。</p>
+            </div>
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="setting-floating-nav" checked />
+                <span>顯示右側懸浮滑鼠導覽列（到最頂／上頁／退出／下頁／到最底）</span>
+              </label>
+              <p class="hint">優先停靠於終端機右側黑邊，不壓縮字體；雙分割畫面時自動隱藏，單手純滑鼠也能輕鬆翻頁與退出。</p>
             </div>
             <div class="form-group">
               <label class="checkbox-label">
@@ -395,6 +406,24 @@
               </label>
               <p class="hint">每次啟動軟體時自動恢復至上次自訂的視窗大小與位置，無需手動調整。</p>
             </div>
+            <div class="form-group" id="setting-window-aspect-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="setting-auto-fit-window" />
+                <span>拉動視窗後自動貼合終端機比例（消除多餘黑邊）</span>
+              </label>
+              <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 6px;">
+                <p class="hint" style="margin: 0; flex: 1;">僅於桌面版單一終端機且非最大化時生效；隨時雙擊終端機旁的黑色留白處，或點選右側控制列「貼合」鈕，亦可一鍵貼齊。</p>
+                <button type="button" id="btn-fit-window-now" class="btn-secondary" style="white-space: nowrap; height: 28px; padding: 0 10px; font-size: 12px; cursor: pointer;">⊡ 立即貼合視窗</button>
+              </div>
+            </div>
+            <div class="form-group" id="setting-pinned-toolbar-group" style="margin-top: 14px; border-top: 1px solid var(--border-color); padding-top: 14px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px;">
+                <label style="margin: 0; font-weight: 600;">📌 常駐於第 1 排（收合功能列後仍顯示）的按鈕：</label>
+                <button type="button" id="btn-reset-pinned-toolbar" class="btn-secondary" style="height: 26px; padding: 0 10px; font-size: 11.5px; cursor: pointer;">🔄 恢復預設</button>
+              </div>
+              <p class="hint" style="margin-top: 0;">勾選的按鈕會固定顯示在最上方分頁列右側，即使收合第 2 排功能列也能直接點擊；平時也可在任一功能按鈕上按右鍵快速切換釘選。</p>
+              <div id="setting-pinned-toolbar-list" class="pinned-toolbar-picker"></div>
+            </div>
           </div>
 
           <!-- Tab 5: User Tags Management (鄉民標籤管理) -->
@@ -516,7 +545,7 @@
             <div class="about-hero">
               <div class="about-logo">💧</div>
               <div class="about-title">Waterball (水球)</div>
-              <div class="about-ver" id="about-app-ver">版本 v0.1.12 &bull; 開源授權 GPL-3.0</div>
+              <div class="about-ver" id="about-app-ver">版本 v0.1.13 &bull; 開源授權 GPL-3.0</div>
               <div class="about-desc" id="about-app-desc">
                 新世代跨平台 BBS 終端連線客戶端 (macOS / Windows / Linux / Chromebook)
                 <br>
@@ -1334,7 +1363,7 @@
         <div class="update-version-card">
           <div>
             <div class="update-ver-label">目前版本</div>
-            <div id="update-modal-current-ver" class="update-ver-tag current">v0.1.12</div>
+            <div id="update-modal-current-ver" class="update-ver-tag current">v0.1.13</div>
           </div>
           <div style="font-size: 18px; color: var(--text-muted, #8e8e93);">➔</div>
           <div>

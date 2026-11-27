@@ -47,6 +47,7 @@ export const DEFAULT_SETTINGS = {
   // Keyboard & Mouse
   smartDbcsBackspace: true,
   mouseBrowsingEnabled: true,
+  floatingNavEnabled: true,
   wheelScrollPage: true,
   mouseSideButtonAction: 'page', // 'page' (PageUp/Down) | 'nav' (Left/Right) | 'none'
   autoCopySelection: true,
@@ -65,6 +66,8 @@ export const DEFAULT_SETTINGS = {
   fontFamily: 'auto', // 'auto' | 'mingliu' | 'jhenghei' | 'monospace'
   customFont: '', // Custom font name
   rememberWindowState: true, // Auto-restore window size & position
+  autoFitWindowAspect: false, // Auto-snap desktop window to 5:3 terminal aspect ratio on resize
+  pinnedToolbarButtons: ['palette-btn', 'export-btn', 'add-bookmark-btn', 'settings-btn', 'shortcuts-btn'],
 };
 
 import { encryptSecret, decryptSecret } from './crypto.js';

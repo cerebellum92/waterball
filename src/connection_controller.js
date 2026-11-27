@@ -99,6 +99,9 @@ export class ConnectionController {
           this.scheduleNotificationScrape(tab.id);
         }
       };
+      this.tabManager.onTerminalResponse = (tab, reply) => {
+        void this.sendTerminalResponse(tab?.id, reply);
+      };
     }
 
     if (isDevelopment) terminalDiagnostics.install();
@@ -642,6 +645,19 @@ export class ConnectionController {
       const isNavigation = isScreenNavigation(item.data);
       return !(isNavigation && item.isRepeat);
     });
+  }
+
+  async sendTerminalResponse(tabId, reply) {
+    if (!tabId || typeof reply !== 'string' || !reply) return;
+    const tab = this.tabManager.getTabById(tabId);
+    if (!tab?.isConnected) return;
+    try {
+      if (isTauri()) {
+        await safeInvoke('send_input', { tabId, data: reply });
+      }
+    } catch {
+      // Protocol auto-replies (e.g. CPR) must never disrupt input leases or UI state on disconnect.
+    }
   }
 
   sendData(data, options) {

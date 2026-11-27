@@ -415,6 +415,67 @@ async fn set_always_on_top(app: AppHandle, always_on_top: bool) -> Result<bool, 
     }
 }
 
+pub fn clamp_fit_window_inner_size(
+    width: f64,
+    height: f64,
+    max_width: f64,
+    max_height: f64,
+) -> Option<(f64, f64)> {
+    if !width.is_finite() || !height.is_finite() {
+        return None;
+    }
+    let upper_w = if max_width.is_finite() { max_width.max(360.0) } else { 10000.0 };
+    let upper_h = if max_height.is_finite() { max_height.max(360.0) } else { 10000.0 };
+    let w = width.clamp(360.0, upper_w).round();
+    let h = height.clamp(360.0, upper_h).round();
+    Some((w, h))
+}
+
+#[tauri::command]
+async fn fit_window_inner_size(app: AppHandle, width: f64, height: f64) -> Result<bool, String> {
+    #[cfg(desktop)]
+    {
+        use tauri::{LogicalSize, Size};
+        let Some(window) = app.get_webview_window("main") else {
+            return Ok(false);
+        };
+        if window.is_maximized().unwrap_or(false) || window.is_fullscreen().unwrap_or(false) {
+            return Ok(false);
+        }
+
+        let mut max_w = 10000.0_f64;
+        let mut max_h = 10000.0_f64;
+        if let Ok(Some(monitor)) = window.current_monitor() {
+            let mon_scale = monitor.scale_factor().max(0.5);
+            let mon_w = f64::from(monitor.size().width) / mon_scale;
+            let mon_h = f64::from(monitor.size().height) / mon_scale;
+            let win_scale = window.scale_factor().unwrap_or(mon_scale).max(0.5);
+            let (frame_w, frame_h) = match (window.outer_size(), window.inner_size()) {
+                (Ok(outer), Ok(inner)) => (
+                    (f64::from(outer.width.saturating_sub(inner.width)) / win_scale).max(0.0),
+                    (f64::from(outer.height.saturating_sub(inner.height)) / win_scale).max(0.0),
+                ),
+                _ => (16.0, 48.0),
+            };
+            max_w = (mon_w - frame_w - 8.0).max(360.0);
+            max_h = (mon_h - frame_h - 40.0).max(360.0);
+        }
+
+        let Some((w, h)) = clamp_fit_window_inner_size(width, height, max_w, max_h) else {
+            return Ok(false);
+        };
+        window
+            .set_size(Size::Logical(LogicalSize { width: w, height: h }))
+            .map_err(|e| e.to_string())?;
+        Ok(true)
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = (app, width, height);
+        Ok(false)
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct PttArticleItem {
     pub id: String,
@@ -606,6 +667,81 @@ async fn fetch_ptt_board_articles(board: String) -> Result<Vec<PttArticleItem>, 
 
     let html = resp.text().await.map_err(|e| format!("讀取內容失敗: {}", e))?;
     Ok(parse_ptt_articles_html(&html, clean_board))
+}
+
+fn validate_ptt_article_parts(board: &str, filename: &str) -> Result<(String, String), String> {
+    let clean_board = board.trim();
+    if clean_board.is_empty()
+        || clean_board.len() > 32
+        || !clean_board
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return Err("看板名稱格式無效".to_string());
+    }
+
+    let clean_file = filename.trim().strip_suffix(".html").unwrap_or(filename.trim());
+    let mut parts = clean_file.split('.');
+    let valid = match (parts.next(), parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some("M"), Some(ts), Some("A"), Some(hex), None) => {
+            !ts.is_empty()
+                && ts.len() <= 10
+                && ts.bytes().all(|b| b.is_ascii_digit())
+                && hex.len() == 3
+                && hex.bytes().all(|b| b.is_ascii_hexdigit())
+        }
+        (Some("M"), Some(ts), Some("A"), None, None) => {
+            !ts.is_empty() && ts.len() <= 10 && ts.bytes().all(|b| b.is_ascii_digit())
+        }
+        _ => false,
+    };
+    if !valid {
+        return Err("文章檔名格式無效".to_string());
+    }
+
+    Ok((clean_board.to_string(), clean_file.to_string()))
+}
+
+#[tauri::command]
+async fn fetch_ptt_article_html(board: String, filename: String) -> Result<String, String> {
+    const MAX_ARTICLE_BYTES: usize = 12 * 1024 * 1024;
+    let (clean_board, clean_file) = validate_ptt_article_parts(&board, &filename)?;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(12))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("無法建立 HTTP 客戶端: {}", e))?;
+
+    let url = format!("https://www.ptt.cc/bbs/{}/{}.html", clean_board, clean_file);
+    let mut resp = client
+        .get(&url)
+        .header("Cookie", "over18=1")
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        )
+        .send()
+        .await
+        .map_err(|e| format!("連線 PTT 失敗: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("PTT 回應狀態碼異常: HTTP {}", resp.status()));
+    }
+
+    let mut bytes = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| format!("讀取文章失敗: {}", e))?
+    {
+        if bytes.len() + chunk.len() > MAX_ARTICLE_BYTES {
+            return Err("文章網頁大小超過 12MB 上限".to_string());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -1187,7 +1323,9 @@ pub fn run() {
             get_saved_window_state,
             set_remember_window_state,
             set_always_on_top,
+            fit_window_inner_size,
             fetch_ptt_board_articles,
+            fetch_ptt_article_html,
             send_telegram_message,
             send_discord_webhook,
             sync_to_cloudflare_worker,
@@ -1374,6 +1512,42 @@ mod tests {
         assert!(!state.pending_maximize.load(Ordering::SeqCst));
         assert!(!state.revealed.swap(true, Ordering::SeqCst));
         assert!(state.revealed.swap(true, Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_validate_ptt_article_parts() {
+        assert_eq!(
+            super::validate_ptt_article_parts("Stock", "M.1729600000.A.123").unwrap(),
+            ("Stock".to_string(), "M.1729600000.A.123".to_string())
+        );
+        assert_eq!(
+            super::validate_ptt_article_parts(" C_Chat ", "M.123.A.html").unwrap(),
+            ("C_Chat".to_string(), "M.123.A".to_string())
+        );
+        assert!(super::validate_ptt_article_parts("", "M.123.A").is_err());
+        assert!(super::validate_ptt_article_parts("Stock/evil", "M.123.A").is_err());
+        assert!(super::validate_ptt_article_parts("Stock", "M.123.A?x=1").is_err());
+        assert!(super::validate_ptt_article_parts("Stock", "../M.123.A").is_err());
+        assert!(super::validate_ptt_article_parts("Stock", "G.123.A.123").is_err());
+        assert!(super::validate_ptt_article_parts("Stock", "M.123.A.ZZZ").is_err());
+    }
+
+    #[test]
+    fn test_clamp_fit_window_inner_size() {
+        assert_eq!(
+            super::clamp_fit_window_inner_size(804.6, 540.4, 1920.0, 1080.0),
+            Some((805.0, 540.0))
+        );
+        assert_eq!(
+            super::clamp_fit_window_inner_size(200.0, 250.0, 1920.0, 1080.0),
+            Some((360.0, 360.0))
+        );
+        assert_eq!(
+            super::clamp_fit_window_inner_size(2400.0, 1400.0, 1600.0, 900.0),
+            Some((1600.0, 900.0))
+        );
+        assert!(super::clamp_fit_window_inner_size(f64::NAN, 500.0, 1920.0, 1080.0).is_none());
+        assert!(super::clamp_fit_window_inner_size(800.0, f64::INFINITY, 1920.0, 1080.0).is_none());
     }
 }
 

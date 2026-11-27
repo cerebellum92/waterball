@@ -210,7 +210,7 @@ export function validBoard(board) {
 export function boardFromHeaderLine(line) {
   // PTT sets currBM to「徵求中」when no public moderator is present. The
   // right-hand board field remains the same and must still be verified.
-  if (typeof line !== 'string' || !/^\s*(?:作者(?:\s|[:：])|看板|【(?:[板版]主|徵求中】))/.test(line)) return null;
+  if (typeof line !== 'string' || !/^\s*(?:作者(?:\s|[:：])|看板|【(?:[板版]主|徵求中】)|[板版]主\s*[:：])/.test(line)) return null;
   const match = line.match(/看板《([a-zA-Z0-9_-]{1,32})》/) ||
     line.match(/(?:^|\s)看板(?:\s*[:：]\s*|\s+)([a-zA-Z0-9_-]{1,32})(?=\s|$)/);
   return match ? validBoard(match[1]) : null;

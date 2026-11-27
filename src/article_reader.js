@@ -7,6 +7,55 @@ import { extractAidsFromLine, boardFromHeaderLine, filenameToAid, validBoard } f
 import { fetchArticleSummary } from './ai_summary_client.js';
 
 export class ArticleParser {
+  static parseNewCommentMeta(metaStr) {
+    const trimmed = String(metaStr || '').trim();
+    if (!trimmed) return { ip: '', time: '', valid: true };
+    const m = trimmed.match(/^(?:(\d{1,3}(?:\.\d{1,3}){3})\s+)?(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\s+\d{1,2}:\d{2})$/);
+    if (!m) return { ip: '', time: '', valid: false };
+    return { ip: m[1] || '', time: m[2] || '', valid: true };
+  }
+
+  static parseNewRawCommentLine(line) {
+    if (!line || typeof line !== 'string') return null;
+    const m = line.match(/^\s*\|([a-zA-Z][a-zA-Z0-9_]{1,11})(!)?\|(.*)\|([^|]*)\|(~)?(\d+)\s*$/);
+    if (!m) return null;
+    const meta = this.parseNewCommentMeta(m[4]);
+    if (!meta.valid) return null;
+    return {
+      user: m[1],
+      isDeleted: Boolean(m[2]),
+      content: m[3].trimEnd(),
+      ip: meta.ip,
+      time: meta.time,
+      isEdited: Boolean(m[5]),
+      seq: parseInt(m[6], 10),
+    };
+  }
+
+  static isNewRawCommentHeader(line) {
+    return Boolean(this.parseNewRawCommentLine(line));
+  }
+
+  static parseNewFormattedCommentHeader(line, { allowNarrow = false } = {}) {
+    if (!line || typeof line !== 'string') return null;
+    const m = line.match(/^\s{0,2}([a-zA-Z][a-zA-Z0-9_]{1,11})(!)?\s{2,}(?:(\d{1,3}(?:\.\d{1,3}){3})\s+)?(?:(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\s+\d{1,2}:\d{2})\s+)?\[(~)?(\d+)\]\s*$/);
+    if (!m) return null;
+    if (!m[3] && !m[4] && !allowNarrow) return null;
+    return {
+      user: m[1],
+      isDeleted: Boolean(m[2]),
+      ip: m[3] || '',
+      time: m[4] || '',
+      isEdited: Boolean(m[5]),
+      seq: parseInt(m[6], 10),
+    };
+  }
+
+  static isNewCommentDeletedText(text) {
+    const trimmed = String(text || '').trim();
+    return trimmed === '留言已刪除' || /^留言已移除(?:\s*[（(].*[）)])?/.test(trimmed);
+  }
+
   static parseFromBuf(buf) {
     const rawLines = [];
     for (let r = 0; r < buf.rows; r++) {
@@ -36,9 +85,31 @@ export class ArticleParser {
 
     const bodyBlocks = [];
     const pushList = [];
-    let pushStats = { push: 0, boo: 0, arrow: 0 };
+    let pushStats = { push: 0, boo: 0, arrow: 0, comment: 0 };
 
     let inHeader = true;
+    let activeRawComment = null;
+    let activeFormattedComment = null;
+    let formattedBaseIndent = 0;
+
+    const appendMediaFromLine = (target, textLine) => {
+      if (!textLine) return;
+      const seenImg = new Set(target.images.map((x) => x.url));
+      for (const img of this.extractImageUrls(textLine)) {
+        if (!seenImg.has(img.url)) {
+          seenImg.add(img.url);
+          target.images.push(img);
+        }
+      }
+      const seenYt = new Set(target.youtubes.map((y) => y.videoId || y.watchUrl));
+      for (const yt of this.extractYoutubeUrls(textLine)) {
+        const key = yt.videoId || yt.watchUrl;
+        if (!seenYt.has(key)) {
+          seenYt.add(key);
+          target.youtubes.push(yt);
+        }
+      }
+    };
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
@@ -84,19 +155,63 @@ export class ArticleParser {
 
       // Only exact standalone footer lines before comments may identify this article.
       // Bare links and quoted/comment text are never navigation identities.
-      if (/^\s*([推噓→])\s+[a-zA-Z0-9_-]+\s*[:：]/.test(line)) reachedPushes = true;
+      const rawCommentHeader = this.parseNewRawCommentLine(line);
+      if (/^\s*([推噓→])\s+[a-zA-Z0-9_-]+\s*[:：]/.test(line) || rawCommentHeader) reachedPushes = true;
       if (!reachedPushes && /^\s*※\s*發信站\s*[:：]/.test(line)) footerStart = i;
       const explicitUrlMatch = !reachedPushes && line.match(/^\s*※\s*文章網址\s*[:：]\s*(https?:\/\/(?:www\.)?ptt\.cc\/bbs\/([a-zA-Z0-9_-]{1,32})\/(M\.\d{1,10}\.A(?:\.[0-9A-Fa-f]{3})?)\.html)\s*$/i);
       if (explicitUrlMatch && (!board || board === 'BBS' || board.trim().toLowerCase() === explicitUrlMatch[2].toLowerCase())) {
         articleUrlCandidates.push({ url: explicitUrlMatch[1], board: explicitUrlMatch[2], id: explicitUrlMatch[3], line: i });
       }
 
-      // Detect PTT Push Comments (推 / 噓 / →)
+      // 1a. New PTT raw comment format header: |user|line1|IP MM/DD/YYYY HH:MM|[~]seq
+      if (rawCommentHeader) {
+        activeFormattedComment = null;
+        inHeader = false;
+        reachedPushes = true;
+        pushStats.comment++;
+        const commentObj = {
+          sourceLine: i,
+          repairColumns: 0,
+          floor: rawCommentHeader.seq,
+          floorLabel: rawCommentHeader.isEdited ? `~${rawCommentHeader.seq}F` : `${rawCommentHeader.seq}F`,
+          commentFormat: 'new-raw',
+          commentSeq: rawCommentHeader.seq,
+          isEdited: rawCommentHeader.isEdited,
+          isDeleted: rawCommentHeader.isDeleted || this.isNewCommentDeletedText(rawCommentHeader.content),
+          tag: '留言',
+          user: rawCommentHeader.user,
+          content: rawCommentHeader.content,
+          time: rawCommentHeader.time,
+          ip: rawCommentHeader.ip,
+          images: this.extractImageUrls(rawCommentHeader.content),
+          youtubes: this.extractYoutubeUrls(rawCommentHeader.content),
+          endLine: i,
+        };
+        pushList.push(commentObj);
+        activeRawComment = commentObj;
+        continue;
+      }
+
+      // 1b. New PTT raw comment continuation line: "| line2"
+      if (activeRawComment) {
+        const rawContMatch = line.match(/^\s*\|(.*)$/);
+        if (rawContMatch) {
+          const contText = rawContMatch[1].startsWith(' ') ? rawContMatch[1].slice(1) : rawContMatch[1];
+          const cleanCont = contText.trimEnd();
+          activeRawComment.content += `\n${cleanCont}`;
+          activeRawComment.endLine = i;
+          activeRawComment.isDeleted = activeRawComment.isDeleted || this.isNewCommentDeletedText(activeRawComment.content);
+          appendMediaFromLine(activeRawComment, cleanCont);
+          continue;
+        }
+        activeRawComment = null;
+      }
+
+      // Detect Legacy PTT Push Comments (推 / 噓 / →)
       // Format: "推 user: comment message                 08/15 22:30"
-      // or "噓 user: comment message                 08/15 22:30"
-      // or "→ user: comment message                 08/15 22:30"
       const pushMatch = line.match(/^\s*([推噓→])\s+([a-zA-Z0-9_-]+)\s*[:：]\s*(.*)$/);
       if (pushMatch) {
+        activeFormattedComment = null;
         const tag = pushMatch[1];
         const user = pushMatch[2];
         let rest = pushMatch[3].trimEnd();
@@ -142,6 +257,65 @@ export class ArticleParser {
         continue;
       }
 
+      // 2a. New PTT formatted comment header: "user   IP MM/DD/YYYY HH:MM [~N]"
+      let hasIndentedNext = false;
+      for (let j = i + 1; j < lines.length; j++) {
+        const nextLine = lines[j];
+        if (!nextLine || !nextLine.trim()) continue;
+        hasIndentedNext = /^\s+\S/.test(nextLine)
+          && !/^\s*※\s/.test(nextLine)
+          && !/^\s*[推噓→]\s+[a-zA-Z0-9_-]+\s*[:：]/.test(nextLine);
+        break;
+      }
+      const formattedHeader = this.parseNewFormattedCommentHeader(line, {
+        allowNarrow: footerStart >= 0 || reachedPushes || hasIndentedNext,
+      });
+      if (formattedHeader) {
+        inHeader = false;
+        reachedPushes = true;
+        pushStats.comment++;
+        const commentObj = {
+          sourceLine: i,
+          repairColumns: 0,
+          floor: formattedHeader.seq,
+          floorLabel: formattedHeader.isEdited ? `~${formattedHeader.seq}F` : `${formattedHeader.seq}F`,
+          commentFormat: 'new-formatted',
+          commentSeq: formattedHeader.seq,
+          isEdited: formattedHeader.isEdited,
+          isDeleted: formattedHeader.isDeleted,
+          tag: '留言',
+          user: formattedHeader.user,
+          content: '',
+          time: formattedHeader.time,
+          ip: formattedHeader.ip,
+          images: [],
+          youtubes: [],
+          endLine: i,
+        };
+        pushList.push(commentObj);
+        activeFormattedComment = commentObj;
+        formattedBaseIndent = 0;
+        continue;
+      }
+
+      // 2b. Indented content lines belonging to the active formatted comment
+      if (activeFormattedComment) {
+        if (/^\s+\S/.test(line) && !/^\s*※\s/.test(line)) {
+          const leadLen = line.match(/^(\s+)/)[1].length;
+          if (formattedBaseIndent === 0) formattedBaseIndent = leadLen;
+          const cleanLine = line.slice(Math.min(leadLen, formattedBaseIndent)).trimEnd();
+          activeFormattedComment.content = activeFormattedComment.content
+            ? `${activeFormattedComment.content}\n${cleanLine}`
+            : cleanLine;
+          activeFormattedComment.endLine = i;
+          activeFormattedComment.isDeleted = activeFormattedComment.isDeleted
+            || this.isNewCommentDeletedText(activeFormattedComment.content);
+          appendMediaFromLine(activeFormattedComment, cleanLine);
+          continue;
+        }
+        activeFormattedComment = null;
+      }
+
       bodyBlocks.push({ type: 'line', text: line, sourceLine: i,
         images: this.extractImageUrls(line), youtubes: this.extractYoutubeUrls(line) });
     }
@@ -165,6 +339,7 @@ export class ArticleParser {
     }
     for (let n = 0; n < pushList.length - 1; n++) {
       const first = pushList[n], second = pushList[n + 1];
+      if (first.commentFormat || second.commentFormat) continue;
       if (second.sourceLine !== first.sourceLine + 1 || first.user.toLowerCase() !== second.user.toLowerCase()) continue;
       const repair = repairBrokenUrl(first.content, second.content, first.user, { columns: first.repairColumns });
       if (repair) applyRepair(first, second, repair);
@@ -1009,14 +1184,16 @@ export class ArticleReaderModal {
     const pushStatsEl = document.getElementById('push-stats');
     if (pushStatsEl) {
       const { push, boo, arrow } = article.pushStats;
-      const totalPushes = push + boo + arrow;
+      const comment = article.pushStats.comment || 0;
+      const totalPushes = push + boo + arrow + comment;
       const statusNotice = isStreaming
         ? ` <span class="push-loading-status" title="背景正持續翻頁取得推文">⏳ 讀取後續推文中 (第 ${pageCount} 頁，已載入 ${totalPushes} 則)...</span>`
         : ` <span class="push-total">共 ${totalPushes} 則留言</span>`;
+      const commentBadge = comment > 0 ? ` <span class="push-badge comment">💬 留言 ${comment}</span>` : '';
       pushStatsEl.innerHTML = `
         <span class="push-badge push">推 ${push}</span>
         <span class="push-badge boo">噓 ${boo}</span>
-        <span class="push-badge arrow">→ ${arrow}</span>
+        <span class="push-badge arrow">→ ${arrow}</span>${commentBadge}
         ${statusNotice}
       `;
     }
@@ -1036,7 +1213,7 @@ export class ArticleReaderModal {
     if (countAll) countAll.textContent = String(totalPushes);
     if (countPush) countPush.textContent = String(article.pushStats.push);
     if (countBoo) countBoo.textContent = String(article.pushStats.boo);
-    if (countArrow) countArrow.textContent = String(article.pushStats.arrow);
+    if (countArrow) countArrow.textContent = String((article.pushStats.arrow || 0) + (article.pushStats.comment || 0));
     if (countAuthor) countAuthor.textContent = String(authorPushes);
 
     // Render Push List with Filters & Floor Numbers (update when push count changes or finished)
@@ -1172,6 +1349,11 @@ export class ArticleReaderModal {
         currentGroup = {
           floor: p.floor,
           floorEnd: p.floor,
+          floorLabel: p.floorLabel,
+          commentFormat: p.commentFormat,
+          commentSeq: p.commentSeq,
+          isEdited: p.isEdited,
+          isDeleted: p.isDeleted,
           user: p.user,
           tag: p.tag,
           time: p.time,
@@ -1193,10 +1375,14 @@ export class ArticleReaderModal {
       // Primary tag '推' can merge with '推' or '→'
       // Primary tag '噓' can merge with '噓' or '→'
       // Primary tag '→' can merge with '→'
+      // New PTT multi-line comments already merge natively under one commentSeq, so keep each comment separate.
       const isTagCompatible = (
-        (currentGroup.tag === '推' && (p.tag === '推' || p.tag === '→')) ||
-        (currentGroup.tag === '噓' && (p.tag === '噓' || p.tag === '→')) ||
-        (currentGroup.tag === '→' && p.tag === '→')
+        !currentGroup.commentFormat &&
+        !p.commentFormat && (
+          (currentGroup.tag === '推' && (p.tag === '推' || p.tag === '→')) ||
+          (currentGroup.tag === '噓' && (p.tag === '噓' || p.tag === '→')) ||
+          (currentGroup.tag === '→' && p.tag === '→')
+        )
       );
 
       if (isConsecutiveLine && isSameUser && isTagCompatible) {
@@ -1211,6 +1397,11 @@ export class ArticleReaderModal {
         currentGroup = {
           floor: p.floor,
           floorEnd: p.floor,
+          floorLabel: p.floorLabel,
+          commentFormat: p.commentFormat,
+          commentSeq: p.commentSeq,
+          isEdited: p.isEdited,
+          isDeleted: p.isDeleted,
           user: p.user,
           tag: p.tag,
           time: p.time,
@@ -1226,7 +1417,7 @@ export class ArticleReaderModal {
 
     return groups.map(g => ({
       ...g,
-      floorLabel: g.floor === g.floorEnd ? `${g.floor}F` : `${g.floor}~${g.floorEnd}F`,
+      floorLabel: g.floorLabel || (g.floor === g.floorEnd ? `${g.floor}F` : `${g.floor}~${g.floorEnd}F`),
     }));
   }
 
@@ -1260,7 +1451,7 @@ export class ArticleReaderModal {
   }
 
   getPushGroupRenderKey(p, meta) {
-    const floorLabel = p.floorLabel || (Number.isInteger(p.floor) ? `${p.floor}F` : '1F');
+    const floorLabel = p.floorLabel || (Number.isInteger(p.floor) ? `${p.isEdited ? '~' : ''}${p.floor}F` : '1F');
     const subs = (p.pushes || [p]).map((sub) => ({
       content: sub.content || '',
       forwardRepair: sub.repairedCont && meta.repairVisible(sub.repairNextLine) ? sub.repairedCont : null,
@@ -1271,6 +1462,8 @@ export class ArticleReaderModal {
     return JSON.stringify([
       floorLabel,
       p.tag || '',
+      Boolean(p.isEdited),
+      Boolean(p.isDeleted),
       p.user || '',
       p.ip || '',
       p.time || '',
@@ -1327,9 +1520,9 @@ export class ArticleReaderModal {
     const quickBlacklistBtn = ` <button type="button" class="push-quick-blacklist-btn${hasUserRule ? ' active' : ''}" data-user="${this.escapeHtml(p.user)}" title="${hasUserRule ? '已在黑名單中 (點擊移出)' : '將此用戶加入黑名單'}">${hasUserRule ? '🚫 已黑' : '🚫'}</button>`;
 
     const row = document.createElement('div');
-    row.className = `push-item push-type-${p.tag === '推' ? 'up' : p.tag === '噓' ? 'down' : 'neutral'}${isPushBlacklisted ? ' blacklisted-push' : ''}${isAuthor ? ' is-author-push' : ''}${isUserHighlighted ? ' is-user-highlighted' : ''}${isUserDimmed ? ' is-user-dimmed' : ''}`;
+    row.className = `push-item push-type-${p.tag === '推' ? 'up' : p.tag === '噓' ? 'down' : 'neutral'}${p.isDeleted ? ' push-item-deleted' : ''}${isPushBlacklisted ? ' blacklisted-push' : ''}${isAuthor ? ' is-author-push' : ''}${isUserHighlighted ? ' is-user-highlighted' : ''}${isUserDimmed ? ' is-user-dimmed' : ''}`;
 
-    const floorLabel = p.floorLabel || (Number.isInteger(p.floor) ? `${p.floor}F` : '1F');
+    const floorLabel = p.floorLabel || (Number.isInteger(p.floor) ? `${p.isEdited ? '~' : ''}${p.floor}F` : '1F');
 
     if (isPushBlacklisted && mode === 'mask') {
       const revealPushes = p.pushes || [p];
@@ -1466,11 +1659,11 @@ export class ArticleReaderModal {
     // Apply type filters to original pushes. Preserve sourceLine gaps when grouping.
     if (this.currentFilter === 'push') rawList = rawList.filter(p => p.tag === '推');
     else if (this.currentFilter === 'boo') rawList = rawList.filter(p => p.tag === '噓');
-    else if (this.currentFilter === 'arrow') rawList = rawList.filter(p => p.tag === '→');
+    else if (this.currentFilter === 'arrow') rawList = rawList.filter(p => p.tag === '→' || p.tag === '留言');
     else if (this.currentFilter === 'author') rawList = rawList.filter(p => p.user.trim().toLowerCase() === authorUser);
     let list = this.mergeConsecutive
       ? this.groupConsecutivePushes(rawList)
-      : rawList.map(p => (p.pushes ? p : { ...p, pushes: [p], floorLabel: `${Number.isInteger(p.floor) ? p.floor : 1}F` }));
+      : rawList.map(p => (p.pushes ? p : { ...p, pushes: [p], floorLabel: p.floorLabel || `${p.isEdited ? '~' : ''}${Number.isInteger(p.floor) ? p.floor : 1}F` }));
 
     // 2. Filter by Search Query
     if (this.pushSearchQuery) {
@@ -1639,18 +1832,30 @@ export class ArticleReaderModal {
         });
       }
     }
+    // Highlight floor references (e.g. >>12) outside URLs and AIDs
+    const floorRefRegex = />>(\d{1,5})\b/g;
+    while ((match = floorRefRegex.exec(str))) {
+      const start = match.index;
+      const end = start + match[0].length;
+      if (!spans.some(s => (start < s.end && end > s.start))) {
+        spans.push({ start, end, isFloorRef: true, floor: match[1] });
+      }
+    }
+    const formatPlainChunk = (chunk) => this.escapeHtml(chunk).replace(/\n/g, '<br>');
     let end = 0, html = '';
     for (const span of spans.sort((a, b) => a.start - b.start)) {
-      html += this.escapeHtml(str.slice(end, span.start));
+      html += formatPlainChunk(str.slice(end, span.start));
       if (span.isAid) {
         const title = `文章代碼 ${span.aid}${span.board ? ` (${span.board})` : ''} • 開啟 PTT 網頁版`;
         html += `<a href="${this.escapeHtml(span.target)}" data-aid="${this.escapeHtml(span.aid)}" data-board="${this.escapeHtml(span.board || '')}" class="reader-link reader-aid-link" target="_blank" rel="noreferrer" title="${this.escapeHtml(title)}">${this.escapeHtml(str.slice(span.start, span.end))}</a>`;
+      } else if (span.isFloorRef) {
+        html += `<span class="push-floor-ref" data-floor="${this.escapeHtml(span.floor)}">${this.escapeHtml(str.slice(span.start, span.end))}</span>`;
       } else {
         html += `<a href="${this.escapeHtml(span.target)}" target="_blank" class="reader-link" rel="noreferrer">${this.escapeHtml(str.slice(span.start, span.end))}</a>`;
       }
       end = span.end;
     }
-    return html + this.escapeHtml(str.slice(end));
+    return html + formatPlainChunk(str.slice(end));
   }
 
   getArticleIdentity(article) {

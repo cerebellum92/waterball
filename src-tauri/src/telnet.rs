@@ -1157,8 +1157,8 @@ impl BbsConnection {
                     false
                 }
             } else {
-                // Telnet IAC NOP is consumed by the Telnet protocol handler.
-                self.send_raw(&[0xFF, 0xF1]).is_ok()
+                // Telnet IAC DO TIMING-MARK (RFC 860 Option 6) triggers an immediate WONT TIMING-MARK reply.
+                self.send_raw(&[0xFF, 0xFD, 0x06]).is_ok()
             }
         } else {
             false
@@ -1208,11 +1208,37 @@ mod tests {
         assert!(!conn.check_and_send_keepalive(0, true));
         assert!(wire.lock().unwrap().is_empty());
 
-        // For Telnet: must send IAC NOP (\xFF\xF1) even when keys are suppressed
+        // For Telnet: must send IAC DO TIMING-MARK (\xFF\xFD\x06) even when keys are suppressed
         wire.lock().unwrap().clear();
         conn.ssh_session = None;
         assert!(conn.check_and_send_keepalive(0, true));
-        assert_eq!(*wire.lock().unwrap(), vec![0xff, 0xf1]);
+        assert_eq!(*wire.lock().unwrap(), vec![0xff, 0xfd, 0x06]);
+    }
+
+    #[test]
+    fn strip_telnet_commands_absorbs_timing_mark_replies_silently() {
+        let mut raw = vec![0x41, 0xFF, 0xFC, 0x06, 0xFF, 0xFB, 0x06, 0x42];
+        let clean = BbsConnection::strip_telnet_commands(&mut raw);
+        assert_eq!(clean, vec![0x41, 0x42]);
+        assert!(raw.is_empty());
+    }
+
+    #[test]
+    fn decode_terminal_stream_preserves_osc8_across_utf8_chunks() {
+        let mut pending_bytes = Vec::new();
+        let mut pending_ansi = Vec::new();
+        let c1 = BbsConnection::decode_terminal_stream(
+            b"\x1B", BbsCharset::Utf8, &mut pending_bytes, &mut pending_ansi,
+        );
+        let c2 = BbsConnection::decode_terminal_stream(
+            b"]8;;https://example.com\x1B", BbsCharset::Utf8, &mut pending_bytes, &mut pending_ansi,
+        );
+        let c3 = BbsConnection::decode_terminal_stream(
+            "\\文字\x1B]8;;\x1B\\".as_bytes(), BbsCharset::Utf8, &mut pending_bytes, &mut pending_ansi,
+        );
+        assert_eq!(format!("{c1}{c2}{c3}"), "\x1B]8;;https://example.com\x1B\\文字\x1B]8;;\x1B\\");
+        assert!(pending_ansi.is_empty());
+        assert!(pending_bytes.is_empty());
     }
 
     #[test]

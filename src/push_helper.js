@@ -335,10 +335,15 @@ export class PushHelper {
     return 46;
   }
 
+  getNewCommentMaxBytes() {
+    // New PTT comment system allows up to 64 bytes per line, up to 15 lines per comment.
+    return 64;
+  }
+
   splitText(rawText, maxBytes = null, strategy = 'fill') {
     if (!rawText || !rawText.trim()) return [];
     if (!maxBytes) maxBytes = this.getMaxSafeBytes();
-    if (!Number.isInteger(maxBytes) || maxBytes < 2 || maxBytes > 46) throw new Error('分段長度必須介於 2 至 46 bytes');
+    if (!Number.isInteger(maxBytes) || maxBytes < 2 || maxBytes > 64) throw new Error('分段長度必須介於 2 至 64 bytes');
 
     const clean = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     const rawLines = clean.split('\n');
@@ -549,16 +554,41 @@ export class PushHelper {
     return false;
   }
 
-  getBottomPromptText(tab = this.getActiveTab?.()) {
+  getBottomPromptText(tab = this.getActiveTab?.(), lineCount = 2) {
     if (!tab?.buf) return '';
     const rows = tab.buf.rows;
-    return [rows - 2, rows - 1].filter(row => row >= 0).map(row => tab.buf.getRowText(tab.buf.lines[row] || [])).join('\n');
+    const start = Math.max(0, rows - lineCount);
+    const result = [];
+    for (let row = start; row < rows; row++) {
+      result.push(tab.buf.getRowText(tab.buf.lines[row] || []));
+    }
+    return result.join('\n');
   }
 
   promptSnapshot(tab = this.getActiveTab?.()) {
     const bottomText = this.getBottomPromptText(tab);
     const state = this.detectPushState(tab);
     return { state, text: bottomText, draft: '' };
+  }
+
+  isScorePrompt(tab = this.getActiveTab?.()) {
+    const bottomText = this.getBottomPromptText(tab, 3);
+    return /取消評分|評分明細|不喜歡\s*[（(]噓[）)]/.test(bottomText);
+  }
+
+  isMultilineCommentPrompt(tab = this.getActiveTab?.()) {
+    if (!tab?.buf) return false;
+    const lastLine = this.getBottomPromptText(tab, 1);
+    if (/瀏覽\s+第\s*\d+|目前顯示\s*[:：]?\s*第\s*\d+|\(←(?:\/q)?\)離開|\(h\)說明|\(y\)回應\s*\(X\)推文|文章選讀|文章列表|系列文章|文摘列表|信件列表/.test(lastLine)) {
+      return false;
+    }
+    const bottomText = this.getBottomPromptText(tab, 4);
+    return /可多行.*TAB|按\s*TAB\s*加行|Backspace\s*刪空行|Ctrl-C\s*取消/i.test(bottomText);
+  }
+
+  isConfirmSavePrompt(tab = this.getActiveTab?.()) {
+    const bottomText = this.getBottomPromptText(tab, 3);
+    return /(?:確定\s*\[[yY]\/[nN]\]|確定要儲存檔案嗎|確定要送出|確定送出)/.test(bottomText);
   }
 
   isPushInputPrompt(tab = this.getActiveTab?.()) {
@@ -568,8 +598,12 @@ export class PushHelper {
     const lastLine = bottomLines[bottomLines.length - 1] || '';
 
     // If bottom line is BBS reading status bar, article list, or reply prompt, definitely not in push input
-    if (/瀏覽\s+第\s*\d+|目前顯示\s*[:：]?\s*第\s*\d+|100%|\(←\/q\)離開|\(h\)說明|\(y\)回應\(X\)推文|文章選讀|看板《|採用原標題|文章發表綱領|回應至/.test(lastLine)) {
+    if (/瀏覽\s+第\s*\d+|目前顯示\s*[:：]?\s*第\s*\d+|100%|\(←(?:\/q)?\)離開|\(h\)說明|\(y\)回應\s*\(X\)推文|文章選讀|文章列表|系列文章|文摘列表|信件列表|看板《|採用原標題|文章發表綱領|回應至/.test(lastLine)) {
       return false;
+    }
+
+    if (this.isMultilineCommentPrompt(tab)) {
+      return true;
     }
 
     for (const rawLine of bottomLines) {
@@ -592,13 +626,14 @@ export class PushHelper {
   }
 
   isPushChoicePrompt(tab = this.getActiveTab?.()) {
+    if (this.isScorePrompt(tab)) return false;
     const bottomText = this.getBottomPromptText(tab);
     return /您覺得這篇文章|[(（]1\/2\/3[)）]\?|\[1\]推薦/.test(bottomText);
   }
 
   isArticleReplyOrEditPrompt(tab = this.getActiveTab?.()) {
-    const bottomText = this.getBottomPromptText(tab);
-    return /文章發表綱領|採用原標題|回應至\s*[(（]|請問要引用原文嗎|引用原文\s*[(（]|文章標題\s*[:：]|發表文章種類/.test(bottomText);
+    const bottomText = this.getBottomPromptText(tab, 3);
+    return /文章發表綱領|採用原標題|回應至\s*[(（]|請問要引用原文嗎|引用原文\s*[(（]|文章標題\s*[:：]|發表文章種類|編輯\s*[:：]\s*\[1\]\s*文章內文/.test(bottomText);
   }
 
   detectPushState(tab = this.getActiveTab?.()) {
@@ -609,8 +644,14 @@ export class PushHelper {
     if (/(?:[◆●※]\s*)?(?:請勿快速連續推文|距離上次發文或推文|距離上次推文|需間隔|請稍候|請勿在).*?(\d{1,6})\s*秒/.test(bottomText)) {
       return 'cooldown';
     }
-    if (/(?:確定\s*\[[yY]\/[nN]\]|確定要儲存檔案嗎)/.test(bottomText)) {
+    if (this.isConfirmSavePrompt(tab)) {
       return 'confirm-save';
+    }
+    if (this.isScorePrompt(tab)) {
+      return 'score-menu';
+    }
+    if (this.isMultilineCommentPrompt(tab)) {
+      return 'input-multiline';
     }
     if (this.isPushInputPrompt(tab)) {
       return 'input-content';
@@ -646,6 +687,200 @@ export class PushHelper {
     }
   }
 
+  async sendMultilineCommentBatch(lines, tab = this.getActiveTab?.(), signal = null, inputLease = this._inputLease || null) {
+    if (!tab || !tab.isConnected) throw new Error('連線已中斷，無法推文');
+    const batch = (Array.isArray(lines) ? lines : [lines])
+      .map((line) => this.normalizeSegment(line).trimEnd())
+      .filter((line) => line.length > 0)
+      .slice(0, 15);
+    if (batch.length === 0) {
+      return { status: 'aborted', error: '留言內容為空，已中止發送' };
+    }
+
+    const isPtt = this.detectTargetStation(tab) !== 'maple';
+    const keyDelay = isPtt ? 250 : 500;
+    const lineDelay = Math.min(80, keyDelay);
+
+    if (this.isArticleReplyOrEditPrompt(tab)) {
+      await this.sendKeystroke('q\x1b', tab, inputLease);
+      return { status: 'aborted', error: '終端機目前處於文章編輯或回應狀態，已安全停止留言' };
+    }
+
+    // Send first line, then press TAB to add each subsequent line (max 15 lines)
+    await this.sendKeystroke(batch[0], tab, inputLease);
+    for (let i = 1; i < batch.length; i++) {
+      await this.sleep(lineDelay, signal);
+      if (this.abortController || signal?.aborted) return { status: 'aborted' };
+      await this.sendKeystroke('\t', tab, inputLease);
+      await this.sleep(lineDelay, signal);
+      if (this.abortController || signal?.aborted) return { status: 'aborted' };
+      await this.sendKeystroke(batch[i], tab, inputLease);
+    }
+
+    // Finish multiline input with Enter
+    await this.sendKeystroke('\r', tab, inputLease);
+    await this.sleep(keyDelay, signal);
+    if (this.abortController || signal?.aborted) return { status: 'aborted' };
+
+    if (this.isArticleReplyOrEditPrompt(tab)) {
+      await this.sendKeystroke('q\x1b', tab, inputLease);
+      return { status: 'aborted', error: '終端機處於異常狀態（非留言存檔畫面），已安全取消' };
+    }
+
+    // Only send y\r if terminal explicitly prompts for confirmation (never send stray 'y' back in reading mode)
+    if (this.isConfirmSavePrompt(tab)) {
+      await this.sendKeystroke('y\r', tab, inputLease);
+      await this.sleep(keyDelay, signal);
+      if (this.abortController || signal?.aborted) return { status: 'aborted' };
+    }
+
+    const cdSec = this.detectCooldownSeconds(tab);
+    if (cdSec) {
+      return { status: 'cooldown', seconds: cdSec };
+    }
+
+    return { status: 'confirmed', mode: 'new-multiline', consumed: batch.length };
+  }
+
+  async sendSmartPush(rawText, typeKey = '1', options = {}) {
+    const {
+      signal = null,
+      inputLease = this._inputLease || null,
+      strategy = this.strategySelect?.value || 'fill',
+      delayMs = 300,
+      onProgress = null,
+      onCooldown = null,
+    } = options;
+
+    const tab = this.getActiveTab?.();
+    if (!tab || !tab.isConnected) throw new Error('連線已中斷，無法推文');
+    const text = String(rawText || '').trim();
+    if (!text) return { status: 'aborted', confirmed: 0, total: 0, error: '推文內容為空' };
+
+    const isPtt = this.detectTargetStation(tab) !== 'maple';
+    const keyDelay = isPtt ? 250 : 500;
+    const pushKey = isPtt ? 'X' : '%';
+
+    if (this.isArticleReplyOrEditPrompt(tab)) {
+      return { status: 'aborted', confirmed: 0, total: 0, error: '終端機目前處於文章編輯或回應狀態，已安全停止推文' };
+    }
+    if (this.isScorePrompt(tab)) {
+      return { status: 'aborted', confirmed: 0, total: 0, error: '終端機目前處於文章評分選單，請先取消或完成評分' };
+    }
+
+    let isMultiline = this.isMultilineCommentPrompt(tab);
+    let atInput = this.isPushInputPrompt(tab);
+    let atChoice = this.isPushChoicePrompt(tab);
+
+    if (!atInput && !atChoice) {
+      await this.sendKeystroke(pushKey, tab, inputLease);
+      await this.sleep(keyDelay, signal);
+      if (this.abortController || signal?.aborted) return { status: 'aborted', confirmed: 0, total: 0 };
+
+      if (this.isArticleReplyOrEditPrompt(tab)) {
+        await this.sendKeystroke('q\x1b', tab, inputLease);
+        return { status: 'aborted', confirmed: 0, total: 0, error: '終端機進入非預期狀態，已安全取消' };
+      }
+      if (this.isScorePrompt(tab)) {
+        return { status: 'aborted', confirmed: 0, total: 0, error: '終端機進入文章評分選單，已安全取消' };
+      }
+
+      isMultiline = this.isMultilineCommentPrompt(tab);
+      atInput = this.isPushInputPrompt(tab);
+      atChoice = this.isPushChoicePrompt(tab);
+    }
+
+    if (!atInput && !atChoice) {
+      return { status: 'aborted', confirmed: 0, total: 0, error: '無法進入推文模式（請確認終端機處於文章閱讀狀態）' };
+    }
+
+    if (isMultiline) {
+      const lines = this.splitText(text, this.getNewCommentMaxBytes(), strategy);
+      const batches = [];
+      for (let i = 0; i < lines.length; i += 15) {
+        batches.push(lines.slice(i, i + 15));
+      }
+      let confirmedLines = 0;
+      for (let b = 0; b < batches.length; b++) {
+        if (this.abortController || signal?.aborted) {
+          return { status: 'aborted', mode: 'new-multiline', confirmed: confirmedLines, total: lines.length };
+        }
+        onProgress?.(b, batches.length, 'new-multiline');
+        if (b > 0 && !this.isMultilineCommentPrompt(tab)) {
+          await this.sendKeystroke(pushKey, tab, inputLease);
+          await this.sleep(keyDelay, signal);
+          if (this.abortController || signal?.aborted) {
+            return { status: 'aborted', mode: 'new-multiline', confirmed: confirmedLines, total: lines.length };
+          }
+        }
+        const outcome = await this.sendMultilineCommentBatch(batches[b], tab, signal, inputLease);
+        if (outcome.status === 'cooldown') {
+          if (onCooldown) {
+            const cont = await onCooldown(outcome.seconds || 5, b, batches.length);
+            if (cont === false) {
+              return { status: 'aborted', mode: 'new-multiline', confirmed: confirmedLines, total: lines.length };
+            }
+          } else {
+            await this.sleep(((outcome.seconds || 5) + 0.5) * 1000, signal);
+          }
+          b--;
+          continue;
+        }
+        if (outcome.status !== 'confirmed') {
+          return {
+            status: outcome.status,
+            mode: 'new-multiline',
+            confirmed: confirmedLines,
+            total: lines.length,
+            error: outcome.error,
+          };
+        }
+        confirmedLines += outcome.consumed || batches[b].length;
+        if (b < batches.length - 1 && delayMs > 0) {
+          await this.sleep(delayMs, signal);
+        }
+      }
+      return { status: 'confirmed', mode: 'new-multiline', confirmed: confirmedLines, total: lines.length };
+    }
+
+    const segments = this.splitText(text, this.getMaxSafeBytes(), strategy);
+    let confirmedCount = 0;
+    for (let i = 0; i < segments.length; i++) {
+      if (this.abortController || signal?.aborted) {
+        return { status: 'aborted', mode: 'legacy', confirmed: confirmedCount, total: segments.length };
+      }
+      onProgress?.(i, segments.length, 'legacy');
+      const isFirst = (i === 0);
+      const outcome = await this.sendSegmentSequence(segments[i], isFirst ? typeKey : '3', isFirst, signal, inputLease);
+      if (outcome.status === 'cooldown') {
+        if (onCooldown) {
+          const cont = await onCooldown(outcome.seconds || 5, i, segments.length);
+          if (cont === false) {
+            return { status: 'aborted', mode: 'legacy', confirmed: confirmedCount, total: segments.length };
+          }
+        } else {
+          await this.sleep(((outcome.seconds || 5) + 0.5) * 1000, signal);
+        }
+        i--;
+        continue;
+      }
+      if (outcome.status !== 'confirmed') {
+        return {
+          status: outcome.status,
+          mode: 'legacy',
+          confirmed: confirmedCount,
+          total: segments.length,
+          error: outcome.error,
+        };
+      }
+      confirmedCount++;
+      if (i < segments.length - 1 && delayMs > 0) {
+        await this.sleep(delayMs, signal);
+      }
+    }
+    return { status: 'confirmed', mode: 'legacy', confirmed: confirmedCount, total: segments.length };
+  }
+
   async sendSegmentSequence(seg, typeKey = '1', isFirstSegment = true, signal = null, inputLease = this._inputLease || null) {
     const tab = this.getActiveTab?.();
     if (!tab || !tab.isConnected) throw new Error('連線已中斷，無法推文');
@@ -653,9 +888,12 @@ export class PushHelper {
     const keyDelay = isPtt ? 250 : 500;
     const pushKey = isPtt ? 'X' : '%';
 
-    // 0. Hard safety guard: if terminal is currently in an article editing / replying prompt, ABORT!
+    // 0. Hard safety guard: if terminal is currently in an article editing / replying prompt or score prompt, ABORT!
     if (this.isArticleReplyOrEditPrompt(tab)) {
       return { status: 'aborted', error: '終端機目前處於文章編輯或回應狀態，已安全停止推文' };
+    }
+    if (this.isScorePrompt(tab)) {
+      return { status: 'aborted', error: '終端機目前處於文章評分選單，已安全停止推文' };
     }
 
     // 1. Check if terminal is ALREADY at push prompt before sending any initial key
@@ -671,6 +909,9 @@ export class PushHelper {
       if (this.isArticleReplyOrEditPrompt(tab)) {
         await this.sendKeystroke('q\x1b', tab, inputLease);
         return { status: 'aborted', error: '終端機進入非預期狀態，已安全取消' };
+      }
+      if (this.isScorePrompt(tab)) {
+        return { status: 'aborted', error: '終端機進入文章評分選單，已安全取消' };
       }
 
       atInput = this.isPushInputPrompt(tab);
@@ -701,6 +942,10 @@ export class PushHelper {
 
     if (!atInput) {
       return { status: 'aborted', error: '未能進入推文文字輸入狀態，已中止推文' };
+    }
+
+    if (this.isMultilineCommentPrompt(tab)) {
+      return this.sendMultilineCommentBatch(Array.isArray(seg) ? seg : [seg], tab, signal, inputLease);
     }
 
     // 3. Send segment text + Enter

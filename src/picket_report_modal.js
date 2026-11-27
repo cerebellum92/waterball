@@ -1,6 +1,6 @@
 // Picket Report Modal Controller for Waterball
 import { picketTemplateManager, renderTemplate } from './picket_report_config.js';
-import { articleReader } from './article_reader.js';
+import { articleReader, ArticleParser } from './article_reader.js';
 import {
   aidToUrl,
   urlToAid,
@@ -50,7 +50,26 @@ export function parsePicketSelection(rawSelectedText) {
     };
   }
 
-  // 2. PTT Push comment: "推 baduser: 內容" / "噓 baduser: 內容" / "→ baduser: 內容" / "baduser: 內容"
+  // 2. New PTT comment format: "|baduser|內容|IP 日期|N" or "baduser   IP 日期 [N]\n  內容"
+  const firstSelLine = text.split(/\r?\n/)[0] || '';
+  const rawNewComment = ArticleParser.parseNewRawCommentLine(firstSelLine);
+  if (rawNewComment) {
+    return {
+      author: cleanAuthorId(rawNewComment.user),
+      violationContent: text,
+    };
+  }
+  const formattedNewComment = ArticleParser.parseNewFormattedCommentHeader(firstSelLine, {
+    allowNarrow: /\r?\n\s+\S/.test(text),
+  });
+  if (formattedNewComment) {
+    return {
+      author: cleanAuthorId(formattedNewComment.user),
+      violationContent: text,
+    };
+  }
+
+  // 2b. PTT Push comment: "推 baduser: 內容" / "噓 baduser: 內容" / "→ baduser: 內容" / "baduser: 內容"
   const pushMatch = text.match(/^\s*(?:[推噓→]\s+)?([a-zA-Z0-9_-]{2,20})\s*[:：]\s*(.+)$/s);
   if (pushMatch) {
     return {
@@ -201,7 +220,7 @@ export function scanLinesForPicketData(lines, fallbackBoard = '') {
           if (currP >= totalP) isAtArticleEnd = true;
         }
       }
-      if (/文章選讀/.test(rawLine)) {
+      if (/文章選讀|文章列表|系列文章|文摘列表/.test(rawLine)) {
         isArticleList = true;
       }
     }
@@ -262,6 +281,33 @@ export function scanLinesForPicketData(lines, fallbackBoard = '') {
       });
     }
   }
+
+  // 2b. Merge both legacy pushes and new-format PTT comments from screen lines via ArticleParser
+  const parsedScreen = ArticleParser.parseLines(lines);
+  const existingRows = new Set(pushes.map((p) => p.sourceRow));
+  for (const comment of parsedScreen.pushList || []) {
+    if (!comment.commentFormat) continue;
+    if (existingRows.has(comment.sourceLine)) continue;
+    const ipdatetime = `${comment.ip ? comment.ip + ' ' : ''}${comment.time || ''}`.trim();
+    const floorTag = comment.isEdited ? `[~${comment.commentSeq}]` : `[${comment.commentSeq}]`;
+    const rawPush = `${comment.user} ${floorTag}: ${comment.content}${ipdatetime ? ' ' + ipdatetime : ''}`.trim();
+    pushes.push({
+      tag: floorTag,
+      author: comment.user,
+      user: comment.user,
+      text: comment.content,
+      content: comment.content,
+      ip: comment.ip || '',
+      time: comment.time || '',
+      ipdatetime,
+      raw: rawPush,
+      sourceRow: comment.sourceLine,
+      sourceRowEnd: comment.endLine ?? comment.sourceLine,
+      isEdited: comment.isEdited,
+      isDeleted: comment.isDeleted,
+    });
+  }
+  pushes.sort((a, b) => a.sourceRow - b.sourceRow);
 
   if (hasArticleHeader) {
     isReadingArticle = true;
@@ -1186,7 +1232,9 @@ export class PicketReportModal {
     } else if (ctxInfo) {
       // 若無反白選取，但右鍵精確點擊在某列推文上
       if (typeof ctxInfo.gridY === 'number' && extracted?.pushes?.length > 0) {
-        const clickedPushIdx = extracted.pushes.findIndex(p => p.sourceRow === ctxInfo.gridY);
+        const clickedPushIdx = extracted.pushes.findIndex(
+          (p) => p.sourceRow === ctxInfo.gridY || (p.sourceRowEnd != null && ctxInfo.gridY >= p.sourceRow && ctxInfo.gridY <= p.sourceRowEnd)
+        );
         if (clickedPushIdx !== -1) {
           const clickedPush = extracted.pushes[clickedPushIdx];
           if (this.targetAuthorInput && clickedPush.author) {

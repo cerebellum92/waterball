@@ -538,7 +538,7 @@ export class TermView {
   isArticleListRow(r) {
     const text = this.getRowText(r);
     if (!text.trim()) return false;
-    if (/【精華文章】|【功能鍵】/.test(text)) return false;
+    if (/【精華文章】|【功能鍵】|精華列表|精華管理|標記項目/.test(text)) return false;
 
     // PTT's usual format: article number, score/status, date, author...
     if (/^\s*(?:[>●○◎☆★]\s*)?(?:\d+|[★*])\s+([+爆Mm~!Xx\d\s]+)?\s*\d{1,2}\/\d{1,2}\s+[a-zA-Z0-9_]+/.test(text)) {
@@ -558,30 +558,41 @@ export class TermView {
     const rows = Array.from({ length: this.buf.rows }, (_, r) => this.getRowText(r));
     const top = rows.slice(0, 3).join('\n');
     const bottom = rows.slice(Math.max(0, this.buf.rows - 3)).join('\n');
+    const lastRow = rows[rows.length - 1] || '';
     const whole = rows.join('\n');
     let articleRows = 0;
     for (let r = 0; r < this.buf.rows; r++) {
       if (this.isArticleListRow(r)) articleRows++;
     }
 
-    if (/每行最多可容納|編輯文章|請輸入標題|請輸入密碼|請輸入.*密碼|請輸入推文|推文確認|確認.*[Yy/Nn]|Ctrl[-+]X|\(Ctrl\+X\)|\^X\s*(?:發表|寄出|存檔)/.test(bottom)) {
+    if (
+      /每行最多可容納|編輯文章|請輸入標題|請輸入密碼|請輸入.*密碼|請輸入推文|推文確認|確認.*[Yy/Nn]|Ctrl[-+]X|\(Ctrl\+X\)|\^X\s*(?:發表|寄出|存檔)|確定要儲存變更嗎|\[Y\/S\]儲存|以上資料是否正確|確定要放棄填寫嗎/.test(bottom) ||
+      /\[\s*項目\s*\d+\s*\/\s*\d+\s*\]/.test(top)
+    ) {
       return 'compose';
     }
     if (this.getWaitingPromptRow() >= 0) {
       return 'waiting-enter';
     }
+    const isDigestList = /^\s*(?:【功能鍵】|【板\s*主】|精華列表|精華管理|標記項目)(?:\s|$)/.test(lastRow);
+    const hasArticleListCaption = /文章選讀|文章列表|系列文章|文摘列表/.test(lastRow) || /文章選讀|文章列表|系列文章|文摘列表/.test(bottom);
     if (
-      articleRows >= 2 &&
-      (/目前顯示\s*[:：]|【看板列表】|文章列表|版主|板主|看板/.test(top + bottom) ||
-        /目前顯示\s*[:：]|【看板列表】|文章列表/.test(whole))
+      !isDigestList && (
+        (
+          articleRows >= 2 &&
+          (/目前顯示\s*[:：]|【看板列表】|文章選讀|文章列表|系列文章|文摘列表|版主|板主|看板/.test(top + bottom) ||
+            /目前顯示\s*[:：]|【看板列表】|文章選讀|文章列表|系列文章|文摘列表/.test(whole))
+        ) ||
+        (hasArticleListCaption && (/沒有文章/.test(whole) || /編號\s+日\s*期\s+作\s*者/.test(whole)))
+      )
     ) {
       return 'article-list';
     }
-    if (/看板列表|討論區列表|个人定制区|板板列表/.test(top)) return 'board-list';
+    if (/看板列表|討論區列表|个人定制区|板板列表|我的最愛|分類看板/.test(top) || /^\s*(?:選擇看板|看板列表|我的最愛|分類看板)(?:\s|$)/.test(lastRow)) return 'board-list';
     if (/好朋友列表|使用者列表|休閒聊天/.test(top)) return 'friend-list';
-    if (/處理信箋選單|電子郵件|邮件选单/.test(top)) return 'mail-list';
+    if (/處理信箋選單|電子郵件|邮件选单/.test(top) || /^\s*(?:鴻雁往返|信件列表)(?:\s|$)/.test(lastRow)) return 'mail-list';
     if (/閱讀文章|主題閱讀|同作者閱讀|下面還有喔|瀏覽\s+第/.test(bottom)) return 'reading';
-    if (/主功能表|聊天說話|個人設定|工具程式|網路遊樂場|目前\s*[:：]?/.test(top)) return 'main-menu';
+    if (/主功能表|聊天說話|個人設定|偏好設定列表|工具程式|網路遊樂場|目前\s*[:：]?/.test(top) || /^\s*(?:主功能表|偏好設定列表)(?:\s|\||$)/.test(lastRow)) return 'main-menu';
 
     let boardRows = 0;
     for (let r = 0; r < this.buf.rows; r++) {
@@ -796,8 +807,13 @@ export class TermView {
     // Content signatures remain valid after dirty flags have been cleared, and
     // include both neighboring rows on which repaired spans depend.
     this.rowUrlCacheKeys ||= new Map();
-    const key = JSON.stringify([this.buf.cols, ...[r - 1, r, r + 1].map(row =>
-      row >= 0 && row < this.buf.rows ? this.buf.getRowText(this.buf.lines[row]) : null)]);
+    const key = JSON.stringify([
+      this.buf.cols,
+      this.buf.lines[r]?.map((cell) => cell?.hyperlink || '').join('\0') || '',
+      ...[r - 1, r, r + 1].map((row) =>
+        row >= 0 && row < this.buf.rows ? this.buf.getRowText(this.buf.lines[row]) : null
+      ),
+    ]);
     if (this.rowUrlCacheKeys.get(r) === key && this.rowUrlCache.has(r)) return this.rowUrlCache.get(r);
     const urls = this.buf.getUrlsInRow(r);
     this.rowUrlCache.set(r, urls);
@@ -1619,7 +1635,12 @@ export class TermView {
         /→\s*[A-Za-z0-9_-]{1,16}\s*[:：]/.test(footerText) ||
         footerText.includes('請輸入標題') ||
         footerText.includes('請輸入：') ||
-        footerText.includes('請輸入密碼')
+        footerText.includes('請輸入密碼') ||
+        footerText.includes('Ctrl-X') ||
+        footerText.includes('確定要儲存變更嗎') ||
+        footerText.includes('[Y/S]儲存') ||
+        footerText.includes('以上資料是否正確') ||
+        footerText.includes('確定要放棄填寫嗎')
       ) {
         isEditorScreen = true;
       }
@@ -1644,9 +1665,11 @@ export class TermView {
               hasMenuPointerOnRow = true;
             }
           }
-          // Also check for Main Menu bracketed hotkey pattern like (F)avorite, (C)分組討論區, (M)電子郵件, (U)個人設定, (X)休閒聊天, (T)即時動態
-          if (!hasMenuPointerOnRow && (/\([A-Za-z0-9]\)/.test(lineStr) || /\[[A-Za-z0-9]\]/.test(lineStr)) && (
-            lineStr.includes('【') || lineStr.includes('】') || lineStr.includes('Menu') || lineStr.includes('主功能表') || lineStr.includes('分組討論區') || lineStr.includes('看板') || lineStr.includes('郵件') || lineStr.includes('設定')
+          // Keep cursor visible inside vform In-place form fields (`> 欄位名稱: [內容]`)
+          if (/^\s*>\s*[^:：]+[:：]\s*\[.*\]/.test(lineStr)) {
+            hasMenuPointerOnRow = false;
+          } else if (!hasMenuPointerOnRow && (/\([A-Za-z0-9]\)/.test(lineStr) || /\[[A-Za-z0-9]\]/.test(lineStr)) && (
+            lineStr.includes('【') || lineStr.includes('】') || lineStr.includes('Menu') || lineStr.includes('主功能表') || lineStr.includes('分組討論區') || lineStr.includes('看板') || lineStr.includes('郵件') || lineStr.includes('設定') || lineStr.includes('偏好設定') || lineStr.includes('我的最愛')
           )) {
             hasMenuPointerOnRow = true;
           }

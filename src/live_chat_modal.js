@@ -5,8 +5,14 @@ import { ArticleParser } from './article_reader.js';
 import { blacklistManager } from './blacklist.js';
 import { userTagsManager, TAG_COLORS } from './user_tags.js';
 import { isTauri, setAlwaysOnTop } from './platform.js';
-import { filenameToAid, detectCurrentBoard, boardFromHeaderLine, parseAidInput } from './aid_helper.js';
+import { filenameToAid, aidToFilename, detectCurrentBoard, boardFromHeaderLine, parseAidInput } from './aid_helper.js';
 import { imagePreview, isImageUrl, parseYoutubeUrl } from './image_preview.js';
+import {
+  liveChatHistoryStore,
+  buildArticleHistoryKey,
+  parsePttWebArticlePushes,
+  fetchPttArticleHtml,
+} from './live_chat_history_store.js';
 
 export class LiveChatModal {
   constructor(options = {}) {
@@ -25,6 +31,11 @@ export class LiveChatModal {
     this.onOpenReader = options.onOpenReader || (() => {});
     this.onStateChange = options.onStateChange || (() => {});
     this.getUserId = options.getUserId || (() => '');
+    this.historyStore = options.historyStore || liveChatHistoryStore;
+    this.fetchArticleHtml = options.fetchArticleHtml || null;
+    this.autoBackfillMaxPushes = options.autoBackfillMaxPushes ?? 400;
+    this.maxRenderedPushes = options.maxRenderedPushes ?? 1200;
+    this.historyPageSize = options.historyPageSize ?? 200;
 
     this.isOpen = false;
     this.tab = null;
@@ -61,6 +72,16 @@ export class LiveChatModal {
     this.hasMoreHistory = false;
     this.canUseGotoPrompt = true;
     this.gotoFailCount = 0;
+    this.fullBackfillRequested = false;
+    this.dbArticleKey = null;
+    this.dbTotalCount = 0;
+    this.dbOldestLoadedSeq = null;
+    this.isWebSyncingHistory = false;
+    this.webSyncAttemptedKey = null;
+    this.dbFilterResults = null;
+    this.dbFilterMeta = null;
+    this._filterQueryGeneration = 0;
+    this.historyBarEl = null;
     this._suppressScrollCheck = false;
     this._suppressLoadEarlier = false;
     this._didInitialScrollToBottom = false;
@@ -296,7 +317,7 @@ export class LiveChatModal {
         this.modalEl.querySelectorAll('.live-filter-btn').forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
         this.filterType = btn.dataset.filter || 'all';
-        this.renderAllPushes();
+        void this.refreshFilteredViewFromStore();
       });
     });
 
@@ -304,7 +325,7 @@ export class LiveChatModal {
     this.modalEl.querySelector('#live-chat-filter-clear-btn')?.addEventListener('click', () => {
       this.filterUser = null;
       this.filterBanner?.classList.add('hidden');
-      this.renderAllPushes();
+      void this.refreshFilteredViewFromStore();
     });
 
     // Scroll listener for auto-scroll pause / resume & manual earlier-history trigger
@@ -381,9 +402,44 @@ export class LiveChatModal {
       this.updateCharCount();
     });
 
+    // Guard IME composition confirmation (e.g. macOS WebKit fires compositionend before Enter keydown)
+    let isInputComposing = false;
+    let compositionJustEnded = false;
+    let compositionEndTimer = null;
+
+    this.inputEl?.addEventListener('compositionstart', () => {
+      isInputComposing = true;
+      compositionJustEnded = false;
+      clearTimeout(compositionEndTimer);
+    });
+
+    this.inputEl?.addEventListener('compositionupdate', () => {
+      isInputComposing = true;
+    });
+
+    this.inputEl?.addEventListener('compositionend', () => {
+      isInputComposing = false;
+      compositionJustEnded = true;
+      clearTimeout(compositionEndTimer);
+      compositionEndTimer = setTimeout(() => {
+        compositionJustEnded = false;
+      }, 100);
+      compositionEndTimer?.unref?.();
+      this.updateCharCount();
+    });
+
     // Input Enter to send
     this.inputEl?.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.isComposing && !e.shiftKey) {
+      if (isInputComposing || e.isComposing || e.key === 'Process' || e.keyCode === 229) return;
+      if (compositionJustEnded) {
+        compositionJustEnded = false;
+        clearTimeout(compositionEndTimer);
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          return;
+        }
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         this.handleSendPush();
       }
@@ -497,6 +553,15 @@ export class LiveChatModal {
     this.hasMoreHistory = false;
     this.canUseGotoPrompt = true;
     this.gotoFailCount = 0;
+    this.fullBackfillRequested = false;
+    this.dbArticleKey = null;
+    this.dbTotalCount = 0;
+    this.dbOldestLoadedSeq = null;
+    this.isWebSyncingHistory = false;
+    this.webSyncAttemptedKey = null;
+    this.dbFilterResults = null;
+    this.dbFilterMeta = null;
+    this._filterQueryGeneration = 0;
     this._suppressScrollCheck = false;
     this._suppressLoadEarlier = false;
     this._didInitialScrollToBottom = false;
@@ -560,6 +625,16 @@ export class LiveChatModal {
     this.oldestCapturedLineNum = null;
     this.oldestCapturedPageNum = null;
     this.hasMoreHistory = false;
+    this.fullBackfillRequested = false;
+    this.dbArticleKey = null;
+    this.dbTotalCount = 0;
+    this.dbOldestLoadedSeq = null;
+    this.isWebSyncingHistory = false;
+    this.webSyncAttemptedKey = null;
+    this.dbFilterResults = null;
+    this.dbFilterMeta = null;
+    this._filterQueryGeneration = 0;
+    this.historyBarEl = null;
     this._suppressScrollCheck = false;
     this.stopPolling();
     this.clearMediaPreviewsAndMiniPlayer();
@@ -652,12 +727,14 @@ export class LiveChatModal {
       this.boardBadgeEl.textContent = displayBoard;
     }
 
+    let updatedExisting = false;
     if (Array.isArray(article.pushList)) {
       for (const p of article.pushList) {
-        const sig = this.makeSignature(p);
-        if (!this.seenSignatures.has(sig)) {
-          this.seenSignatures.add(sig);
+        const res = this.upsertPushItem(p);
+        if (res === 'added') {
           this.pushes.push(p);
+        } else if (res === 'updated') {
+          updatedExisting = true;
         }
       }
     }
@@ -665,8 +742,14 @@ export class LiveChatModal {
     this.renderAllPushes(this.autoScroll);
     this.updateStats();
     this.updateAuthorModeUi();
+    this.updateHistoryBar();
     if (this.autoScroll) {
       this.scrollToBottom();
+    } else if (updatedExisting) {
+      this.updateStats();
+    }
+    if (this.isOpen && !this.isCrawlingHistory) {
+      void this.maybeSyncWebHistory(this.sessionGeneration);
     }
   }
 
@@ -711,7 +794,34 @@ export class LiveChatModal {
   }
 
   makeSignature(p) {
+    if (p?.commentSeq != null) {
+      return `new:${p.commentSeq}:${(p.user || '').trim().toLowerCase()}`;
+    }
     return `${p.tag || ''}:${p.user || ''}:${(p.content || '').trim()}:${p.time || ''}`;
+  }
+
+  upsertPushItem(p) {
+    const sig = this.makeSignature(p);
+    if (!this.seenSignatures.has(sig)) {
+      this.seenSignatures.add(sig);
+      return 'added';
+    }
+    if (p?.commentSeq != null) {
+      const idx = this.pushes.findIndex((existing) => this.makeSignature(existing) === sig);
+      if (idx !== -1) {
+        const prev = this.pushes[idx];
+        const changed = prev.content !== p.content
+          || Boolean(prev.isEdited) !== Boolean(p.isEdited)
+          || Boolean(prev.isDeleted) !== Boolean(p.isDeleted)
+          || prev.ip !== p.ip
+          || prev.time !== p.time;
+        if (changed) {
+          this.pushes[idx] = { ...prev, ...p };
+          return 'updated';
+        }
+      }
+    }
+    return 'duplicate';
   }
 
   updateStats() {
@@ -728,7 +838,268 @@ export class LiveChatModal {
     if (this.statPush) this.statPush.textContent = `推 ${pushCount}`;
     if (this.statBoo) this.statBoo.textContent = `噓 ${booCount}`;
     if (this.statArrow) this.statArrow.textContent = `→ ${arrowCount}`;
-    if (this.statTotal) this.statTotal.textContent = `共 ${this.pushes.length} 則`;
+    if (this.statTotal) {
+      if (this.dbArticleKey && this.dbTotalCount > this.pushes.length) {
+        this.statTotal.textContent = `共 ${this.dbTotalCount} 則`;
+        this.statTotal.title = `本機已快取 ${this.dbTotalCount} 則，畫面顯示最新 ${this.pushes.length} 則`;
+      } else {
+        this.statTotal.textContent = `共 ${this.pushes.length} 則`;
+        this.statTotal.title = '總留言數';
+      }
+    }
+  }
+
+  updateLoadingStatus(loading, text = '') {
+    if (this.pulseBadge) {
+      const activeBackfill = !this.dbArticleKey && !this.isWebSyncingHistory && this.hasMoreHistory && (this.fullBackfillRequested || this.pushes.length < this.autoBackfillMaxPushes);
+      if (loading) {
+        this.pulseBadge.innerHTML = `<span class="live-pulse-dot loading"></span>${this.escapeHtml(text || '載入歷史中...')}`;
+        this.pulseBadge.title = '正在載入實況文歷史推文與統計...';
+      } else if (activeBackfill) {
+        this.pulseBadge.innerHTML = `<span class="live-pulse-dot"></span>實況中 · 載入舊推文`;
+        this.pulseBadge.title = '即時更新最新推文，同時背景補齊歷史推文中...';
+      } else {
+        this.pulseBadge.innerHTML = `<span class="live-pulse-dot"></span>實況中`;
+        this.pulseBadge.title = '推文實況自動輪詢中';
+      }
+    }
+  }
+
+  buildHistoryBarElement() {
+    if (typeof document === 'undefined') return null;
+    const bar = document.createElement('div');
+    bar.className = 'live-chat-history-bar hidden';
+    this.historyBarEl = bar;
+    this.syncHistoryBarContent(bar);
+    return bar;
+  }
+
+  syncHistoryBarContent(bar = this.historyBarEl) {
+    if (!bar) return;
+    const showDb = Boolean(this.dbArticleKey && this.dbOldestLoadedSeq != null && this.dbOldestLoadedSeq > 1);
+    const showTerminal = Boolean(!this.dbArticleKey && this.hasMoreHistory);
+    const show = Boolean(this.isWebSyncingHistory || showDb || showTerminal);
+
+    if (!show) {
+      bar.classList.add('hidden');
+      bar.innerHTML = '';
+      return;
+    }
+
+    bar.classList.remove('hidden');
+    if (this.isWebSyncingHistory) {
+      bar.innerHTML = `<span class="live-history-text">⚡ 正在從 PTT 網頁版高速載入歷史推文...</span>`;
+      return;
+    }
+
+    if (showDb) {
+      const remaining = Math.max(0, this.dbOldestLoadedSeq - 1);
+      const batchSize = Math.min(this.historyPageSize, remaining || this.historyPageSize);
+      bar.innerHTML = `
+        <span class="live-history-text">📦 本機已快取 ${this.dbTotalCount} 則歷史推文（尚有 ${remaining} 則更早推文）</span>
+        <div class="live-history-actions">
+          <button type="button" class="live-history-btn live-history-load-btn">⬆️ 載入更早 ${batchSize} 則</button>
+        </div>
+      `;
+      bar.querySelector('.live-history-load-btn')?.addEventListener('click', () => {
+        void this.loadEarlierPushes(this.tab);
+      });
+      return;
+    }
+
+    const statusText = this.fullBackfillRequested
+      ? `⏬ 正在背景載入全部歷史推文（目前已載入 ${this.pushes.length} 則）`
+      : `⬆️ 尚有更早之前的歷史推文（目前已載入 ${this.pushes.length} 則）`;
+    const toggleLabel = this.fullBackfillRequested ? '⏹ 停止載入' : '⏬ 背景載入全部';
+    bar.innerHTML = `
+      <span class="live-history-text">${statusText}</span>
+      <div class="live-history-actions">
+        <button type="button" class="live-history-btn live-history-load-btn">⬆️ 載入更早推文</button>
+        <button type="button" class="live-history-btn live-history-full-btn">${toggleLabel}</button>
+      </div>
+    `;
+    bar.querySelector('.live-history-load-btn')?.addEventListener('click', () => {
+      void this.loadEarlierPushes(this.tab);
+    });
+    bar.querySelector('.live-history-full-btn')?.addEventListener('click', () => {
+      this.fullBackfillRequested = !this.fullBackfillRequested;
+      this.updateHistoryBar();
+      this.updateLoadingStatus(false);
+      if (this.fullBackfillRequested && this.isOpen && !this.isPolling && !this.isCrawlingHistory && this.tab?.isConnected) {
+        void this.pollLatest(this.tab);
+      }
+    });
+  }
+
+  updateHistoryBar() {
+    if (!this.historyBarEl && this.streamEl) {
+      const existing = this.streamEl.querySelector?.('.live-chat-history-bar');
+      if (existing) this.historyBarEl = existing;
+    }
+    this.syncHistoryBarContent(this.historyBarEl);
+  }
+
+  getWebHistoryTarget() {
+    if (!this.targetBoard || this.targetBoard === 'BBS') return null;
+    if ((this.tab?.address || '').toLowerCase().includes('ptt2.cc')) return null;
+    const rawId = this.targetAid || this.currentArticle?.articleId;
+    const articleKey = buildArticleHistoryKey(this.targetBoard, rawId);
+    if (!articleKey) return null;
+    const [board, filename] = articleKey.split(':');
+    return { board, filename, articleKey };
+  }
+
+  async maybeSyncWebHistory(generation = this.sessionGeneration) {
+    if (!this.isOpen || generation !== this.sessionGeneration || this.isCrawlingHistory || !this.historyStore) return false;
+    const target = this.getWebHistoryTarget();
+    if (!target || this.webSyncAttemptedKey === target.articleKey) return false;
+
+    const { board, filename, articleKey } = target;
+    this.webSyncAttemptedKey = articleKey;
+    this.isWebSyncingHistory = true;
+    this.updateHistoryBar();
+
+    try {
+      const existingMeta = await this.historyStore.getArticleMeta(articleKey);
+      const isFresh = existingMeta && existingMeta.webSyncedAt > 0 && (Date.now() - existingMeta.webSyncedAt < 30000) && existingMeta.totalCount > 0;
+      if (!isFresh) {
+        const fetcher = this.fetchArticleHtml || fetchPttArticleHtml;
+        const html = await fetcher(board, filename);
+        if (!this.isOpen || generation !== this.sessionGeneration) return false;
+        const parsed = parsePttWebArticlePushes(html);
+        if (!parsed.ok || parsed.pushes.length === 0) {
+          return false;
+        }
+        await this.historyStore.saveWebHistory(articleKey, {
+          board,
+          filename,
+          aid: this.targetAid || '',
+          title: parsed.title || this.targetTitle || '',
+          author: parsed.author || this.targetAuthor || '',
+          pushes: parsed.pushes,
+        });
+      }
+
+      if (!this.isOpen || generation !== this.sessionGeneration) return false;
+
+      let latestTotal = (await this.historyStore.getArticleMeta(articleKey))?.totalCount || 0;
+      if (this.pushes.length > 0) {
+        const merged = await this.historyStore.appendPushes(articleKey, this.pushes);
+        latestTotal = merged.totalCount;
+      }
+
+      if (!this.isOpen || generation !== this.sessionGeneration) return false;
+
+      if (this.pushes.length === 0 && latestTotal > 0) {
+        const recent = await this.historyStore.getRecentWindow(articleKey, this.historyPageSize);
+        if (!this.isOpen || generation !== this.sessionGeneration) return false;
+        this.pushes = recent.pushes;
+        for (const p of this.pushes) this.seenSignatures.add(this.makeSignature(p));
+        this.dbOldestLoadedSeq = recent.oldestSeq ?? 1;
+        this.renderAllPushes(this.autoScroll);
+      } else {
+        let matchedSeq = null;
+        const probeLimit = Math.min(5, this.pushes.length);
+        for (let idx = 0; idx < probeLimit; idx++) {
+          const seq = await this.historyStore.findPushSeq(articleKey, this.pushes[idx]);
+          if (!this.isOpen || generation !== this.sessionGeneration) return false;
+          if (seq != null) {
+            matchedSeq = Math.max(1, seq - idx);
+            break;
+          }
+        }
+        this.dbOldestLoadedSeq = matchedSeq ?? Math.max(1, latestTotal - this.pushes.length + 1);
+      }
+
+      this.dbArticleKey = articleKey;
+      this.dbTotalCount = latestTotal;
+      this.hasMoreHistory = Boolean(this.dbOldestLoadedSeq && this.dbOldestLoadedSeq > 1);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      if (generation === this.sessionGeneration) {
+        this.isWebSyncingHistory = false;
+        this.updateStats();
+        this.updateLoadingStatus(false);
+        this.updateHistoryBar();
+        if (this.dbArticleKey && (this.filterUser || this.filterType !== 'all')) {
+          void this.refreshFilteredViewFromStore();
+        }
+      }
+    }
+  }
+
+  trimRenderedWindowIfNeeded() {
+    if (!this.autoScroll || this.filterUser || this.filterType !== 'all') return 0;
+    if (!Array.isArray(this.pushes) || this.pushes.length <= this.maxRenderedPushes) return 0;
+
+    const targetLen = Math.max(100, this.maxRenderedPushes - Math.min(100, Math.floor(this.maxRenderedPushes * 0.2)));
+    if (this.pushes.length <= targetLen) return 0;
+
+    const dropCount = this.pushes.length - targetLen;
+    const dropped = this.pushes.splice(0, dropCount);
+    const remainingSigs = new Set(this.pushes.map((p) => this.makeSignature(p)));
+    for (const old of dropped) {
+      const sig = this.makeSignature(old);
+      if (!remainingSigs.has(sig)) {
+        this.seenSignatures.delete(sig);
+      }
+    }
+
+    this.hasMoreHistory = true;
+    if (this.dbArticleKey && this.dbOldestLoadedSeq != null) {
+      this.dbOldestLoadedSeq += dropCount;
+    }
+
+    if (this.streamEl?.children) {
+      let removed = 0;
+      const toRemove = [];
+      for (const child of this.streamEl.children) {
+        if (removed >= dropCount) break;
+        if (child?.classList?.contains?.('live-chat-msg') || /\blive-chat-msg\b/.test(child?.className || '')) {
+          toRemove.push(child);
+          removed++;
+        }
+      }
+      for (const node of toRemove) {
+        if (typeof node.remove === 'function') {
+          node.remove();
+        } else {
+          this.streamEl.children = this.streamEl.children.filter((c) => c !== node);
+        }
+      }
+    }
+
+    this.updateHistoryBar();
+    this.updateStats();
+    return dropCount;
+  }
+
+  async refreshFilteredViewFromStore() {
+    const queryGen = ++this._filterQueryGeneration;
+    if (!this.dbArticleKey || (!this.filterUser && this.filterType === 'all')) {
+      this.dbFilterResults = null;
+      this.dbFilterMeta = null;
+      if (this.filterUser && this.filterBannerText) {
+        this.filterBannerText.textContent = `🎯 正在只顯示【${this.filterUser}】的發言`;
+      }
+      this.renderAllPushes(this.autoScroll);
+      return;
+    }
+
+    const res = await this.historyStore.queryPushes(this.dbArticleKey, {
+      user: this.filterUser,
+      filterType: this.filterType,
+      limit: this.maxRenderedPushes,
+    });
+    if (!this.isOpen || queryGen !== this._filterQueryGeneration) return;
+    this.dbFilterResults = res.pushes;
+    this.dbFilterMeta = { totalMatched: res.totalMatched, truncated: res.truncated };
+    if (this.filterUser && this.filterBannerText) {
+      this.filterBannerText.textContent = `🎯 已從本機快取 ${this.dbTotalCount} 則中篩選【${this.filterUser}】共 ${res.totalMatched} 則${res.truncated ? `（僅顯示最新 ${res.pushes.length} 則）` : ''}`;
+    }
+    this.renderAllPushes(false);
   }
 
   startPolling(tab = this.tab) {
@@ -778,21 +1149,6 @@ export class LiveChatModal {
     }
   }
 
-  updateLoadingStatus(loading, text = '') {
-    if (this.pulseBadge) {
-      if (loading) {
-        this.pulseBadge.innerHTML = `<span class="live-pulse-dot loading"></span>${this.escapeHtml(text || '載入歷史中...')}`;
-        this.pulseBadge.title = '正在載入實況文歷史推文與統計...';
-      } else if (this.hasMoreHistory) {
-        this.pulseBadge.innerHTML = `<span class="live-pulse-dot"></span>實況中 · 載入舊推文`;
-        this.pulseBadge.title = '即時更新最新推文，同時背景補齊歷史推文中...';
-      } else {
-        this.pulseBadge.innerHTML = `<span class="live-pulse-dot"></span>實況中`;
-        this.pulseBadge.title = '已載入全部推文，推文實況自動輪詢中';
-      }
-    }
-  }
-
   getBottomLines(lines, count = 3) {
     const nonEmpty = [];
     for (let r = lines.length - 1; r >= 0 && nonEmpty.length < count; r--) {
@@ -824,11 +1180,11 @@ export class LiveChatModal {
       return 'native_live';
     }
 
-    if (/每行最多可容納|編輯文章|請輸入標題|請輸入密碼|請輸入推文|推文確認|確認.*[Yy/Nn]|Ctrl[-+]X|\(Ctrl\+X\)|\^X\s*(?:發表|寄出|存檔)/i.test(bottom)) {
+    if (/可多行.*TAB|按\s*TAB\s*加行|Backspace\s*刪空行|取消評分|評分明細|不喜歡\s*[（(]噓[）)]|編輯\s*[:：]\s*\[1\]\s*文章內文|每行最多可容納|編輯文章|請輸入標題|請輸入密碼|請輸入推文|推文確認|確認.*[Yy/Nn]|Ctrl[-+]X|\(Ctrl\+X\)|\^X\s*(?:發表|寄出|存檔)/i.test(bottom)) {
       return 'compose';
     }
 
-    if (/(?:請\s*)?按\s*(?:任意|任何|空白)\s*鍵.*繼續|按回車鍵|按\s*\[RETURN\]\s*繼續/.test(bottom)) {
+    if (/(?:請\s*)?按\s*(?:任意|任何|空白)\s*鍵.*繼續|按回車鍵|按\s*\[RETURN\]\s*繼續|先前已評分過/.test(bottom)) {
       return 'waiting_enter';
     }
 
@@ -842,7 +1198,7 @@ export class LiveChatModal {
 
     // Ignore board article-list hotkey hint "[z]精華區" / "(z)精華區" while still excluding real Announce/Digest submodes
     const submodeSource = `${top}\n${bottom}`.replace(/[\[（(][zZ][\]）)]\s*精華區/g, '');
-    if (/【\s*精華公佈欄\s*】|\[精華區\]|相關文章|搜尋系列/.test(submodeSource)
+    if (/【\s*精華公佈欄\s*】|\[精華區\]|精華列表|精華管理|標記項目|相關文章|搜尋系列/.test(submodeSource)
       || /^\s*(?:瀏覽)?精華區\b/m.test(bottom)
       || /^(?:搜尋|請輸入)(?:標題|作者|推文|關鍵字)/m.test(bottom)) {
       return 'unknown';
@@ -856,20 +1212,24 @@ export class LiveChatModal {
       }
     }
 
-    const hasReadingFooter = /瀏覽\s+第\s*\d+|目前顯示\s*[:：]?\s*第\s*\d+|\(←\/q\)離開|\[←\/q\]離開|主題閱讀|閱讀文章|下面還有喔/.test(bottom);
-    const isList = /文章選讀|文章列表/.test(bottom)
+    const hasReadingFooter = /瀏覽\s+第\s*\d+|目前顯示\s*[:：]?\s*第\s*\d+|\(←(?:\/q)?\)離開|\[←(?:\/q)?\]離開|主題閱讀|閱讀文章|下面還有喔/.test(bottom);
+    const isList = /文章選讀|文章列表|系列文章|文摘列表/.test(bottom)
       || /看板[《【]/.test(top)
       || lines.slice(0, 4).some((l) => /編號\s+日\s*期\s+作\s*者/.test(l))
       || (articleRowCount >= 2 && !hasReadingFooter);
 
     if (isList) return 'article_list';
 
-    if (/看板列表|討論區列表|主功能表|個人設定|網路遊樂場/.test(top)) {
+    if (/看板列表|討論區列表|主功能表|個人設定|偏好設定列表|我的最愛|分類看板|網路遊樂場/.test(top)) {
       return 'unknown';
     }
 
     // 2. Reading state
-    const hasPushLine = lines.some((l) => /^\s*[推噓→]\s+[a-zA-Z0-9_-]+\s*[:：]/.test(l));
+    const hasPushLine = lines.some((l) =>
+      /^\s*[推噓→]\s+[a-zA-Z0-9_-]+\s*[:：]/.test(l)
+      || ArticleParser.isNewRawCommentHeader(l)
+      || Boolean(ArticleParser.parseNewFormattedCommentHeader(l, { allowNarrow: false }))
+    );
     const isReading = hasReadingFooter
       || /100%/.test(bottom)
       || lines.slice(0, 5).some((l) => /^\s*(?:作者(?:\s*[:：]\s*|\s+)|標題(?:\s*[:：]\s*|\s+)|時間(?:\s*[:：]\s*|\s+))/.test(l))
@@ -899,7 +1259,7 @@ export class LiveChatModal {
   parseArticleListRow(rowStr) {
     if (!rowStr || typeof rowStr !== 'string') return null;
     const m = rowStr.match(
-      /^\s*(?:[>●○◎☆★]\s*)?(?:\d+|[★*])(?:\s+|[+爆MmSs~!Xx=*])[+爆MmSs~!Xx=*\d\s]{0,16}?\d{1,2}\/\d{1,2}\s+([a-zA-Z0-9_-]+)\s+(.*)$/
+      /^\s*(?:[>●○◎☆★]\s*)?(?:\d+|[★*])(?:\s+|[+爆MmSs~!Xx=*])[+爆MmSs~!Xx=*\-\d\s]{0,16}?\d{1,2}\/\d{1,2}\s+([a-zA-Z0-9_-]+)\s+(.*)$/
     );
     if (!m) return null;
     const author = m[1].trim();
@@ -933,6 +1293,7 @@ export class LiveChatModal {
       .replace(/^(?:[□◆◇★●>轉])\s*/, '')
       .replace(/^R:\s*/i, 'Re: ')
       .replace(/\s+/g, ' ')
+      .replace(/(?:…|\.\.\.)+\s*$/, '')
       .trim()
       .toLowerCase();
   }
@@ -1071,6 +1432,9 @@ export class LiveChatModal {
     }
     if (this.boardBadgeEl && this.targetBoard) {
       this.boardBadgeEl.textContent = this.targetBoard;
+    }
+    if (this.isOpen && !this.isCrawlingHistory) {
+      void this.maybeSyncWebHistory(this.sessionGeneration);
     }
   }
 
@@ -1555,6 +1919,9 @@ export class LiveChatModal {
           }
         }
         this.updateLoadingStatus(false);
+        if (this.isOpen && generation === this.sessionGeneration) {
+          void this.maybeSyncWebHistory(generation);
+        }
         if (this.isOpen && this.pollIntervalMs > 0 && generation === this.sessionGeneration) {
           this.startPolling(tab);
         }
@@ -1566,18 +1933,25 @@ export class LiveChatModal {
     if (!Array.isArray(pushList) || pushList.length === 0) return 0;
 
     const newEarlier = [];
+    let updatedExisting = false;
     for (const p of pushList) {
-      const sig = this.makeSignature(p);
-      if (!this.seenSignatures.has(sig)) {
-        this.seenSignatures.add(sig);
+      const res = this.upsertPushItem(p);
+      if (res === 'added') {
         newEarlier.push(p);
+      } else if (res === 'updated') {
+        updatedExisting = true;
       }
     }
-    if (newEarlier.length === 0) return 0;
+    if (newEarlier.length === 0) {
+      if (updatedExisting) this.renderAllPushes(false);
+      return 0;
+    }
 
     this.pushes.unshift(...newEarlier);
     for (let i = 0; i < this.pushes.length; i++) {
-      this.pushes[i].floor = i + 1;
+      if (this.pushes[i].commentSeq == null) {
+        this.pushes[i].floor = i + 1;
+      }
     }
 
     const container = this.scrollContainer;
@@ -1595,8 +1969,10 @@ export class LiveChatModal {
         const el = this.createPushElement(p, p.floor || 1);
         if (el) fragment.appendChild(el);
       }
-      const welcomeEl = this.streamEl.querySelector?.('.live-chat-welcome-card') || null;
-      const insertRef = welcomeEl ? welcomeEl.nextSibling : this.streamEl.firstChild;
+      const anchorEl = this.streamEl.querySelector?.('.live-chat-history-bar')
+        || this.streamEl.querySelector?.('.live-chat-welcome-card')
+        || null;
+      const insertRef = anchorEl ? anchorEl.nextSibling : this.streamEl.firstChild;
       this.streamEl.insertBefore(fragment, insertRef);
     } else {
       this.renderAllPushes(false);
@@ -1815,8 +2191,30 @@ export class LiveChatModal {
   }
 
   async loadEarlierPushes(tab = this.tab) {
-    if (!this.isOpen || !tab || !tab.isConnected || this.isSending || this.isPolling || this.isCrawlingHistory || !this.hasMoreHistory) return;
+    if (!this.isOpen || this.isSending || this.isCrawlingHistory || !this.hasMoreHistory) return;
     const gen = this.sessionGeneration;
+
+    if (this.dbArticleKey && this.dbOldestLoadedSeq != null && this.dbOldestLoadedSeq > 1) {
+      this.isCrawlingHistory = true;
+      try {
+        const res = await this.historyStore.getWindowBefore(this.dbArticleKey, this.dbOldestLoadedSeq, this.historyPageSize);
+        if (this.isOpen && gen === this.sessionGeneration) {
+          this.dbOldestLoadedSeq = res.oldestSeq ?? 1;
+          this.hasMoreHistory = Boolean(res.hasMore && this.dbOldestLoadedSeq > 1);
+          this.prependHistoricalPushes(res.pushes);
+          this.updateHistoryBar();
+        }
+      } catch (err) {
+        console.warn('[LiveChat] DB loadEarlierPushes error:', err);
+      } finally {
+        if (gen === this.sessionGeneration) {
+          this.isCrawlingHistory = false;
+        }
+      }
+      return;
+    }
+
+    if (!tab || !tab.isConnected || this.isPolling) return;
     this.isCrawlingHistory = true;
 
     try {
@@ -1832,6 +2230,7 @@ export class LiveChatModal {
     } finally {
       if (gen === this.sessionGeneration) {
         this.isCrawlingHistory = false;
+        this.updateHistoryBar();
       }
     }
   }
@@ -2272,19 +2671,37 @@ export class LiveChatModal {
                 return;
               }
               let gapAddedCount = 0;
+              const gapAdded = [];
+              let needsRerender = false;
               if (movedUp && upParsed.pushList) {
                 this.syncAutoScrollFromContainer();
                 for (const p of upParsed.pushList) {
-                  const sig = this.makeSignature(p);
-                  if (!this.seenSignatures.has(sig)) {
-                    this.seenSignatures.add(sig);
-                    p.floor = this.pushes.length + 1;
+                  const res = this.upsertPushItem(p);
+                  if (res === 'added') {
+                    if (p.commentSeq == null) p.floor = this.pushes.length + 1;
                     this.pushes.push(p);
-                    this.appendPushElement(p);
+                    gapAdded.push(p);
+                    if (!this.dbFilterResults) this.appendPushElement(p);
                     gapAddedCount++;
+                  } else if (res === 'updated') {
+                    gapAdded.push(p);
+                    needsRerender = true;
                   }
                 }
+                if (this.dbArticleKey && gapAdded.length > 0) {
+                  void this.historyStore.appendPushes(this.dbArticleKey, gapAdded).then((r) => {
+                    if (r && gen === this.sessionGeneration && this.isOpen) {
+                      this.dbTotalCount = r.totalCount;
+                      this.updateStats();
+                      this.updateHistoryBar();
+                    }
+                  }).catch(() => {});
+                }
+                if (needsRerender && !this.dbFilterResults) {
+                  this.renderAllPushes(this.autoScroll);
+                }
                 if (gapAddedCount > 0) {
+                  this.trimRenderedWindowIfNeeded();
                   this.updateStats();
                   if (this.autoScroll) {
                     this.scrollToBottom();
@@ -2305,19 +2722,41 @@ export class LiveChatModal {
           if (!this.isOpen || gen !== this.sessionGeneration) return;
 
           this.syncAutoScrollFromContainer();
+          const newlyAdded = [];
           let addedCount = 0;
+          let updatedExisting = false;
           for (const p of parsed.pushList) {
-            const sig = this.makeSignature(p);
-            if (!this.seenSignatures.has(sig)) {
-              this.seenSignatures.add(sig);
-              p.floor = this.pushes.length + 1;
+            const res = this.upsertPushItem(p);
+            if (res === 'added') {
+              if (p.commentSeq == null) p.floor = this.pushes.length + 1;
               this.pushes.push(p);
-              this.appendPushElement(p);
+              newlyAdded.push(p);
+              if (!this.dbFilterResults) this.appendPushElement(p);
               addedCount++;
+            } else if (res === 'updated') {
+              newlyAdded.push(p);
+              updatedExisting = true;
             }
           }
 
-          if (addedCount > 0) {
+          if (this.dbArticleKey && newlyAdded.length > 0) {
+            void this.historyStore.appendPushes(this.dbArticleKey, newlyAdded).then((r) => {
+              if (r && gen === this.sessionGeneration && this.isOpen) {
+                this.dbTotalCount = r.totalCount;
+                this.updateStats();
+                this.updateHistoryBar();
+                if (this.filterUser || this.filterType !== 'all') {
+                  void this.refreshFilteredViewFromStore();
+                }
+              }
+            }).catch(() => {});
+          }
+
+          if (updatedExisting && !this.dbFilterResults) {
+            this.renderAllPushes(this.autoScroll);
+            this.updateStats();
+          } else if (addedCount > 0) {
+            this.trimRenderedWindowIfNeeded();
             this.updateStats();
             if (this.autoScroll) {
               this.scrollToBottom();
@@ -2328,13 +2767,15 @@ export class LiveChatModal {
           }
         }
 
-        // Automatically backfill remaining older history chunks in the background
-        // using pmore's ':' goto-line prompt + PageUp ('\x1b[5~'), keeping live polling active.
+        // Automatically backfill older history with a bounded cap unless full backfill is explicitly requested.
         if (
           this.isOpen &&
           gen === this.sessionGeneration &&
           this.hasMoreHistory &&
           this.canUseGotoPrompt &&
+          !this.dbArticleKey &&
+          !this.isWebSyncingHistory &&
+          (this.fullBackfillRequested || this.pushes.length < this.autoBackfillMaxPushes) &&
           this.oldestCapturedLineNum > 1 &&
           !this.isSending &&
           !this.isCrawlingHistory &&
@@ -2428,6 +2869,10 @@ export class LiveChatModal {
       ? document.createDocumentFragment()
       : null;
 
+    if (!fragment) {
+      this.streamEl.innerHTML = '';
+    }
+
     const welcomeEl = document.createElement('div');
     welcomeEl.className = 'live-chat-welcome-card';
     welcomeEl.innerHTML = `
@@ -2435,12 +2880,19 @@ export class LiveChatModal {
       <div class="welcome-title">PTT 實況推文聊天室模式</div>
       <div class="welcome-desc">${this.escapeHtml(this.currentArticle?.title || this.targetTitle || '實況串流監聽中')}</div>
     `;
-    if (fragment) fragment.appendChild(welcomeEl);
-    else this.streamEl.appendChild(welcomeEl);
+    const historyBar = this.buildHistoryBarElement();
+    if (fragment) {
+      fragment.appendChild(welcomeEl);
+      if (historyBar) fragment.appendChild(historyBar);
+    } else {
+      this.streamEl.appendChild(welcomeEl);
+      if (historyBar) this.streamEl.appendChild(historyBar);
+    }
 
+    const sourceList = this.dbFilterResults || this.pushes;
     let visibleIndex = 1;
-    for (const p of this.pushes) {
-      if (!this.matchesFilter(p)) continue;
+    for (const p of sourceList) {
+      if (!this.dbFilterResults && !this.matchesFilter(p)) continue;
       const el = this.createPushElement(p, visibleIndex++);
       if (el) {
         if (fragment) fragment.appendChild(el);
@@ -2476,7 +2928,7 @@ export class LiveChatModal {
   matchesFilter(p) {
     if (this.filterType === 'push' && p.tag !== '推') return false;
     if (this.filterType === 'boo' && p.tag !== '噓') return false;
-    if (this.filterType === 'arrow' && p.tag !== '→') return false;
+    if (this.filterType === 'arrow' && p.tag !== '→' && p.tag !== '留言') return false;
     if (this.filterUser && p.user?.toLowerCase() !== this.filterUser.toLowerCase()) return false;
     return true;
   }
@@ -2485,6 +2937,7 @@ export class LiveChatModal {
     const user = p.user || '';
     const content = p.content || '';
     const tag = p.tag || '→';
+    const tagTypeClass = tag === '推' ? 'push' : tag === '噓' ? 'boo' : tag === '留言' ? 'comment' : 'arrow';
 
     // Blacklist check
     const isUserBlacklisted = typeof blacklistManager?.isBlacklisted === 'function' ? blacklistManager.isBlacklisted(user) : false;
@@ -2500,7 +2953,7 @@ export class LiveChatModal {
     }
 
     const row = document.createElement('div');
-    row.className = `live-chat-msg tag-${tag === '推' ? 'push' : tag === '噓' ? 'boo' : 'arrow'}`;
+    row.className = `live-chat-msg tag-${tagTypeClass}${p.isDeleted ? ' is-deleted' : ''}`;
     if (isOptimistic || p.isMine) row.classList.add('is-mine');
     if (isBlacklisted) {
       if (mode === 'dim') row.classList.add('blacklisted-dim');
@@ -2541,9 +2994,14 @@ export class LiveChatModal {
     // Autolink URLs in content
     const linkedContent = this.autolinkContent(content);
 
+    const floorBadgeHtml = p.commentSeq != null
+      ? `<span class="live-floor-badge">#${p.isEdited ? '~' : ''}${this.escapeHtml(String(p.commentSeq))}</span>`
+      : '';
+
     row.innerHTML = `
       <div class="live-msg-header">
-        <span class="live-tag-badge ${tag === '推' ? 'push' : tag === '噓' ? 'boo' : 'arrow'}">${this.escapeHtml(tag)}</span>
+        <span class="live-tag-badge ${tagTypeClass}">${this.escapeHtml(tag)}</span>
+        ${floorBadgeHtml}
         <span class="live-user-name" data-user="${this.escapeHtml(user)}"${nameTitleAttr}>${this.escapeHtml(user)}</span>
         ${opBadgeHtml}
         ${tagHtml}
@@ -2601,7 +3059,7 @@ export class LiveChatModal {
         this.filterBannerText.textContent = `🎯 正在只顯示【${user}】的發言`;
         this.filterBanner.classList.remove('hidden');
       }
-      this.renderAllPushes();
+      void this.refreshFilteredViewFromStore();
       closeMenu();
     });
 
@@ -2647,6 +3105,20 @@ export class LiveChatModal {
     return { url, trailing };
   }
 
+  _formatPlainSegment(text) {
+    if (!text) return '';
+    const floorRefRegex = />>(\d{1,5})\b/g;
+    let last = 0;
+    let out = '';
+    let m;
+    while ((m = floorRefRegex.exec(text)) !== null) {
+      out += this.escapeHtml(text.slice(last, m.index)).replace(/\n/g, '<br>');
+      out += `<span class="live-floor-ref" data-floor="${this.escapeHtml(m[1])}">${this.escapeHtml(m[0])}</span>`;
+      last = m.index + m[0].length;
+    }
+    return out + this.escapeHtml(text.slice(last)).replace(/\n/g, '<br>');
+  }
+
   autolinkContent(text) {
     if (!text) return '';
     const urlPattern = /(https?:\/\/[^\s<>"']+)/g;
@@ -2657,7 +3129,7 @@ export class LiveChatModal {
     while ((match = urlPattern.exec(text)) !== null) {
       const start = match.index;
       const end = urlPattern.lastIndex;
-      html += this.escapeHtml(text.slice(lastIndex, start));
+      html += this._formatPlainSegment(text.slice(lastIndex, start));
       const { url, trailing } = this._splitUrlTrailingPunctuation(match[0]);
       if (!url) {
         html += this.escapeHtml(match[0]);
@@ -2679,11 +3151,11 @@ export class LiveChatModal {
       }
 
       if (trailing) {
-        html += this.escapeHtml(trailing);
+        html += this._formatPlainSegment(trailing);
       }
       lastIndex = end;
     }
-    html += this.escapeHtml(text.slice(lastIndex));
+    html += this._formatPlainSegment(text.slice(lastIndex));
     return html;
   }
 
@@ -3357,57 +3829,92 @@ export class LiveChatModal {
           return;
         }
 
-        // 1. Split text into segments for automatic continuous push
+        // 1. Send via smart push (supports new PTT 15-line x 64B comments and legacy segmented pushes)
         const isOp = this.checkIsOp();
-        const segments = this.pushHelper?.splitText ? this.pushHelper.splitText(text) : [text];
-        let confirmedCount = 0;
-
-        for (let i = 0; i < segments.length; i++) {
-          if (!this.isOpen || !this.isSending) break;
-          const seg = segments[i];
-          const isFirst = (i === 0);
-          const segType = isOp ? '3' : (isFirst ? this.activeType : '3');
-
-          if (this.sendBtn) {
-            this.sendBtn.textContent = segments.length > 1 ? `發送中 (${i + 1}/${segments.length})...` : '發送中...';
-          }
-
-          let outcome = { status: 'confirmed' };
-          if (this.pushHelper) {
-            outcome = await this.pushHelper.sendSegmentSequence(seg, segType, isFirst, null, lease);
-          }
-
-          if (outcome.status === 'cooldown') {
-            const sec = outcome.seconds || 5;
-            let remaining = sec + 0.5;
-            while (remaining > 0 && this.isOpen && this.isSending) {
+        if (typeof this.pushHelper?.sendSmartPush === 'function') {
+          const smartOutcome = await this.pushHelper.sendSmartPush(text, isOp ? '3' : this.activeType, {
+            inputLease: lease,
+            onProgress: (idx, total) => {
               if (this.sendBtn) {
-                this.sendBtn.textContent = `冷卻中 ${remaining.toFixed(1)}s (${i + 1}/${segments.length})`;
+                this.sendBtn.textContent = total > 1 ? `發送中 (${idx + 1}/${total})...` : '發送中...';
               }
-              await new Promise((r) => setTimeout(r, 200));
-              remaining -= 0.2;
+            },
+            onCooldown: async (sec, idx, total) => {
+              let remaining = (sec || 5) + 0.5;
+              while (remaining > 0 && this.isOpen && this.isSending) {
+                if (this.sendBtn) {
+                  this.sendBtn.textContent = `冷卻中 ${remaining.toFixed(1)}s (${idx + 1}/${total})`;
+                }
+                await new Promise((r) => setTimeout(r, 200));
+                remaining -= 0.2;
+              }
+              return this.isOpen && this.isSending;
+            },
+          });
+
+          if (smartOutcome.status === 'aborted' && smartOutcome.error) {
+            this.onShowToast?.(smartOutcome.error);
+          }
+
+          if ((smartOutcome.confirmed || 0) > 0) {
+            if (input) input.value = '';
+            this.updateCharCount();
+            const msg = smartOutcome.mode === 'new-multiline'
+              ? '留言已順利送出！'
+              : (smartOutcome.total > 1 ? `已順利完成連續推文（共 ${smartOutcome.confirmed} 段）！` : '推文已順利送出！');
+            this.onShowToast?.(msg);
+          }
+        } else {
+          const segments = this.pushHelper?.splitText ? this.pushHelper.splitText(text) : [text];
+          let confirmedCount = 0;
+
+          for (let i = 0; i < segments.length; i++) {
+            if (!this.isOpen || !this.isSending) break;
+            const seg = segments[i];
+            const isFirst = (i === 0);
+            const segType = isOp ? '3' : (isFirst ? this.activeType : '3');
+
+            if (this.sendBtn) {
+              this.sendBtn.textContent = segments.length > 1 ? `發送中 (${i + 1}/${segments.length})...` : '發送中...';
             }
-            i--; // Retry this segment!
-            continue;
+
+            let outcome = { status: 'confirmed' };
+            if (this.pushHelper) {
+              outcome = await this.pushHelper.sendSegmentSequence(seg, segType, isFirst, null, lease);
+            }
+
+            if (outcome.status === 'cooldown') {
+              const sec = outcome.seconds || 5;
+              let remaining = sec + 0.5;
+              while (remaining > 0 && this.isOpen && this.isSending) {
+                if (this.sendBtn) {
+                  this.sendBtn.textContent = `冷卻中 ${remaining.toFixed(1)}s (${i + 1}/${segments.length})`;
+                }
+                await new Promise((r) => setTimeout(r, 200));
+                remaining -= 0.2;
+              }
+              i--; // Retry this segment!
+              continue;
+            }
+
+            if (outcome.status === 'aborted') {
+              this.onShowToast?.(outcome.error || '推文已中止');
+              break;
+            }
+
+            confirmedCount++;
+
+            // Small safe delay between segments (300ms) if no cooldown
+            if (i < segments.length - 1 && this.isOpen && this.isSending) {
+              await new Promise((r) => setTimeout(r, 300));
+            }
           }
 
-          if (outcome.status === 'aborted') {
-            this.onShowToast?.(outcome.error || '推文已中止');
-            break;
+          if (confirmedCount > 0) {
+            if (input) input.value = '';
+            this.updateCharCount();
+            this.onShowToast?.(segments.length > 1 ? `已順利完成連續推文（共 ${confirmedCount} 段）！` : '推文已順利送出！');
           }
-
-          confirmedCount++;
-
-          // Small safe delay between segments (300ms) if no cooldown
-          if (i < segments.length - 1 && this.isOpen && this.isSending) {
-            await new Promise((r) => setTimeout(r, 300));
-          }
-        }
-
-        if (confirmedCount > 0) {
-          if (input) input.value = '';
-          this.updateCharCount();
-          this.onShowToast?.(segments.length > 1 ? `已順利完成連續推文（共 ${confirmedCount} 段）！` : '推文已順利送出！');
         }
       }, { waitMs: 800 });
 

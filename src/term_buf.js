@@ -47,6 +47,7 @@ export class TermChar {
     this.blink = false;
     this.invert = false;
     this.underLine = false;
+    this.hyperlink = null;
     this.isLeadByte = false;
     this.isTrailByte = false;
   }
@@ -59,6 +60,7 @@ export class TermChar {
     this.blink = false;
     this.invert = false;
     this.underLine = false;
+    this.hyperlink = null;
     this.isLeadByte = false;
     this.isTrailByte = false;
   }
@@ -71,6 +73,7 @@ export class TermChar {
     this.blink = other.blink;
     this.invert = other.invert;
     this.underLine = other.underLine;
+    this.hyperlink = other.hyperlink ?? null;
     this.isLeadByte = other.isLeadByte;
     this.isTrailByte = other.isTrailByte;
   }
@@ -82,6 +85,7 @@ export class TermChar {
     this.blink = other.blink;
     this.invert = other.invert;
     this.underLine = other.underLine;
+    this.hyperlink = other.hyperlink ?? null;
   }
 
   getFg() {
@@ -116,6 +120,7 @@ export class TermBuf {
 
     this.curAttr = new TermChar(' ');
     this.newChar = new TermChar(' ');
+    this.sgr66LeadAttr = null;
     this.outputBatchDepth = 0;
     this.syncOutputEndGeneration = 0;
     this.syncOutputOrphanEndGeneration = 0;
@@ -244,6 +249,10 @@ export class TermBuf {
     }
   }
 
+  setHyperlink(url) {
+    this.curAttr.hyperlink = url || null;
+  }
+
   puts(str) {
     if (!str) return;
     const cols = this.cols;
@@ -269,19 +278,23 @@ export class TermBuf {
           }
           continue;
         case '\b':
+          this.sgr66LeadAttr = null;
           this.back();
           continue;
         case '\r':
+          this.sgr66LeadAttr = null;
           this.carriageReturn();
           continue;
         case '\n':
         case '\f':
         case '\v':
+          this.sgr66LeadAttr = null;
           this.lineFeed();
           continue;
         case '\0':
           continue;
         case '\t':
+          this.sgr66LeadAttr = null;
           this.tab();
           continue;
       }
@@ -302,6 +315,9 @@ export class TermBuf {
         }
         continue;
       }
+
+      const leadAttr = this.sgr66LeadAttr;
+      this.sgr66LeadAttr = null;
 
       if (this.cur_x >= cols) {
         continue;
@@ -335,7 +351,7 @@ export class TermBuf {
 
       const cell = line[curX];
       cell.ch = ch;
-      cell.copyAttr(this.curAttr);
+      cell.copyAttr(full && leadAttr ? leadAttr : this.curAttr);
       this.markRowDirty(this.cur_y);
 
       if (full) {
@@ -367,6 +383,7 @@ export class TermBuf {
   }
 
   putDBCS(ch, leadAttr, trailAttr) {
+    this.sgr66LeadAttr = null;
     if (this.cur_x >= this.cols - 1) {
       return;
     }
@@ -455,6 +472,7 @@ export class TermBuf {
   }
 
   gotoPos(x, y) {
+    this.sgr66LeadAttr = null;
     this.markRowDirty(this.cur_y);
     this.cur_x = Math.max(0, Math.min(this.cols - 1, x));
     this.cur_y = Math.max(0, Math.min(this.rows - 1, y));
@@ -471,6 +489,7 @@ export class TermBuf {
   setScrollRegion(top, bottom) {
     this.scrollTop = Math.max(0, Math.min(this.rows - 1, top));
     this.scrollBottom = Math.max(this.scrollTop, Math.min(this.rows - 1, bottom));
+    this.gotoPos(0, 0);
     this.markAllDirty();
   }
 
@@ -611,6 +630,7 @@ export class TermBuf {
   }
 
   clear(param = 0) {
+    this.sgr66LeadAttr = null;
     const rows = this.rows;
     const cols = this.cols;
     const lines = this.lines;
@@ -670,9 +690,12 @@ export class TermBuf {
     for (let i = 0; i < params.length; i++) {
       const v = params[i];
       switch (v) {
-        case 0: // reset
+        case 0: { // reset (preserve active OSC 8 hyperlink per specification)
+          const savedLink = this.curAttr.hyperlink;
           this.curAttr.reset();
+          this.curAttr.hyperlink = savedLink;
           break;
+        }
         case 1: // bright
           this.curAttr.bright = true;
           break;
@@ -698,6 +721,12 @@ export class TermBuf {
         case 27: // not inverted
           this.curAttr.invert = false;
           break;
+        case 66: { // PTT SGR 66: dual-color full-width character (preceding attrs = left, following = right)
+          const lead = new TermChar(' ');
+          lead.copyAttr(this.curAttr);
+          this.sgr66LeadAttr = lead;
+          break;
+        }
         default:
           if (v >= 30 && v <= 37) {
             this.curAttr.fg = v - 30;
@@ -863,6 +892,33 @@ export class TermBuf {
    */
   getUrlsInRow(row) {
     if (row < 0 || row >= this.rows) return [];
+    const oscUrls = [];
+    const rowCells = this.lines[row];
+    for (let c = 0; c < this.cols;) {
+      const link = rowCells[c]?.hyperlink;
+      if (!link) {
+        c++;
+        continue;
+      }
+      const startCol = c;
+      let endCol = c;
+      let raw = '';
+      while (c < this.cols && rowCells[c]?.hyperlink === link) {
+        const cell = rowCells[c];
+        endCol = c;
+        if (!cell.isTrailByte) raw += cell.ch || ' ';
+        c++;
+      }
+      oscUrls.push({
+        raw,
+        url: link,
+        startCol,
+        endCol,
+        row,
+        isOsc8: true,
+      });
+    }
+
     let lineStr = '';
     const colMap = [];
 
@@ -943,7 +999,11 @@ export class TermBuf {
       }
     }
 
-    return urls;
+    if (oscUrls.length === 0) return urls;
+    const filteredRegexUrls = urls.filter(
+      (u) => !oscUrls.some((o) => u.startCol <= o.endCol && u.endCol >= o.startCol)
+    );
+    return [...oscUrls, ...filteredRegexUrls].sort((a, b) => a.startCol - b.startCol);
   }
 
   extractPushAuthor(lineStr) {

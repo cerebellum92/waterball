@@ -1,6 +1,7 @@
 // Settings & Blacklist UI Controller for Waterball BBS
 import { safeInvoke, writeClipboardText } from './platform.js';
 import { imageUploadHistory, deleteUploadedImage } from './image_uploader.js';
+import { TOOLBAR_BUTTON_CATALOG, DEFAULT_PINNED_TOOLBAR_BUTTONS, normalizePinnedToolbarButtons } from './toolbar_layout.js';
 
 export class SettingsUI {
   constructor({
@@ -17,6 +18,9 @@ export class SettingsUI {
     onFocusTerminal,
     onShowToast,
     onMouseBrowsingChange,
+    onFloatingNavChange,
+    onFitWindowNow,
+    onPinnedToolbarChange,
   }) {
     this.settingsManager = settingsManager;
     this.blacklistManager = blacklistManager;
@@ -31,6 +35,9 @@ export class SettingsUI {
     this.onFocusTerminal = onFocusTerminal || (() => {});
     this.onShowToast = onShowToast || (() => {});
     this.onMouseBrowsingChange = onMouseBrowsingChange || (() => {});
+    this.onFloatingNavChange = onFloatingNavChange || (() => {});
+    this.onFitWindowNow = onFitWindowNow || (() => {});
+    this.onPinnedToolbarChange = onPinnedToolbarChange || (() => {});
 
     this.initEventListeners();
   }
@@ -75,6 +82,16 @@ export class SettingsUI {
     }
     if (modalSaveBtn) {
       modalSaveBtn.addEventListener('click', () => this.save());
+    }
+    if (this.elements.btnFitWindowNow) {
+      this.elements.btnFitWindowNow.addEventListener('click', () => {
+        this.onFitWindowNow();
+      });
+    }
+    if (this.elements.btnResetPinnedToolbar) {
+      this.elements.btnResetPinnedToolbar.addEventListener('click', () => {
+        this.renderPinnedToolbarPicker(DEFAULT_PINNED_TOOLBAR_BUTTONS);
+      });
     }
 
     // Custom Font dropdown toggle
@@ -389,6 +406,7 @@ export class SettingsUI {
       settingNotifySound,
       settingSmartDbcs,
       settingMouseBrowsing,
+      settingFloatingNav,
       settingWheelScroll,
       settingMouseSideButton,
       settingAutoCopy,
@@ -397,6 +415,7 @@ export class SettingsUI {
       settingBlinkRate,
       settingImagePreview,
       settingRememberWindow,
+      settingAutoFitWindow,
       settingToolbarScale,
       settingTerminalFontScale,
       settingFontFamily,
@@ -418,6 +437,7 @@ export class SettingsUI {
     if (settingNotifySound) settingNotifySound.checked = s.notifySound !== false;
     if (settingSmartDbcs) settingSmartDbcs.checked = s.smartDbcsBackspace;
     if (settingMouseBrowsing) settingMouseBrowsing.checked = s.mouseBrowsingEnabled !== false;
+    if (settingFloatingNav) settingFloatingNav.checked = s.floatingNavEnabled !== false;
     if (settingWheelScroll) settingWheelScroll.checked = s.wheelScrollPage;
     if (settingMouseSideButton) settingMouseSideButton.value = s.mouseSideButtonAction || 'page';
     if (settingAutoCopy) settingAutoCopy.checked = s.autoCopySelection !== false;
@@ -426,6 +446,8 @@ export class SettingsUI {
     if (settingBlinkRate) settingBlinkRate.value = String(s.cursorBlinkRate ?? 500);
     if (settingImagePreview) settingImagePreview.checked = s.imagePreviewEnabled !== false;
     if (settingRememberWindow) settingRememberWindow.checked = s.rememberWindowState !== false;
+    if (settingAutoFitWindow) settingAutoFitWindow.checked = s.autoFitWindowAspect === true;
+    this.renderPinnedToolbarPicker(normalizePinnedToolbarButtons(s.pinnedToolbarButtons));
     if (settingToolbarScale) settingToolbarScale.value = s.toolbarScale || 'medium';
     if (settingTerminalFontScale) settingTerminalFontScale.value = String(s.terminalFontScale ?? 0.92);
 
@@ -588,6 +610,40 @@ export class SettingsUI {
     });
   }
 
+  renderPinnedToolbarPicker(selectedIds = DEFAULT_PINNED_TOOLBAR_BUTTONS) {
+    const container = this.elements?.settingPinnedToolbarList;
+    if (!container) return;
+    const selectedSet = new Set(normalizePinnedToolbarButtons(selectedIds));
+    container.replaceChildren();
+    for (const item of TOOLBAR_BUTTON_CATALOG) {
+      const chip = document.createElement('label');
+      chip.className = `pinned-toolbar-chip ${selectedSet.has(item.id) ? 'is-checked' : ''}`;
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.value = item.id;
+      cb.checked = selectedSet.has(item.id);
+      cb.addEventListener('change', () => {
+        chip.classList.toggle('is-checked', cb.checked);
+      });
+      const text = document.createElement('span');
+      text.textContent = `${item.icon} ${item.label}`;
+      chip.append(cb, text);
+      container.appendChild(chip);
+    }
+  }
+
+  getSelectedPinnedToolbarButtons() {
+    const container = this.elements?.settingPinnedToolbarList;
+    if (!container) {
+      return normalizePinnedToolbarButtons(this.settingsManager.settings.pinnedToolbarButtons);
+    }
+    const checked = [];
+    container.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+      if (cb.checked) checked.push(cb.value);
+    });
+    return normalizePinnedToolbarButtons(checked);
+  }
+
   applyToolbarScale(scale = 'medium') {
     document.body.classList.remove(
       'toolbar-scale-standard',
@@ -613,6 +669,7 @@ export class SettingsUI {
       settingNotifySound,
       settingSmartDbcs,
       settingMouseBrowsing,
+      settingFloatingNav,
       settingWheelScroll,
       settingMouseSideButton,
       settingAutoCopy,
@@ -621,6 +678,7 @@ export class SettingsUI {
       settingBlinkRate,
       settingImagePreview,
       settingRememberWindow,
+      settingAutoFitWindow,
       settingToolbarScale,
       settingTerminalFontScale,
       settingFontFamily,
@@ -684,6 +742,10 @@ export class SettingsUI {
     });
     this.tabManager.getActiveTab()?.view?.redraw();
 
+    const floatingNavEnabled = settingFloatingNav ? settingFloatingNav.checked : true;
+    const autoFitWindowAspect = settingAutoFitWindow ? settingAutoFitWindow.checked : false;
+    const pinnedToolbarButtons = this.getSelectedPinnedToolbarButtons();
+
     this.settingsManager.saveSettings({
       antiIdleEnabled,
       antiIdleInterval,
@@ -691,6 +753,7 @@ export class SettingsUI {
       notifySound: isSound,
       smartDbcsBackspace: settingSmartDbcs ? settingSmartDbcs.checked : true,
       mouseBrowsingEnabled: settingMouseBrowsing ? settingMouseBrowsing.checked : true,
+      floatingNavEnabled,
       wheelScrollPage: settingWheelScroll ? settingWheelScroll.checked : true,
       mouseSideButtonAction,
       autoCopySelection: settingAutoCopy ? settingAutoCopy.checked : true,
@@ -703,6 +766,8 @@ export class SettingsUI {
       cursorBlinkRate: settingBlinkRate ? parseInt(settingBlinkRate.value, 10) : 500,
       imagePreviewEnabled: isImgPrev,
       rememberWindowState: settingRememberWindow ? settingRememberWindow.checked : true,
+      autoFitWindowAspect,
+      pinnedToolbarButtons,
       toolbarScale,
       terminalFontScale,
       fontFamily,
@@ -712,6 +777,8 @@ export class SettingsUI {
       enabled: settingRememberWindow ? settingRememberWindow.checked : true,
     }).catch(() => {});
     this.onMouseBrowsingChange(settingMouseBrowsing ? settingMouseBrowsing.checked : true);
+    this.onFloatingNavChange(floatingNavEnabled);
+    this.onPinnedToolbarChange(pinnedToolbarButtons);
 
     this.close();
   }
