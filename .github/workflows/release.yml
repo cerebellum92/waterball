@@ -175,7 +175,7 @@ jobs:
             ### 📦 各作業系統下載與安裝說明：
 
             #### 🍏 macOS (Homebrew / `.dmg`)
-            - **Homebrew 安裝／升級**：`brew install --cask cerebellum92/waterball/waterball`（升級：`brew upgrade --cask waterball`）
+            - **Homebrew 安裝／升級**：首次安裝 `brew install --cask cerebellum92/waterball/waterball`（若原為 `.dmg` 手動安裝請加 `--force`）；日後升級 `brew upgrade --cask cerebellum92/waterball/waterball`
             - **手動安裝**：下載 `Waterball_${{ steps.get_tag.outputs.tag }}_macOS.dmg`，掛載後將 `Waterball.app` 拖移至「應用程式」。
             - **首次開啟小提示**：本專案為社群開源軟體，未購買 Apple 商業憑證。首次開啟若出現安全性提示：
               - 在 App 上 **按住 `Control` 鍵（或右鍵）點選「打開」**，再點一次「打開」即可。

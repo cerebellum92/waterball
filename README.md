@@ -17,11 +17,11 @@
 
 #### 方式一：透過 Homebrew 安裝與更新（推薦）
 ```bash
-# 安裝
+# 首次安裝（若先前以 .dmg 手動安裝過，可加上 --force 轉由 Homebrew 管理）
 brew install --cask cerebellum92/waterball/waterball
 
 # 之後有新版時一鍵更新
-brew upgrade --cask waterball
+brew upgrade --cask cerebellum92/waterball/waterball
 ```
 
 #### 方式二：手動下載 `.dmg`
