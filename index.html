@@ -411,17 +411,17 @@
                 <input type="checkbox" id="setting-auto-fit-window" />
                 <span>拉動視窗後自動貼合終端機比例（消除多餘黑邊）</span>
               </label>
-              <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 6px;">
-                <p class="hint" style="margin: 0; flex: 1;">僅於桌面版單一終端機且非最大化時生效；隨時雙擊終端機旁的黑色留白處，或點選右側控制列「貼合」鈕，亦可一鍵貼齊。</p>
-                <button type="button" id="btn-fit-window-now" class="btn-secondary" style="white-space: nowrap; height: 28px; padding: 0 10px; font-size: 12px; cursor: pointer;">⊡ 立即貼合視窗</button>
+              <div class="setting-inline-action-row">
+                <p class="hint setting-inline-hint">僅於桌面版單一終端機且非最大化時生效；隨時雙擊終端機旁的黑色留白處，或點選右側控制列「貼合」鈕，亦可一鍵貼齊。</p>
+                <button type="button" id="btn-fit-window-now" class="btn-secondary setting-compact-btn">⊡ 立即貼合視窗</button>
               </div>
             </div>
-            <div class="form-group" id="setting-pinned-toolbar-group" style="margin-top: 14px; border-top: 1px solid var(--border-color); padding-top: 14px;">
-              <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px;">
-                <label style="margin: 0; font-weight: 600;">📌 常駐於第 1 排（收合功能列後仍顯示）的按鈕：</label>
-                <button type="button" id="btn-reset-pinned-toolbar" class="btn-secondary" style="height: 26px; padding: 0 10px; font-size: 11.5px; cursor: pointer;">🔄 恢復預設</button>
+            <div class="form-group setting-section-divider" id="setting-pinned-toolbar-group">
+              <div class="setting-section-header-row">
+                <label class="setting-section-title">📌 常駐於第 1 排（收合功能列後仍顯示）的按鈕：</label>
+                <button type="button" id="btn-reset-pinned-toolbar" class="btn-secondary setting-compact-btn">🔄 恢復預設</button>
               </div>
-              <p class="hint" style="margin-top: 0;">勾選的按鈕會固定顯示在最上方分頁列右側，即使收合第 2 排功能列也能直接點擊；平時也可在任一功能按鈕上按右鍵快速切換釘選。</p>
+              <p class="hint setting-section-hint">勾選的按鈕會固定顯示在最上方分頁列右側，即使收合第 2 排功能列也能直接點擊；平時也可在任一功能按鈕上按右鍵快速切換釘選。</p>
               <div id="setting-pinned-toolbar-list" class="pinned-toolbar-picker"></div>
             </div>
           </div>
@@ -1351,38 +1351,38 @@
   </div>
 
   <!-- Update Notification Modal -->
-  <div id="update-modal" class="modal-backdrop hidden" style="z-index: 1060;">
+  <div id="update-modal" class="modal-backdrop update-modal-backdrop hidden">
     <div class="modal-dialog update-dialog">
       <div class="modal-header">
-        <h2 style="display: flex; align-items: center; gap: 8px; margin: 0; font-size: 16px;">
+        <h2 class="update-modal-title">
           <span>🎉</span> 發現新版本！
         </h2>
         <button id="update-modal-close-btn" class="modal-close close-btn" title="關閉 (ESC)">&times;</button>
       </div>
-      <div class="modal-body update-modal-body" style="padding: 18px 20px; display: flex; flex-direction: column; gap: 12px;">
+      <div class="modal-body update-modal-body">
         <div class="update-version-card">
           <div>
             <div class="update-ver-label">目前版本</div>
             <div id="update-modal-current-ver" class="update-ver-tag current">v0.1.13</div>
           </div>
-          <div style="font-size: 18px; color: var(--text-muted, #8e8e93);">➔</div>
+          <div class="update-ver-arrow">➔</div>
           <div>
             <div class="update-ver-label">最新版本</div>
             <div id="update-modal-latest-ver" class="update-ver-tag latest">v0.2.0</div>
           </div>
         </div>
-        <div id="update-modal-date" style="font-size: 12px; color: var(--text-muted, #8e8e93);"></div>
-        <div style="font-size: 13px; font-weight: 600; color: var(--text-primary); margin-top: 2px;">✨ 本次更新修正與新功能：</div>
+        <div id="update-modal-date" class="update-modal-date"></div>
+        <div class="update-modal-section-title">✨ 本次更新修正與新功能：</div>
         <div id="update-modal-notes" class="update-notes-box"></div>
       </div>
-      <div class="modal-footer update-modal-footer" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; border-top: 1px solid var(--border-color);">
-        <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted, #8e8e93); cursor: pointer; user-select: none;">
-          <input type="checkbox" id="update-modal-skip-cb" style="cursor: pointer;">
-          略過此版本
+      <div class="modal-footer update-modal-footer">
+        <label class="update-skip-label">
+          <input type="checkbox" id="update-modal-skip-cb" class="update-skip-checkbox">
+          <span>略過此版本</span>
         </label>
-        <div style="display: flex; gap: 10px;">
-          <button type="button" id="update-modal-dismiss-btn" class="btn-secondary" style="padding: 6px 14px; font-size: 13px;">稍後再說</button>
-          <button type="button" id="update-modal-download-btn" class="btn-primary" style="padding: 6px 16px; font-size: 13px; font-weight: 600;">立即前往下載 ↗</button>
+        <div class="update-modal-actions">
+          <button type="button" id="update-modal-dismiss-btn" class="btn-secondary update-modal-btn">稍後再說</button>
+          <button type="button" id="update-modal-download-btn" class="btn-primary update-modal-btn update-modal-btn-primary">立即前往下載 ↗</button>
         </div>
       </div>
     </div>

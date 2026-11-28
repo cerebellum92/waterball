@@ -27,6 +27,14 @@ export function formatReleaseNotesHtml(rawText, releaseUrl = '') {
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
 
+  const formatInline = (str, { allowBold = true } = {}) => {
+    let formatted = escapeHtml(str);
+    if (allowBold) {
+      formatted = formatted.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    }
+    return formatted.replace(/`([^`]+)`/g, '<code>$1</code>');
+  };
+
   const lines = cleanText.split('\n');
   const htmlParts = [];
   let inList = false;
@@ -45,14 +53,14 @@ export function formatReleaseNotesHtml(rawText, releaseUrl = '') {
     // Subheadings (#### or ###)
     if (line.startsWith('#### ') || line.startsWith('### ')) {
       closeListIfNeeded();
-      const headingText = escapeHtml(line.replace(/^#{3,4}\s+/, '').replace(/\*\*/g, '').trim());
+      const headingText = formatInline(line.replace(/^#{3,4}\s+/, '').replace(/\*\*/g, '').trim(), { allowBold: false });
       htmlParts.push(`<div class="update-notes-subheading">${headingText}</div>`);
       continue;
     }
     // Main headings (## or #)
     if (line.startsWith('## ') || line.startsWith('# ')) {
       closeListIfNeeded();
-      const headingText = escapeHtml(line.replace(/^#{1,2}\s+/, '').replace(/\*\*/g, '').trim());
+      const headingText = formatInline(line.replace(/^#{1,2}\s+/, '').replace(/\*\*/g, '').trim(), { allowBold: false });
       htmlParts.push(`<div class="update-notes-heading">${headingText}</div>`);
       continue;
     }
@@ -69,19 +77,14 @@ export function formatReleaseNotesHtml(rawText, releaseUrl = '') {
         htmlParts.push('<ul class="update-notes-list">');
         inList = true;
       }
-      let content = line.replace(/^[-*]\s+|\d+\.\s+/, '');
-      content = escapeHtml(content);
-      content = content.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-      content = content.replace(/`([^`]+)`/g, '<code>$1</code>');
+      const content = formatInline(line.replace(/^[-*]\s+|\d+\.\s+/, ''));
       htmlParts.push(`<li>${content}</li>`);
       continue;
     }
 
     // Regular paragraph
     closeListIfNeeded();
-    let pContent = escapeHtml(line);
-    pContent = pContent.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    pContent = pContent.replace(/`([^`]+)`/g, '<code>$1</code>');
+    const pContent = formatInline(line);
     htmlParts.push(`<p class="update-notes-p">${pContent}</p>`);
   }
 
